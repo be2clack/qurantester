@@ -124,3 +124,83 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Tajweed color classes from Quran.com API */
+tajweed {
+  display: inline;
+}
+
+/* Ghunnah - nasalization */
+tajweed.ghn,
+.tajweed-ghn {
+  color: #169200;
+}
+
+/* Ikhfa - concealment */
+tajweed.ikhpiph,
+.tajweed-ikhpiph {
+  color: #169200;
+}
+
+/* Idgham - assimilation */
+tajweed.idgmpiph,
+.tajweed-idgmpiph {
+  color: #a500ff;
+}
+
+/* Iqlab - conversion */
+tajweed.iqlb,
+.tajweed-iqlb {
+  color: #26bffd;
+}
+
+/* Qalqalah - echoing */
+tajweed.qlq,
+.tajweed-qlq {
+  color: #dd0008;
+}
+
+/* Madd - prolongation */
+tajweed.madda_normal,
+.tajweed-madda-normal {
+  color: #f7941d;
+}
+
+tajweed.madda_permissible,
+.tajweed-madda-permissible {
+  color: #f7941d;
+}
+
+tajweed.madda_obligatory,
+.tajweed-madda-obligatory {
+  color: #f7941d;
+}
+
+tajweed.madda_necessary,
+.tajweed-madda-necessary {
+  color: #000ebc;
+}
+
+/* Hamza wasl - elided hamza */
+tajweed.ham_wasl,
+.tajweed-ham-wasl {
+  color: #aaaaaa;
+}
+
+/* Laam shamsiyah - sun letter assimilation */
+tajweed.laam_shamsiyah,
+.tajweed-laam-shamsiyah {
+  color: #aaaaaa;
+}
+
+/* Silent letters */
+tajweed.slnt,
+.tajweed-slnt {
+  color: #aaaaaa;
+}
+
+/* End of verse markers */
+.end {
+  color: #000;
+  font-weight: bold;
+}

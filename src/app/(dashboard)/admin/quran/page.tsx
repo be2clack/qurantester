@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Table,
   TableBody,
@@ -42,7 +43,10 @@ import {
   Image as ImageIcon,
   FileAudio,
   Trash2,
+  Database,
+  Cloud,
 } from 'lucide-react'
+import { MedinaMushhafViewer } from '@/components/quran/medina-viewer'
 
 interface QuranLine {
   id: string
@@ -229,6 +233,22 @@ export default function QuranAdminPage() {
           Просмотр и редактирование страниц Корана
         </p>
       </div>
+
+      {/* Mushaf Tabs */}
+      <Tabs defaultValue="local" className="space-y-6">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="local" className="flex items-center gap-2">
+            <Database className="h-4 w-4" />
+            Наш Мусхаф
+          </TabsTrigger>
+          <TabsTrigger value="medina" className="flex items-center gap-2">
+            <Cloud className="h-4 w-4" />
+            Мединский
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Local Mushaf Tab */}
+        <TabsContent value="local" className="space-y-6">
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -495,6 +515,14 @@ export default function QuranAdminPage() {
           )}
         </CardContent>
       </Card>
+
+        </TabsContent>
+
+        {/* Medina Mushaf Tab */}
+        <TabsContent value="medina">
+          <MedinaMushhafViewer />
+        </TabsContent>
+      </Tabs>
 
       {/* Page Editor Dialog */}
       <Dialog open={!!selectedPage} onOpenChange={(open) => !open && closeEditor()}>

@@ -57,6 +57,11 @@ enum ContentType {
   AUDIO
 }
 
+enum MushafType {
+  LOCAL           // Наш Мусхаф (локальная БД)
+  MEDINA_API      // Мединский мусхаф (Quran.com API)
+}
+
 // ============== USERS ==============
 
 model User {
@@ -141,6 +146,16 @@ model Group {
   allowVoice      Boolean    @default(true)   // Голосовые сообщения
   allowVideoNote  Boolean    @default(true)   // Кружочки
   allowText       Boolean    @default(false)  // Текстовые сообщения
+
+  // Mushaf settings
+  mushafType        MushafType @default(LOCAL)  // Тип мусхафа
+  enableAIRecitation Boolean   @default(false)  // AI проверка чтения (QRC)
+  translationId     Int?       // ID перевода Quran.com (45 = Кулиев)
+  tafsirId          Int?       // ID тафсира Quran.com (170 = ас-Саади)
+  showTranslation   Boolean    @default(false)  // Показывать перевод
+  showTafsir        Boolean    @default(false)  // Показывать тафсир
+  showTajweed       Boolean    @default(false)  // Показывать таджвид
+  reciterId         Int?       // ID чтеца для аудио
 
   // Relations
   ustaz       User       @relation("UstazGroups", fields: [ustazId], references: [id])

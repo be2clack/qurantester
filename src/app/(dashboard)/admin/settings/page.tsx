@@ -7,7 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { Settings, Save, Loader2, Phone, MessageSquare, BookOpen, Layers, GraduationCap } from 'lucide-react'
+import { Settings, Save, Loader2, Phone, MessageSquare, BookOpen, Layers, GraduationCap, Key, ChevronRight } from 'lucide-react'
+import Link from 'next/link'
 
 interface Setting {
   id: string
@@ -181,6 +182,26 @@ export default function AdminSettingsPage() {
           </Button>
         )}
       </div>
+
+      {/* API Settings Link */}
+      <Link href="/admin/settings/api">
+        <Card className="hover:bg-muted/50 transition-colors cursor-pointer mb-2">
+          <CardHeader className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-amber-100 dark:bg-amber-900">
+                  <Key className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                </div>
+                <div>
+                  <CardTitle className="text-base">Настройки API</CardTitle>
+                  <CardDescription>Ключи Qurani.ai, Quran.com</CardDescription>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground" />
+            </div>
+          </CardHeader>
+        </Card>
+      </Link>
 
       {/* Levels Information Card */}
       <Card>

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
-import { UserRole, GroupLevel, LessonType } from '@prisma/client'
+import { UserRole, GroupLevel, LessonType, MushafType } from '@prisma/client'
 import { z } from 'zod'
 
 const updateGroupSchema = z.object({
@@ -22,6 +22,15 @@ const updateGroupSchema = z.object({
   showText: z.boolean().optional(),
   showImage: z.boolean().optional(),
   showAudio: z.boolean().optional(),
+  // Mushaf settings
+  mushafType: z.nativeEnum(MushafType).optional(),
+  enableAIRecitation: z.boolean().optional(),
+  translationId: z.number().nullable().optional(),
+  tafsirId: z.number().nullable().optional(),
+  showTranslation: z.boolean().optional(),
+  showTafsir: z.boolean().optional(),
+  showTajweed: z.boolean().optional(),
+  reciterId: z.number().nullable().optional(),
 })
 
 export async function GET(

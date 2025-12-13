@@ -16,6 +16,12 @@ import {
 import { generateWebAuthLink } from '@/lib/auth'
 import { STAGES, getLinesPerPage } from '@/lib/constants/quran'
 import { StageNumber, GroupLevel } from '@prisma/client'
+import {
+  getQuranPageContent,
+  getGroupMushafSettings,
+  getDefaultMushafSettings,
+  formatQuranLinesForTelegram,
+} from '../utils/quran-content'
 
 /**
  * Handle all callback queries (menu navigation)
@@ -755,16 +761,15 @@ async function showStudentGroup(ctx: BotContext, user: any): Promise<void> {
 }
 
 async function showQuranPage(ctx: BotContext, user: any, pageNumber: number): Promise<void> {
-  const page = await prisma.quranPage.findUnique({
-    where: { pageNumber },
-    include: {
-      lines: {
-        orderBy: { lineNumber: 'asc' }
-      }
-    }
-  })
+  // Get mushaf settings based on user's group
+  const settings = user.groupId
+    ? await getGroupMushafSettings(user.groupId)
+    : getDefaultMushafSettings()
 
-  if (!page) {
+  // Fetch page content (from local DB or Medina API based on settings)
+  const pageContent = await getQuranPageContent(pageNumber, settings)
+
+  if (!pageContent) {
     await ctx.editMessageText(
       '📖 <b>Коран</b>\n\n<i>Страница не найдена.</i>',
       { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
@@ -772,18 +777,19 @@ async function showQuranPage(ctx: BotContext, user: any, pageNumber: number): Pr
     return
   }
 
-  let message = `<b>📖 Страница ${pageNumber}</b>\n\n`
-  message += `📄 Строк: ${page.totalLines}\n\n`
+  const mushafLabel = settings.mushafType === 'MEDINA_API' ? ' (Мединский)' : ''
+  let message = `<b>📖 Страница ${pageNumber}${mushafLabel}</b>\n\n`
+  message += `📄 Строк: ${pageContent.totalLines}\n\n`
 
-  // Show line content if available
-  for (const line of page.lines.slice(0, 5)) {
-    if (line.textArabic) {
-      message += `${line.lineNumber}. ${line.textArabic}\n`
-    }
-  }
+  // Format and show first 5 lines
+  const linesToShow = pageContent.lines.slice(0, 5)
+  message += formatQuranLinesForTelegram(linesToShow, {
+    showLineNumbers: true,
+    showTranslation: settings.showTranslation
+  })
 
-  if (page.lines.length > 5) {
-    message += `\n<i>...и ещё ${page.lines.length - 5} строк</i>`
+  if (pageContent.lines.length > 5) {
+    message += `\n\n<i>...и ещё ${pageContent.lines.length - 5} строк</i>`
   }
 
   await ctx.editMessageText(message, {

@@ -29,9 +29,9 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone } from 'lucide-react'
+import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone, Database, Cloud, Sparkles, Volume2, Check, Palette } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { StageNumber, GroupLevel, LessonType } from '@prisma/client'
+import { StageNumber, GroupLevel, LessonType, MushafType } from '@prisma/client'
 
 const GROUP_LEVELS = [
   { value: 'LEVEL_1', label: 'Уровень 1', description: '1 строка за 12ч', num: '1' },
@@ -56,6 +56,29 @@ const LEVEL_COLORS: Record<string, string> = {
   LEVEL_2: 'bg-blue-100 text-blue-800',
   LEVEL_3: 'bg-purple-100 text-purple-800',
 }
+
+const MUSHAF_TYPES = [
+  { value: 'LOCAL', label: 'Наш Мусхаф', description: 'Локальная база данных', icon: Database },
+  { value: 'MEDINA_API', label: 'Мединский', description: 'Quran.com API', icon: Cloud },
+]
+
+const RUSSIAN_TRANSLATIONS = [
+  { id: 45, name: 'Кулиев', author: 'Эльмир Кулиев', isDefault: true },
+  { id: 79, name: 'Абу Адель', author: 'Абу Адель', isDefault: false },
+  { id: 78, name: 'Мин. вакуфов', author: 'Ministry of Awqaf', isDefault: false },
+]
+
+const RUSSIAN_TAFSIRS = [
+  { id: 170, name: 'ас-Саади', author: 'Абдуррахман ас-Саади', isDefault: true },
+]
+
+const POPULAR_RECITERS = [
+  { id: 7, name: 'Мишари Рашид', style: 'مرتل', isDefault: true },
+  { id: 1, name: 'Абдуль-Басит (Муджаввад)', style: 'مجود' },
+  { id: 2, name: 'Абдуль-Басит (Муратталь)', style: 'مرتل' },
+  { id: 6, name: 'Махмуд аль-Хусари', style: 'مرتل' },
+  { id: 5, name: 'Мухаммад аль-Минщави', style: 'مرتل' },
+]
 
 // Parse group name like "ЗА-25-1-3" into components
 function parseGroupName(name: string) {
@@ -88,6 +111,14 @@ interface GroupData {
   showText: boolean
   showImage: boolean
   showAudio: boolean
+  // Mushaf settings
+  mushafType: MushafType
+  enableAIRecitation: boolean
+  translationId: number | null
+  tafsirId: number | null
+  showTranslation: boolean
+  showTafsir: boolean
+  reciterId: number | null
   // Relations
   ustaz: {
     id: string
@@ -145,6 +176,7 @@ export default function EditGroupPage() {
   // Collapsible settings
   const [groupSettingsOpen, setGroupSettingsOpen] = useState(false)
   const [lessonSettingsOpen, setLessonSettingsOpen] = useState(false)
+  const [mushafSettingsOpen, setMushafSettingsOpen] = useState(false)
 
   const [formData, setFormData] = useState({
     description: '',
@@ -163,7 +195,18 @@ export default function EditGroupPage() {
     showText: false,
     showImage: false,
     showAudio: false,
+    // Mushaf settings
+    mushafType: 'LOCAL' as MushafType,
+    enableAIRecitation: false,
+    translationId: 45 as number | null,
+    tafsirId: 170 as number | null,
+    showTranslation: false,
+    showTafsir: false,
+    showTajweed: false,
+    reciterId: 7 as number | null,
   })
+  const [savingSection, setSavingSection] = useState<string | null>(null)
+  const [savedSection, setSavedSection] = useState<string | null>(null)
 
   useEffect(() => {
     async function fetchData() {
@@ -198,6 +241,15 @@ export default function EditGroupPage() {
           showText: groupData.showText ?? false,
           showImage: groupData.showImage ?? false,
           showAudio: groupData.showAudio ?? false,
+          // Mushaf settings
+          mushafType: groupData.mushafType || 'LOCAL',
+          enableAIRecitation: groupData.enableAIRecitation ?? false,
+          translationId: groupData.translationId ?? 45,
+          tafsirId: groupData.tafsirId ?? 170,
+          showTranslation: groupData.showTranslation ?? false,
+          showTafsir: groupData.showTafsir ?? false,
+          showTajweed: groupData.showTajweed ?? false,
+          reciterId: groupData.reciterId ?? 7,
         })
       } catch (err) {
         setError('Ошибка загрузки данных')
@@ -235,6 +287,15 @@ export default function EditGroupPage() {
           showText: formData.showText,
           showImage: formData.showImage,
           showAudio: formData.showAudio,
+          // Mushaf settings
+          mushafType: formData.mushafType,
+          enableAIRecitation: formData.enableAIRecitation,
+          translationId: formData.translationId,
+          tafsirId: formData.tafsirId,
+          showTranslation: formData.showTranslation,
+          showTafsir: formData.showTafsir,
+          showTajweed: formData.showTajweed,
+          reciterId: formData.reciterId,
         }),
       })
 
@@ -248,6 +309,59 @@ export default function EditGroupPage() {
       setError(err instanceof Error ? err.message : 'Ошибка сохранения')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // Save without redirect (for individual sections)
+  const handleSaveSection = async (section: string) => {
+    setSavingSection(section)
+    setError('')
+    setSavedSection(null)
+
+    try {
+      const res = await fetch(`/api/groups/${params.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: formData.description,
+          ustazId: formData.ustazId,
+          level: formData.level,
+          isActive: formData.isActive,
+          lessonType: formData.lessonType,
+          // Lesson settings
+          repetitionCount: formData.repetitionCount,
+          stage1Days: formData.stage1Days,
+          stage2Days: formData.stage2Days,
+          stage3Days: formData.stage3Days,
+          allowVoice: formData.allowVoice,
+          allowVideoNote: formData.allowVideoNote,
+          allowText: formData.allowText,
+          showText: formData.showText,
+          showImage: formData.showImage,
+          showAudio: formData.showAudio,
+          // Mushaf settings
+          mushafType: formData.mushafType,
+          enableAIRecitation: formData.enableAIRecitation,
+          translationId: formData.translationId,
+          tafsirId: formData.tafsirId,
+          showTranslation: formData.showTranslation,
+          showTafsir: formData.showTafsir,
+          showTajweed: formData.showTajweed,
+          reciterId: formData.reciterId,
+        }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to update')
+      }
+
+      setSavedSection(section)
+      setTimeout(() => setSavedSection(null), 2000)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка сохранения')
+    } finally {
+      setSavingSection(null)
     }
   }
 
@@ -697,11 +811,261 @@ export default function EditGroupPage() {
                 </div>
               </div>
             </div>
+
+                {/* Save button */}
+                <Button
+                  type="button"
+                  className="w-full"
+                  onClick={() => handleSaveSection('lesson')}
+                  disabled={savingSection === 'lesson'}
+                >
+                  {savingSection === 'lesson' ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Сохранение...
+                    </>
+                  ) : savedSection === 'lesson' ? (
+                    <>
+                      <Check className="mr-2 h-4 w-4" />
+                      Сохранено
+                    </>
+                  ) : (
+                    <>
+                      <Save className="mr-2 h-4 w-4" />
+                      Сохранить настройки урока
+                    </>
+                  )}
+                </Button>
               </CardContent>
             </CollapsibleContent>
           </Card>
         </Collapsible>
       </div>
+
+      {/* Mushaf Settings Card */}
+      <Collapsible open={mushafSettingsOpen} onOpenChange={setMushafSettingsOpen}>
+        <Card>
+          <CollapsibleTrigger asChild>
+            <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <CardTitle className="flex items-center gap-2">
+                    <BookOpen className="h-5 w-5" />
+                    Настройки мусхафа
+                  </CardTitle>
+                  <Badge variant={formData.mushafType === 'MEDINA_API' ? 'default' : 'secondary'}>
+                    {MUSHAF_TYPES.find(m => m.value === formData.mushafType)?.label}
+                  </Badge>
+                </div>
+                {mushafSettingsOpen ? (
+                  <ChevronUp className="h-5 w-5 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 text-muted-foreground" />
+                )}
+              </div>
+            </CardHeader>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <CardContent className="space-y-4">
+              {/* Mushaf Type Selection */}
+              <div className="space-y-2">
+                <Label>Источник контента</Label>
+                <div className="grid grid-cols-2 gap-3">
+                  {MUSHAF_TYPES.map((type) => {
+                    const Icon = type.icon
+                    const isSelected = formData.mushafType === type.value
+                    return (
+                      <div
+                        key={type.value}
+                        onClick={() => setFormData({ ...formData, mushafType: type.value as MushafType })}
+                        className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
+                          isSelected
+                            ? 'border-primary bg-primary/5'
+                            : 'border-muted hover:border-muted-foreground/50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg ${isSelected ? 'bg-primary/10' : 'bg-muted'}`}>
+                            <Icon className={`h-5 w-5 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                          </div>
+                          <div>
+                            <p className="font-medium">{type.label}</p>
+                            <p className="text-xs text-muted-foreground">{type.description}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Medina API Settings */}
+              {formData.mushafType === 'MEDINA_API' && (
+                <div className="space-y-4 p-4 bg-muted/50 rounded-lg border">
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    <Cloud className="h-4 w-4" />
+                    Настройки Quran.com API
+                  </p>
+
+                  {/* Translation Settings */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Languages className="h-4 w-4 text-muted-foreground" />
+                        <Label htmlFor="showTranslation">Показывать перевод</Label>
+                      </div>
+                      <Switch
+                        id="showTranslation"
+                        checked={formData.showTranslation}
+                        onCheckedChange={(checked) => setFormData({ ...formData, showTranslation: checked })}
+                      />
+                    </div>
+                    {formData.showTranslation && (
+                      <Select
+                        value={formData.translationId?.toString() || '45'}
+                        onValueChange={(value) => setFormData({ ...formData, translationId: parseInt(value) })}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Выберите перевод" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {RUSSIAN_TRANSLATIONS.map((t) => (
+                            <SelectItem key={t.id} value={t.id.toString()}>
+                              {t.name} ({t.author})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+
+                  {/* Tafsir Settings */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <BookText className="h-4 w-4 text-muted-foreground" />
+                        <Label htmlFor="showTafsir">Показывать тафсир</Label>
+                      </div>
+                      <Switch
+                        id="showTafsir"
+                        checked={formData.showTafsir}
+                        onCheckedChange={(checked) => setFormData({ ...formData, showTafsir: checked })}
+                      />
+                    </div>
+                    {formData.showTafsir && (
+                      <Select
+                        value={formData.tafsirId?.toString() || '170'}
+                        onValueChange={(value) => setFormData({ ...formData, tafsirId: parseInt(value) })}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Выберите тафсир" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {RUSSIAN_TAFSIRS.map((t) => (
+                            <SelectItem key={t.id} value={t.id.toString()}>
+                              {t.name} ({t.author})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+
+                  {/* Tajweed Settings */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Palette className="h-4 w-4 text-muted-foreground" />
+                      <Label htmlFor="showTajweed">Показывать таджвид</Label>
+                    </div>
+                    <Switch
+                      id="showTajweed"
+                      checked={formData.showTajweed}
+                      onCheckedChange={(checked) => setFormData({ ...formData, showTajweed: checked })}
+                    />
+                  </div>
+
+                  {/* Reciter Selection */}
+                  <div className="space-y-2">
+                    <Label className="flex items-center gap-2">
+                      <Volume2 className="h-4 w-4 text-muted-foreground" />
+                      Чтец
+                    </Label>
+                    <Select
+                      value={formData.reciterId?.toString() || '7'}
+                      onValueChange={(value) => setFormData({ ...formData, reciterId: parseInt(value) })}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Выберите чтеца" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {POPULAR_RECITERS.map((r) => (
+                          <SelectItem key={r.id} value={r.id.toString()}>
+                            {r.name} <span className="text-muted-foreground font-arabic">{r.style}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* AI Recitation */}
+                  <div className="flex items-center justify-between p-3 border rounded-lg bg-background">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-amber-100">
+                        <Sparkles className="h-4 w-4 text-amber-600" />
+                      </div>
+                      <div>
+                        <Label htmlFor="enableAIRecitation" className="font-medium">AI проверка чтения</Label>
+                        <p className="text-xs text-muted-foreground">Qurani.ai QRC (требуется API ключ)</p>
+                      </div>
+                    </div>
+                    <Switch
+                      id="enableAIRecitation"
+                      checked={formData.enableAIRecitation}
+                      onCheckedChange={(checked) => setFormData({ ...formData, enableAIRecitation: checked })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {formData.mushafType === 'LOCAL' && (
+                <div className="p-4 bg-muted/30 rounded-lg border border-dashed text-center">
+                  <Database className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">
+                    Контент берется из локальной базы данных.
+                    <br />
+                    Редактируйте на странице <strong>Коран → Наш Мусхаф</strong>
+                  </p>
+                </div>
+              )}
+
+              {/* Save button */}
+              <Button
+                type="button"
+                className="w-full"
+                onClick={() => handleSaveSection('mushaf')}
+                disabled={savingSection === 'mushaf'}
+              >
+                {savingSection === 'mushaf' ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Сохранение...
+                  </>
+                ) : savedSection === 'mushaf' ? (
+                  <>
+                    <Check className="mr-2 h-4 w-4" />
+                    Сохранено
+                  </>
+                ) : (
+                  <>
+                    <Save className="mr-2 h-4 w-4" />
+                    Сохранить настройки мусхафа
+                  </>
+                )}
+              </Button>
+            </CardContent>
+          </CollapsibleContent>
+        </Card>
+      </Collapsible>
 
       {/* Students Card */}
       <Card>
