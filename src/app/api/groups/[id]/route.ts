@@ -105,7 +105,16 @@ export async function GET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    return NextResponse.json(group)
+    // Serialize BigInt fields to strings for JSON compatibility
+    const serializedGroup = {
+      ...group,
+      students: group.students.map(student => ({
+        ...student,
+        telegramId: student.telegramId?.toString() || null,
+      }))
+    }
+
+    return NextResponse.json(serializedGroup)
   } catch (error) {
     console.error('Get group error:', error)
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 })

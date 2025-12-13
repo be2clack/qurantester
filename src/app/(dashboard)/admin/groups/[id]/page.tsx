@@ -594,15 +594,10 @@ export default function EditGroupPage() {
             <CollapsibleTrigger asChild>
               <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="flex items-center gap-2">
-                      <BookOpen className="h-5 w-5" />
-                      Настройки урока
-                    </CardTitle>
-                    <CardDescription>
-                      Параметры обучения для группы
-                    </CardDescription>
-                  </div>
+                  <CardTitle className="flex items-center gap-2">
+                    <BookOpen className="h-5 w-5" />
+                    Настройки урока
+                  </CardTitle>
                   {lessonSettingsOpen ? (
                     <ChevronUp className="h-5 w-5 text-muted-foreground" />
                   ) : (
