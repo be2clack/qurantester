@@ -39,6 +39,7 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     include: {
       page: true,
       lesson: true,
+      group: true,
     }
   })
 
@@ -54,8 +55,11 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
+  // Use group settings (primary) or lesson settings (fallback)
+  const settings = task.group || task.lesson
+
   // Check if lesson allows voice
-  if (!task.lesson.allowVoice) {
+  if (!settings?.allowVoice) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
@@ -127,7 +131,8 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     updatedTask.currentCount,
     task.requiredCount,
     remaining,
-    progressPercent
+    progressPercent,
+    task.deadline
   )
 
   await sendAndTrack(
@@ -177,6 +182,7 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     include: {
       page: true,
       lesson: true,
+      group: true,
     }
   })
 
@@ -192,8 +198,11 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     return
   }
 
+  // Use group settings (primary) or lesson settings (fallback)
+  const settings = task.group || task.lesson
+
   // Check if lesson allows video notes
-  if (!task.lesson.allowVideoNote) {
+  if (!settings?.allowVideoNote) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
@@ -265,7 +274,8 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     updatedTask.currentCount,
     task.requiredCount,
     remaining,
-    progressPercent
+    progressPercent,
+    task.deadline
   )
 
   await sendAndTrack(
@@ -312,6 +322,7 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     include: {
       page: true,
       lesson: true,
+      group: true,
     }
   })
 
@@ -321,17 +332,20 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
+  // Use group settings (primary) or lesson settings (fallback)
+  const settings = task.group || task.lesson
+
   // Check if lesson allows text
-  if (!task.lesson.allowText) {
+  if (!settings?.allowText) {
     await deleteUserMessage(ctx)
 
     // Build format hint
     let formatHint = ''
-    if (task.lesson.allowVoice && task.lesson.allowVideoNote) {
+    if (settings?.allowVoice && settings?.allowVideoNote) {
       formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
-    } else if (task.lesson.allowVoice) {
+    } else if (settings?.allowVoice) {
       formatHint = '🎤 голосовое сообщение'
-    } else if (task.lesson.allowVideoNote) {
+    } else if (settings?.allowVideoNote) {
       formatHint = '📹 видео-кружок'
     }
 
@@ -404,7 +418,8 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     updatedTask.currentCount,
     task.requiredCount,
     remaining,
-    progressPercent
+    progressPercent,
+    task.deadline
   )
 
   await sendAndTrack(
@@ -444,6 +459,7 @@ export async function handleRejectedMessage(ctx: BotContext): Promise<void> {
     },
     include: {
       lesson: true,
+      group: true,
     }
   })
 
@@ -452,16 +468,21 @@ export async function handleRejectedMessage(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Build format hint based on lesson settings
+  // Use group settings (primary) or lesson settings (fallback)
+  const settings = task.group || task.lesson
+
+  // Build format hint based on settings
   let formatHint = ''
-  if (task.lesson.allowVoice && task.lesson.allowVideoNote) {
+  if (settings?.allowVoice && settings?.allowVideoNote) {
     formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
-  } else if (task.lesson.allowVoice) {
+  } else if (settings?.allowVoice) {
     formatHint = '🎤 голосовое сообщение'
-  } else if (task.lesson.allowVideoNote) {
+  } else if (settings?.allowVideoNote) {
     formatHint = '📹 видео-кружок'
-  } else if (task.lesson.allowText) {
+  } else if (settings?.allowText) {
     formatHint = '📝 текстовое сообщение'
+  } else {
+    formatHint = '🎤 голосовое сообщение или 📹 видео-кружок' // default
   }
 
   await sendAndTrack(
@@ -483,7 +504,8 @@ function buildSubmissionConfirmation(
   currentCount: number,
   requiredCount: number,
   remaining: number,
-  progressPercent: string
+  progressPercent: string,
+  deadline?: Date
 ): string {
   const lineRange = startLine === endLine
     ? `строка ${startLine}`
@@ -497,12 +519,40 @@ function buildSubmissionConfirmation(
   message += `📊 Отправлено: <b>${currentCount}/${requiredCount}</b>\n`
 
   if (remaining > 0) {
-    message += `⏳ Осталось: <b>${remaining}</b>\n\n`
-    message += `<i>Продолжайте отправлять записи.</i>`
+    message += `⏳ Осталось: <b>${remaining}</b>\n`
   } else {
     message += `\n🎉 <b>Все записи отправлены!</b>\n`
     message += `<i>Ожидайте проверку устаза.</i>`
+    return message
   }
+
+  // Add deadline info
+  if (deadline) {
+    const now = new Date()
+    const timeLeft = deadline.getTime() - now.getTime()
+    const hoursLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60)))
+    const minutesLeft = Math.max(0, Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60)))
+
+    const deadlineTimeStr = deadline.toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'Asia/Bishkek'
+    })
+    const deadlineDateStr = deadline.toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'short',
+      timeZone: 'Asia/Bishkek'
+    })
+
+    if (timeLeft > 0) {
+      message += `\n⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
+      message += ` (<b>${hoursLeft}ч ${minutesLeft}м</b>)\n`
+    } else {
+      message += `\n⚠️ <b>Срок истёк!</b>\n`
+    }
+  }
+
+  message += `\n<i>Продолжайте отправлять записи.</i>`
 
   return message
 }

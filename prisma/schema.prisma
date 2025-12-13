@@ -125,13 +125,32 @@ model Group {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
+  // Lesson settings (moved from Lesson model)
+  lessonType      LessonType @default(MEMORIZATION)
+  repetitionCount Int        @default(80)  // Количество повторений
+  stage1Days      Int        @default(1)   // Дни на этап 1
+  stage2Days      Int        @default(2)   // Дни на этап 2
+  stage3Days      Int        @default(2)   // Дни на этап 3
+
+  // Content settings
+  showText        Boolean    @default(false)
+  showImage       Boolean    @default(false)
+  showAudio       Boolean    @default(false)
+
+  // Submission format settings
+  allowVoice      Boolean    @default(true)   // Голосовые сообщения
+  allowVideoNote  Boolean    @default(true)   // Кружочки
+  allowText       Boolean    @default(false)  // Текстовые сообщения
+
   // Relations
   ustaz       User       @relation("UstazGroups", fields: [ustazId], references: [id])
   ustazId     String
   students    User[]     @relation("StudentGroup")
-  lessons     Lesson[]
+  lessons     Lesson[]   // Legacy relation
+  tasks       Task[]     @relation("GroupTasks")
 
   @@index([ustazId])
+  @@index([lessonType])
 }
 
 // ============== QURAN CONTENT ==============
@@ -211,39 +230,42 @@ model Lesson {
 
 model Task {
   id              String      @id @default(cuid())
-  
+
   // Assignment details
-  lessonId        String
-  lesson          Lesson      @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  lessonId        String?     // Legacy - kept for old data
+  lesson          Lesson?     @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+  groupId         String?     // New - group contains all settings
+  group           Group?      @relation("GroupTasks", fields: [groupId], references: [id], onDelete: SetNull)
   studentId       String
   student         User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  
+
   // What to learn
   pageId          String
   page            QuranPage   @relation(fields: [pageId], references: [id])
   startLine       Int
   endLine         Int
   stage           StageNumber
-  
+
   // Progress
   status          TaskStatus  @default(IN_PROGRESS)
   currentCount    Int         @default(0)  // Сколько раз отправил
   requiredCount   Int         @default(80) // Сколько нужно
   passedCount     Int         @default(0)  // Сколько сдал
   failedCount     Int         @default(0)  // Сколько не сдал
-  
+
   // Timing
   startedAt       DateTime    @default(now())
   deadline        DateTime
   completedAt     DateTime?
-  
+
   submissions     Submission[]
-  
+
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
-  
+
   @@index([studentId])
   @@index([lessonId])
+  @@index([groupId])
   @@index([status])
   @@index([pageId])
 }

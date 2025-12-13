@@ -11,28 +11,29 @@ const createGroupSchema = z.object({
   lessonType: z.nativeEnum(LessonType).default(LessonType.MEMORIZATION), // For auto-naming
 })
 
-// Generate auto-name: LessonType-Year-Level-Number
+// Generate auto-name: 2-letter prefix + Year + Level + Number
+// Format: ЗА-25-1-1 (Заучивание, 2025, Level 1, group #1)
 async function generateGroupName(lessonType: LessonType, level: GroupLevel): Promise<string> {
-  const typeNames: Record<LessonType, string> = {
-    [LessonType.MEMORIZATION]: 'Заучивание',
-    [LessonType.REVISION]: 'Повторение',
-    [LessonType.TRANSLATION]: 'Перевод',
+  const typePrefixes: Record<LessonType, string> = {
+    [LessonType.MEMORIZATION]: 'ЗА',  // Заучивание
+    [LessonType.REVISION]: 'ПО',       // Повторение
+    [LessonType.TRANSLATION]: 'ПЕ',    // Перевод
   }
   const levelNumber = level.replace('LEVEL_', '')
   const year = new Date().getFullYear().toString().slice(-2)
-  const baseName = `${typeNames[lessonType]}-${year}-${levelNumber}`
+  const basePattern = `${typePrefixes[lessonType]}-${year}-${levelNumber}`
 
-  // Count existing groups with same base pattern
+  // Count existing groups with same base pattern to get next number
   const existingGroups = await prisma.group.count({
     where: {
       name: {
-        startsWith: baseName
+        startsWith: basePattern
       }
     }
   })
 
   const groupNumber = existingGroups + 1
-  return `${baseName}-${groupNumber}`
+  return `${basePattern}-${groupNumber}`
 }
 
 export async function GET(req: NextRequest) {
@@ -132,6 +133,18 @@ export async function POST(req: NextRequest) {
         description,
         ustazId,
         level,
+        lessonType,
+        // Default settings for lessons
+        repetitionCount: 80,
+        stage1Days: 1,
+        stage2Days: 2,
+        stage3Days: 2,
+        allowVoice: true,
+        allowVideoNote: true,
+        allowText: false,
+        showText: false,
+        showImage: false,
+        showAudio: false,
       },
       include: {
         ustaz: {

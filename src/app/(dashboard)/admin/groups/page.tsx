@@ -14,19 +14,27 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, Search, Users, BookOpen, Loader2, MoreHorizontal, Pencil, Trash2, Power, PowerOff } from 'lucide-react'
+import { Plus, Search, Users, Loader2, MoreHorizontal, Pencil, Trash2, Power, PowerOff, Eye, ChevronLeft, ChevronRight, Filter, BookText, RefreshCw, Languages } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 interface Group {
   id: string
   name: string
   description: string | null
   level: 'LEVEL_1' | 'LEVEL_2' | 'LEVEL_3'
+  lessonType: 'MEMORIZATION' | 'REVISION' | 'TRANSLATION'
   isActive: boolean
   createdAt: string
   ustaz: {
@@ -41,10 +49,34 @@ interface Group {
   }
 }
 
+interface Ustaz {
+  id: string
+  firstName: string | null
+  lastName: string | null
+}
+
 const LEVEL_LABELS: Record<string, string> = {
-  LEVEL_1: 'Ур. 1',
-  LEVEL_2: 'Ур. 2',
-  LEVEL_3: 'Ур. 3',
+  LEVEL_1: 'Уровень 1',
+  LEVEL_2: 'Уровень 2',
+  LEVEL_3: 'Уровень 3',
+}
+
+const LEVEL_COLORS: Record<string, string> = {
+  LEVEL_1: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  LEVEL_2: 'bg-blue-100 text-blue-800 border-blue-200',
+  LEVEL_3: 'bg-purple-100 text-purple-800 border-purple-200',
+}
+
+const LESSON_TYPE_LABELS: Record<string, string> = {
+  MEMORIZATION: 'Заучивание',
+  REVISION: 'Повторение',
+  TRANSLATION: 'Перевод',
+}
+
+const LESSON_TYPE_ICONS: Record<string, React.ReactNode> = {
+  MEMORIZATION: <BookText className="h-3 w-3" />,
+  REVISION: <RefreshCw className="h-3 w-3" />,
+  TRANSLATION: <Languages className="h-3 w-3" />,
 }
 
 export default function GroupsPage() {
@@ -53,15 +85,20 @@ export default function GroupsPage() {
   const [search, setSearch] = useState('')
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [ustazList, setUstazList] = useState<Ustaz[]>([])
+  const [filterUstaz, setFilterUstaz] = useState<string>('all')
+  const [filterLevel, setFilterLevel] = useState<string>('all')
+  const [filterType, setFilterType] = useState<string>('all')
 
   useEffect(() => {
     fetchGroups()
+    fetchUstazList()
   }, [page])
 
   async function fetchGroups() {
     setLoading(true)
     try {
-      const res = await fetch(`/api/groups?page=${page}&limit=20`)
+      const res = await fetch(`/api/groups?page=${page}&limit=100`)
       const data = await res.json()
       setGroups(data.items || [])
       setTotal(data.total || 0)
@@ -72,11 +109,26 @@ export default function GroupsPage() {
     }
   }
 
-  const filteredGroups = groups.filter(group =>
-    group.name.toLowerCase().includes(search.toLowerCase()) ||
-    group.ustaz?.firstName?.toLowerCase().includes(search.toLowerCase()) ||
-    group.ustaz?.lastName?.toLowerCase().includes(search.toLowerCase())
-  )
+  async function fetchUstazList() {
+    try {
+      const res = await fetch('/api/users?role=USTAZ&limit=100')
+      const data = await res.json()
+      setUstazList(data.items || [])
+    } catch (err) {
+      console.error('Failed to fetch ustaz list:', err)
+    }
+  }
+
+  const filteredGroups = groups.filter(group => {
+    const matchesSearch =
+      group.name.toLowerCase().includes(search.toLowerCase()) ||
+      group.ustaz?.firstName?.toLowerCase().includes(search.toLowerCase()) ||
+      group.ustaz?.lastName?.toLowerCase().includes(search.toLowerCase())
+    const matchesUstaz = filterUstaz === 'all' || group.ustaz?.id === filterUstaz
+    const matchesLevel = filterLevel === 'all' || group.level === filterLevel
+    const matchesType = filterType === 'all' || group.lessonType === filterType
+    return matchesSearch && matchesUstaz && matchesLevel && matchesType
+  })
 
   const handleDelete = async (id: string) => {
     if (!confirm('Вы уверены, что хотите удалить эту группу?')) return
@@ -106,91 +158,226 @@ export default function GroupsPage() {
     }
   }
 
+  const totalPages = Math.ceil(total / 20)
+
+  // Mobile Card Component
+  const GroupCard = ({ group }: { group: Group }) => (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <Link href={`/admin/groups/${group.id}`} className="font-semibold hover:underline">
+              {group.name}
+            </Link>
+            {group.description && (
+              <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">
+                {group.description}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <Link href={`/admin/groups/${group.id}`}>
+              <Button variant="ghost" size="icon" className="h-8 w-8">
+                <Eye className="h-4 w-4" />
+              </Button>
+            </Link>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <Link href={`/admin/groups/${group.id}`}>
+                  <DropdownMenuItem>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Редактировать
+                  </DropdownMenuItem>
+                </Link>
+                <DropdownMenuItem onClick={() => handleToggleActive(group.id, group.isActive)}>
+                  {group.isActive ? (
+                    <>
+                      <PowerOff className="mr-2 h-4 w-4" />
+                      Деактивировать
+                    </>
+                  ) : (
+                    <>
+                      <Power className="mr-2 h-4 w-4" />
+                      Активировать
+                    </>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem className="text-destructive" onClick={() => handleDelete(group.id)}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Удалить
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Badge variant={group.isActive ? 'default' : 'secondary'}>
+            {group.isActive ? 'Активна' : 'Неактивна'}
+          </Badge>
+          <Badge className={`${LEVEL_COLORS[group.level]} border`}>
+            {LEVEL_LABELS[group.level] || group.level}
+          </Badge>
+          <Badge variant="outline">
+            {LESSON_TYPE_ICONS[group.lessonType]}
+            <span className="ml-1">{LESSON_TYPE_LABELS[group.lessonType]}</span>
+          </Badge>
+          <Badge variant="outline">
+            <Users className="mr-1 h-3 w-3" />
+            {group._count.students}
+          </Badge>
+        </div>
+
+        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+            <Users className="h-3 w-3" />
+          </div>
+          <span className="truncate">
+            {group.ustaz?.firstName} {group.ustaz?.lastName}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  )
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Группы</h1>
-          <p className="text-muted-foreground">Управление учебными группами</p>
+          <h1 className="text-xl md:text-2xl font-bold">Группы</h1>
+          <p className="text-sm text-muted-foreground">Управление учебными группами</p>
         </div>
         <Link href="/admin/groups/new">
-          <Button>
+          <Button className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" />
             Новая группа
           </Button>
         </Link>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-3 grid-cols-3">
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Всего групп</CardDescription>
-            <CardTitle className="text-3xl">{total}</CardTitle>
+          <CardHeader className="p-3 md:p-4 pb-1 md:pb-2">
+            <CardDescription className="text-xs">Всего</CardDescription>
+            <CardTitle className="text-xl md:text-3xl">{total}</CardTitle>
           </CardHeader>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Активных групп</CardDescription>
-            <CardTitle className="text-3xl">
+          <CardHeader className="p-3 md:p-4 pb-1 md:pb-2">
+            <CardDescription className="text-xs">Активных</CardDescription>
+            <CardTitle className="text-xl md:text-3xl">
               {groups.filter(g => g.isActive).length}
             </CardTitle>
           </CardHeader>
         </Card>
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>Всего студентов</CardDescription>
-            <CardTitle className="text-3xl">
+          <CardHeader className="p-3 md:p-4 pb-1 md:pb-2">
+            <CardDescription className="text-xs">Студентов</CardDescription>
+            <CardTitle className="text-xl md:text-3xl">
               {groups.reduce((sum, g) => sum + g._count.students, 0)}
             </CardTitle>
           </CardHeader>
         </Card>
       </div>
 
+      {/* Search and Filters */}
       <Card>
-        <CardHeader>
-          <CardTitle>Список групп</CardTitle>
-          <div className="flex gap-2">
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+        <CardContent className="p-4">
+          <div className="flex flex-col gap-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Поиск по названию или устазу..."
+                placeholder="Поиск..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="pl-8"
+                className="pl-10"
               />
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Select value={filterUstaz} onValueChange={setFilterUstaz}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Устаз" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Все устазы</SelectItem>
+                  {ustazList.map((ustaz) => (
+                    <SelectItem key={ustaz.id} value={ustaz.id}>
+                      {ustaz.firstName} {ustaz.lastName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filterLevel} onValueChange={setFilterLevel}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Уровень" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Все уровни</SelectItem>
+                  <SelectItem value="LEVEL_1">Уровень 1</SelectItem>
+                  <SelectItem value="LEVEL_2">Уровень 2</SelectItem>
+                  <SelectItem value="LEVEL_3">Уровень 3</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={filterType} onValueChange={setFilterType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Тип урока" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Все типы</SelectItem>
+                  <SelectItem value="MEMORIZATION">Заучивание</SelectItem>
+                  <SelectItem value="REVISION">Повторение</SelectItem>
+                  <SelectItem value="TRANSLATION">Перевод</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex justify-center py-8">
-              <Loader2 className="h-8 w-8 animate-spin" />
-            </div>
-          ) : filteredGroups.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              Группы не найдены
-            </div>
-          ) : (
+        </CardContent>
+      </Card>
+
+      {/* Loading */}
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      ) : filteredGroups.length === 0 ? (
+        <Card>
+          <CardContent className="py-8 text-center text-muted-foreground">
+            Группы не найдены
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Mobile: Cards */}
+          <div className="md:hidden space-y-3">
+            {filteredGroups.map((group) => (
+              <GroupCard key={group.id} group={group} />
+            ))}
+          </div>
+
+          {/* Desktop: Table */}
+          <Card className="hidden md:block">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Название</TableHead>
                   <TableHead>Устаз</TableHead>
                   <TableHead className="text-center">Уровень</TableHead>
+                  <TableHead className="text-center">Тип урока</TableHead>
                   <TableHead className="text-center">Студенты</TableHead>
-                  <TableHead className="text-center">Уроки</TableHead>
                   <TableHead>Статус</TableHead>
-                  <TableHead className="w-[50px]"></TableHead>
+                  <TableHead className="w-[80px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredGroups.map((group) => (
                   <TableRow key={group.id}>
                     <TableCell>
-                      <Link
-                        href={`/admin/groups/${group.id}`}
-                        className="font-medium hover:underline"
-                      >
+                      <Link href={`/admin/groups/${group.id}`} className="font-medium hover:underline">
                         {group.name}
                       </Link>
                       {group.description && (
@@ -215,8 +402,14 @@ export default function GroupsPage() {
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
-                      <Badge variant="secondary">
+                      <Badge className={`${LEVEL_COLORS[group.level]} border`}>
                         {LEVEL_LABELS[group.level] || group.level}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant="outline">
+                        {LESSON_TYPE_ICONS[group.lessonType]}
+                        <span className="ml-1">{LESSON_TYPE_LABELS[group.lessonType]}</span>
                       </Badge>
                     </TableCell>
                     <TableCell className="text-center">
@@ -225,85 +418,84 @@ export default function GroupsPage() {
                         {group._count.students}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="outline">
-                        <BookOpen className="mr-1 h-3 w-3" />
-                        {group._count.lessons}
-                      </Badge>
-                    </TableCell>
                     <TableCell>
                       <Badge variant={group.isActive ? 'default' : 'secondary'}>
                         {group.isActive ? 'Активна' : 'Неактивна'}
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreHorizontal className="h-4 w-4" />
+                      <div className="flex items-center justify-end gap-1">
+                        <Link href={`/admin/groups/${group.id}`}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <Eye className="h-4 w-4" />
                           </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <Link href={`/admin/groups/${group.id}`}>
-                            <DropdownMenuItem>
-                              <Pencil className="mr-2 h-4 w-4" />
-                              Редактировать
+                        </Link>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-8 w-8">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <Link href={`/admin/groups/${group.id}`}>
+                              <DropdownMenuItem>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Редактировать
+                              </DropdownMenuItem>
+                            </Link>
+                            <DropdownMenuItem onClick={() => handleToggleActive(group.id, group.isActive)}>
+                              {group.isActive ? (
+                                <>
+                                  <PowerOff className="mr-2 h-4 w-4" />
+                                  Деактивировать
+                                </>
+                              ) : (
+                                <>
+                                  <Power className="mr-2 h-4 w-4" />
+                                  Активировать
+                                </>
+                              )}
                             </DropdownMenuItem>
-                          </Link>
-                          <DropdownMenuItem
-                            onClick={() => handleToggleActive(group.id, group.isActive)}
-                          >
-                            {group.isActive ? (
-                              <>
-                                <PowerOff className="mr-2 h-4 w-4" />
-                                Деактивировать
-                              </>
-                            ) : (
-                              <>
-                                <Power className="mr-2 h-4 w-4" />
-                                Активировать
-                              </>
-                            )}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => handleDelete(group.id)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Удалить
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                            <DropdownMenuItem className="text-destructive" onClick={() => handleDelete(group.id)}>
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Удалить
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          )}
+          </Card>
+        </>
+      )}
 
-          {total > 20 && (
-            <div className="flex justify-center gap-2 mt-4">
-              <Button
-                variant="outline"
-                onClick={() => setPage(p => Math.max(1, p - 1))}
-                disabled={page === 1}
-              >
-                Назад
-              </Button>
-              <span className="flex items-center px-4">
-                Страница {page} из {Math.ceil(total / 20)}
-              </span>
-              <Button
-                variant="outline"
-                onClick={() => setPage(p => p + 1)}
-                disabled={page * 20 >= total}
-              >
-                Далее
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <span className="flex items-center px-3 text-sm text-muted-foreground">
+            {page} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => setPage(p => p + 1)}
+            disabled={page >= totalPages}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

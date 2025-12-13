@@ -1,5 +1,6 @@
-import { Sidebar, ustazNavItems } from '@/components/layouts/sidebar'
+import { AppSidebar } from '@/components/app-sidebar'
 import { Header } from '@/components/layouts/header'
+import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar'
 import { getCurrentUser } from '@/lib/auth'
 import { UserRole } from '@prisma/client'
 import { redirect } from 'next/navigation'
@@ -20,18 +21,21 @@ export default async function UstazLayout({
   }
 
   return (
-    <div className="flex h-screen">
-      <Sidebar
-        items={ustazNavItems}
-        title="QuranTester"
-        subtitle="Устаз"
+    <SidebarProvider>
+      <AppSidebar
+        role={UserRole.USTAZ}
+        user={{
+          firstName: user.firstName,
+          lastName: user.lastName,
+          phone: user.phone
+        }}
       />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header user={user} title="Панель устаза" />
-        <main className="flex-1 overflow-auto p-6">
+      <SidebarInset>
+        <Header title="Панель устаза" />
+        <main className="flex-1 overflow-auto p-4 md:p-6">
           {children}
         </main>
-      </div>
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }

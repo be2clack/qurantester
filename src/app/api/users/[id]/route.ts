@@ -7,6 +7,7 @@ import { z } from 'zod'
 const updateUserSchema = z.object({
   firstName: z.string().optional(),
   lastName: z.string().optional(),
+  birthDate: z.string().optional().transform((val) => val ? new Date(val) : undefined),
   role: z.nativeEnum(UserRole).optional(),
   groupId: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
@@ -59,7 +60,7 @@ export async function GET(
           select: { id: true, firstName: true, lastName: true, phone: true, currentPage: true, currentLine: true, currentStage: true }
         },
         ustazGroups: {
-          select: { id: true, name: true, _count: { select: { students: true } } }
+          select: { id: true, name: true, isActive: true, _count: { select: { students: true } } }
         },
         statistics: true,
         _count: {

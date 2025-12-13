@@ -14,7 +14,6 @@ import {
 import {
   BarChart3,
   TrendingUp,
-  TrendingDown,
   Users,
   BookOpen,
   CheckCircle,
@@ -48,14 +47,11 @@ interface Stats {
   }
   topStudents: {
     id: string
+    rank: number
     name: string
     page: number
+    line: number
     tasksCompleted: number
-  }[]
-  recentActivity: {
-    type: string
-    description: string
-    time: string
   }[]
 }
 
@@ -70,50 +66,13 @@ export default function AnalyticsPage() {
   async function fetchStats() {
     setLoading(true)
     try {
-      // Fetch multiple endpoints in parallel
-      const [usersRes, tasksRes, submissionsRes, groupsRes, rankingsRes] = await Promise.all([
-        fetch('/api/users?limit=1'),
-        fetch('/api/tasks?limit=1'),
-        fetch('/api/submissions?limit=1'),
-        fetch('/api/groups?limit=1'),
-        fetch('/api/stats/rankings?limit=10'),
-      ])
-
-      const users = await usersRes.json()
-      const rankings = rankingsRes.ok ? await rankingsRes.json() : []
-
-      // Build stats from available data
-      setStats({
-        users: {
-          total: users.total || 0,
-          students: 0,
-          ustaz: 0,
-          active: 0,
-        },
-        tasks: {
-          total: 0,
-          inProgress: 0,
-          completed: 0,
-          failed: 0,
-        },
-        submissions: {
-          total: 0,
-          pending: 0,
-          passed: 0,
-          failed: 0,
-        },
-        groups: {
-          total: 0,
-          active: 0,
-        },
-        topStudents: rankings.slice(0, 5).map((r: any) => ({
-          id: r.id,
-          name: r.firstName || 'Студент',
-          page: r.currentPage,
-          tasksCompleted: r.statistics?.totalTasksCompleted || 0,
-        })),
-        recentActivity: [],
-      })
+      const res = await fetch('/api/stats/overview')
+      if (res.ok) {
+        const data = await res.json()
+        setStats(data)
+      } else {
+        console.error('Failed to fetch stats:', await res.text())
+      }
     } catch (err) {
       console.error('Failed to fetch stats:', err)
     } finally {
@@ -213,20 +172,22 @@ export default function AnalyticsPage() {
                   <TableRow>
                     <TableHead className="w-12">#</TableHead>
                     <TableHead>Имя</TableHead>
-                    <TableHead className="text-right">Страница</TableHead>
+                    <TableHead className="text-right">Прогресс</TableHead>
                     <TableHead className="text-right">Заданий</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {stats.topStudents.map((student, index) => (
+                  {stats.topStudents.map((student) => (
                     <TableRow key={student.id}>
                       <TableCell>
-                        <Badge variant={index === 0 ? 'default' : 'outline'}>
-                          {index + 1}
+                        <Badge variant={student.rank === 1 ? 'default' : 'outline'}>
+                          {student.rank}
                         </Badge>
                       </TableCell>
                       <TableCell className="font-medium">{student.name}</TableCell>
-                      <TableCell className="text-right">{student.page}</TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant="outline">{student.page}-{student.line}</Badge>
+                      </TableCell>
                       <TableCell className="text-right">{student.tasksCompleted}</TableCell>
                     </TableRow>
                   ))}

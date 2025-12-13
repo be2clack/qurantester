@@ -17,15 +17,15 @@ interface Ustaz {
 }
 
 const LESSON_TYPES = [
-  { value: 'MEMORIZATION', label: 'Заучивание' },
-  { value: 'REVISION', label: 'Повторение' },
-  { value: 'TRANSLATION', label: 'Перевод' },
+  { value: 'MEMORIZATION', label: 'Заучивание', prefix: 'ЗА' },
+  { value: 'REVISION', label: 'Повторение', prefix: 'ПО' },
+  { value: 'TRANSLATION', label: 'Перевод', prefix: 'ПЕ' },
 ]
 
 const GROUP_LEVELS = [
-  { value: 'LEVEL_1', label: 'Уровень 1 (1 строка за 12ч)' },
-  { value: 'LEVEL_2', label: 'Уровень 2 (3 строки за 12ч)' },
-  { value: 'LEVEL_3', label: 'Уровень 3 (7 строк за 12ч)' },
+  { value: 'LEVEL_1', label: 'Уровень 1', description: '1 строка за 12ч' },
+  { value: 'LEVEL_2', label: 'Уровень 2', description: '3 строки за 12ч' },
+  { value: 'LEVEL_3', label: 'Уровень 3', description: '7 строк за 12ч' },
 ]
 
 export default function NewGroupPage() {
@@ -42,17 +42,15 @@ export default function NewGroupPage() {
     lessonType: 'MEMORIZATION',
   })
 
-  // Генерация превью имени
+  // Генерация превью имени: ЗА-25-1-X
   const getAutoName = () => {
-    const typeNames: Record<string, string> = {
-      MEMORIZATION: 'Заучивание',
-      REVISION: 'Повторение',
-      TRANSLATION: 'Перевод',
-    }
+    const typePrefix = LESSON_TYPES.find(t => t.value === formData.lessonType)?.prefix || 'ЗА'
     const levelNumber = formData.level.replace('LEVEL_', '')
     const year = new Date().getFullYear().toString().slice(-2)
-    return `${typeNames[formData.lessonType]}-${year}-${levelNumber}`
+    return `${typePrefix}-${year}-${levelNumber}`
   }
+
+  const getTypeName = (value: string) => LESSON_TYPES.find(t => t.value === value)?.label || value
 
   useEffect(() => {
     async function fetchUstazs() {
@@ -196,12 +194,14 @@ export default function NewGroupPage() {
               )}
             </div>
 
-            <div className="p-3 bg-muted rounded-lg">
-              <p className="text-sm text-muted-foreground">Название группы (авто)</p>
-              <p className="text-lg font-semibold">{getAutoName()}-X</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                X = порядковый номер группы
-              </p>
+            <div className="p-4 bg-muted rounded-lg space-y-2">
+              <p className="text-sm text-muted-foreground">Название группы (генерируется автоматически)</p>
+              <p className="text-2xl font-bold">{getAutoName()}-<span className="text-muted-foreground">X</span></p>
+              <div className="text-xs text-muted-foreground space-y-1">
+                <p>• {getTypeName(formData.lessonType)} → <span className="font-mono">{LESSON_TYPES.find(t => t.value === formData.lessonType)?.prefix}</span></p>
+                <p>• {GROUP_LEVELS.find(l => l.value === formData.level)?.label} → <span className="font-mono">{formData.level.replace('LEVEL_', '')}</span></p>
+                <p>• X = порядковый номер группы</p>
+              </div>
             </div>
 
             <div className="space-y-2">

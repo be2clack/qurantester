@@ -23,6 +23,7 @@ export default async function StudentDashboard() {
     include: {
       page: true,
       lesson: true,
+      group: true,
       _count: { select: { submissions: true } }
     }
   })
@@ -191,7 +192,7 @@ export default async function StudentDashboard() {
                         : `Строки ${currentTask.startLine}-${currentTask.endLine}`}
                     </p>
                   </div>
-                  <Badge>{currentTask.lesson.name}</Badge>
+                  <Badge>{currentTask.lesson?.name || currentTask.group?.name || 'Задание'}</Badge>
                 </div>
 
                 <div className="space-y-2">

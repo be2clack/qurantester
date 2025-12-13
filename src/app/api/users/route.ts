@@ -29,9 +29,11 @@ export async function GET(req: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '20')
     const role = searchParams.get('role') as UserRole | null
     const search = searchParams.get('search')
+    const noGroup = searchParams.get('noGroup') === 'true'
 
     const where: any = {}
     if (role) where.role = role
+    if (noGroup) where.groupId = null
     if (search) {
       where.OR = [
         { firstName: { contains: search, mode: 'insensitive' } },
@@ -50,17 +52,37 @@ export async function GET(req: NextRequest) {
           studentGroup: { select: { id: true, name: true } },
           childOf: { select: { id: true, firstName: true, lastName: true, phone: true } },
           parentOf: { select: { id: true, firstName: true, lastName: true, phone: true } },
+          tasks: {
+            where: { status: 'IN_PROGRESS' },
+            select: {
+              passedCount: true,
+              requiredCount: true,
+            },
+            take: 1,
+            orderBy: { createdAt: 'desc' }
+          },
           _count: { select: { tasks: true, submissions: true } }
         }
       }),
       prisma.user.count({ where })
     ])
 
-    // Convert BigInt to string for JSON serialization
-    const serializedUsers = users.map(user => ({
-      ...user,
-      telegramId: user.telegramId?.toString() || null,
-    }))
+    // Convert BigInt to string and calculate task completion
+    const serializedUsers = users.map(user => {
+      const activeTask = user.tasks[0]
+      const completionPercent = activeTask
+        ? Math.round((activeTask.passedCount / activeTask.requiredCount) * 100)
+        : 0
+
+      return {
+        ...user,
+        telegramId: user.telegramId?.toString() || null,
+        taskCompletion: completionPercent,
+        taskPassedCount: activeTask?.passedCount || 0,
+        taskRequiredCount: activeTask?.requiredCount || 0,
+        tasks: undefined, // Remove raw tasks data
+      }
+    })
 
     return NextResponse.json({
       items: serializedUsers,

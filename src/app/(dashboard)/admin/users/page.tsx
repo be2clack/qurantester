@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Progress } from '@/components/ui/progress'
 import {
   Select,
   SelectContent,
@@ -28,7 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Plus, Search, Phone, Loader2, Check, X, Pencil, Eye, Users } from 'lucide-react'
+import { Search, Phone, Loader2, Check, X, Pencil, Eye, Users, Calendar, ChevronLeft, ChevronRight, BookOpen, CheckCircle2 } from 'lucide-react'
 import { RoleBadge } from '@/components/users/role-badge'
 import Link from 'next/link'
 import { UserRole, StageNumber } from '@prisma/client'
@@ -45,6 +46,7 @@ interface User {
   phone: string
   firstName: string | null
   lastName: string | null
+  birthDate: string | null
   role: UserRole
   isActive: boolean
   currentPage: number
@@ -54,6 +56,9 @@ interface User {
   telegramUsername: string | null
   studentGroup: { id: string; name: string } | null
   childOf: Parent[]
+  taskCompletion: number
+  taskPassedCount: number
+  taskRequiredCount: number
   _count: { tasks: number }
 }
 
@@ -71,7 +76,7 @@ export default function UsersPage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [editingUser, setEditingUser] = useState<string | null>(null)
-  const [editData, setEditData] = useState<Partial<User & { parentIds: string[] }>>({})
+  const [editData, setEditData] = useState<Partial<User & { parentIds: string[], birthDate: string }>>({})
   const [saving, setSaving] = useState(false)
 
   // Parent selection
@@ -143,6 +148,9 @@ export default function UsersPage() {
   const startEdit = (user: User) => {
     setEditingUser(user.id)
     setEditData({
+      firstName: user.firstName || '',
+      lastName: user.lastName || '',
+      birthDate: user.birthDate ? user.birthDate.split('T')[0] : '',
       groupId: user.groupId,
       currentPage: user.currentPage,
       currentLine: user.currentLine,
@@ -216,159 +224,274 @@ export default function UsersPage() {
     return name || parent.phone
   }
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Пользователи</h2>
-          <p className="text-muted-foreground">
-            Всего: {total} пользователей
-          </p>
+  function getUserName(user: User): string {
+    return user.firstName || user.lastName
+      ? `${user.firstName || ''} ${user.lastName || ''}`.trim()
+      : 'Без имени'
+  }
+
+  // Mobile Card Component
+  const UserCard = ({ user }: { user: User }) => (
+    <Card className="overflow-hidden">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <Avatar className="h-10 w-10 shrink-0">
+              <AvatarFallback className="bg-primary/10 text-primary">
+                {getInitials(user.firstName, user.lastName)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium truncate">{getUserName(user)}</div>
+              <div className="text-sm text-muted-foreground flex items-center gap-1">
+                <Phone className="h-3 w-3" />
+                {user.phone}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
+              <Link href={`/admin/users/${user.id}`}>
+                <Eye className="h-4 w-4" />
+              </Link>
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => startEdit(user)}>
+              <Pencil className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
-        <Button asChild>
-          <Link href="/admin/users/new">
-            <Plus className="mr-2 h-4 w-4" />
-            Добавить
-          </Link>
-        </Button>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <RoleBadge role={user.role} />
+          <Badge variant={user.isActive ? 'default' : 'secondary'}>
+            {user.isActive ? 'Активен' : 'Неактивен'}
+          </Badge>
+          {user.studentGroup && (
+            <Badge variant="outline">{user.studentGroup.name}</Badge>
+          )}
+        </div>
+
+        {user.role === 'STUDENT' && (
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-4 text-sm">
+              <div className="flex items-center gap-1.5">
+                <BookOpen className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">{user.currentPage}-{user.currentLine}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">{user.taskPassedCount}/{user.taskRequiredCount}</span>
+              </div>
+            </div>
+            <Progress value={user.taskCompletion} className="h-2" />
+          </div>
+        )}
+
+        {user.role === 'STUDENT' && user.childOf && user.childOf.length > 0 && (
+          <div className="mt-3">
+            <p className="text-xs text-muted-foreground mb-1">Родители:</p>
+            <div className="flex flex-wrap gap-1">
+              {user.childOf.map(p => (
+                <Badge key={p.id} variant="outline" className="text-xs">
+                  {formatParentName(p)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+
+  return (
+    <div className="space-y-4 md:space-y-6">
+      <div>
+        <h2 className="text-xl md:text-2xl font-bold tracking-tight">Пользователи</h2>
+        <p className="text-sm text-muted-foreground">
+          Всего: {total} пользователей
+        </p>
       </div>
 
       {/* Filters */}
       <Card>
-        <CardContent className="pt-6">
-          <form onSubmit={handleSearch} className="flex gap-4">
+        <CardContent className="p-4 md:pt-6">
+          <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3">
             <div className="flex-1">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  placeholder="Поиск по имени или телефону..."
+                  placeholder="Поиск..."
                   className="pl-10"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
             </div>
-            <Select value={roleFilter || 'all'} onValueChange={(v) => { setRoleFilter(v === 'all' ? '' : v); setPage(1); }}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Все роли" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все роли</SelectItem>
-                <SelectItem value="ADMIN">Администраторы</SelectItem>
-                <SelectItem value="USTAZ">Устазы</SelectItem>
-                <SelectItem value="STUDENT">Студенты</SelectItem>
-                <SelectItem value="PARENT">Родители</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button type="submit">Найти</Button>
+            <div className="flex gap-2">
+              <Select value={roleFilter || 'all'} onValueChange={(v) => { setRoleFilter(v === 'all' ? '' : v); setPage(1); }}>
+                <SelectTrigger className="w-full sm:w-[150px]">
+                  <SelectValue placeholder="Все роли" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Все роли</SelectItem>
+                  <SelectItem value="ADMIN">Админы</SelectItem>
+                  <SelectItem value="USTAZ">Устазы</SelectItem>
+                  <SelectItem value="STUDENT">Студенты</SelectItem>
+                  <SelectItem value="PARENT">Родители</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button type="submit" className="shrink-0">Найти</Button>
+            </div>
           </form>
         </CardContent>
       </Card>
 
-      {/* Users Table */}
-      <Card>
-        {loading ? (
-          <div className="flex justify-center py-16">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      {/* Loading */}
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <>
+          {/* Mobile: Cards */}
+          <div className="md:hidden space-y-3">
+            {users.length === 0 ? (
+              <Card>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  Пользователи не найдены
+                </CardContent>
+              </Card>
+            ) : (
+              users.map((user) => <UserCard key={user.id} user={user} />)
+            )}
           </div>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Пользователь</TableHead>
-                <TableHead>Телефон</TableHead>
-                <TableHead>Роль</TableHead>
-                <TableHead>Группа</TableHead>
-                <TableHead>Родители</TableHead>
-                <TableHead>Прогресс</TableHead>
-                <TableHead>Статус</TableHead>
-                <TableHead className="text-right">Действия</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
-                    Пользователи не найдены
-                  </TableCell>
-                </TableRow>
-              ) : (
-                users.map((user) => {
-                  const isEditing = editingUser === user.id
 
-                  return (
-                    <TableRow key={user.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <Avatar className="h-8 w-8">
-                            <AvatarFallback>
-                              {getInitials(user.firstName, user.lastName)}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div>
-                            <div className="font-medium">
-                              {user.firstName || user.lastName
-                                ? `${user.firstName || ''} ${user.lastName || ''}`.trim()
-                                : 'Без имени'}
-                            </div>
-                            {user.telegramUsername && (
-                              <div className="text-sm text-muted-foreground">
-                                @{user.telegramUsername}
+          {/* Desktop: Table */}
+          <Card className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Пользователь</TableHead>
+                  <TableHead>Телефон</TableHead>
+                  <TableHead>Роль</TableHead>
+                  <TableHead>Группа</TableHead>
+                  <TableHead>Родители</TableHead>
+                  <TableHead>Прогресс</TableHead>
+                  <TableHead>Статус</TableHead>
+                  <TableHead className="text-right">Действия</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {users.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                      Пользователи не найдены
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  users.map((user) => {
+                    const isEditing = editingUser === user.id
+
+                    return (
+                      <TableRow key={user.id}>
+                        <TableCell>
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <div className="flex gap-2">
+                                <Input
+                                  placeholder="Имя"
+                                  className="h-8 w-24"
+                                  value={editData.firstName || ''}
+                                  onChange={(e) => setEditData({ ...editData, firstName: e.target.value })}
+                                />
+                                <Input
+                                  placeholder="Фамилия"
+                                  className="h-8 w-24"
+                                  value={editData.lastName || ''}
+                                  onChange={(e) => setEditData({ ...editData, lastName: e.target.value })}
+                                />
                               </div>
-                            )}
+                              <div className="flex items-center gap-1">
+                                <Calendar className="h-3 w-3 text-muted-foreground" />
+                                <Input
+                                  type="date"
+                                  className="h-7 w-32 text-xs"
+                                  value={editData.birthDate || ''}
+                                  onChange={(e) => setEditData({ ...editData, birthDate: e.target.value })}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-3">
+                              <Avatar className="h-8 w-8">
+                                <AvatarFallback className="bg-primary/10 text-primary">
+                                  {getInitials(user.firstName, user.lastName)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div>
+                                <div className="font-medium">{getUserName(user)}</div>
+                                {user.telegramUsername && (
+                                  <div className="text-sm text-muted-foreground">
+                                    @{user.telegramUsername}
+                                  </div>
+                                )}
+                                {user.birthDate && (
+                                  <div className="text-xs text-muted-foreground">
+                                    {new Date(user.birthDate).toLocaleDateString('ru-RU')}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            <Phone className="h-3 w-3 text-muted-foreground" />
+                            {user.phone}
                           </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Phone className="h-3 w-3 text-muted-foreground" />
-                          {user.phone}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {isEditing ? (
-                          <Select
-                            value={editData.role}
-                            onValueChange={(v) => setEditData({ ...editData, role: v as UserRole })}
-                          >
-                            <SelectTrigger className="w-[130px] h-8">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="ADMIN">Админ</SelectItem>
-                              <SelectItem value="USTAZ">Устаз</SelectItem>
-                              <SelectItem value="STUDENT">Студент</SelectItem>
-                              <SelectItem value="PARENT">Родитель</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <RoleBadge role={user.role} />
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {isEditing && editData.role === 'STUDENT' ? (
-                          <Select
-                            value={editData.groupId || 'none'}
-                            onValueChange={(v) => setEditData({ ...editData, groupId: v === 'none' ? null : v })}
-                          >
-                            <SelectTrigger className="w-[150px] h-8">
-                              <SelectValue placeholder="Без группы" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="none">Без группы</SelectItem>
-                              {groups.map((g) => (
-                                <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          user.studentGroup?.name || '-'
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {user.role === 'STUDENT' ? (
-                          isEditing ? (
+                        </TableCell>
+                        <TableCell>
+                          {isEditing ? (
+                            <Select
+                              value={editData.role}
+                              onValueChange={(v) => setEditData({ ...editData, role: v as UserRole })}
+                            >
+                              <SelectTrigger className="w-[130px] h-8">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="ADMIN">Админ</SelectItem>
+                                <SelectItem value="USTAZ">Устаз</SelectItem>
+                                <SelectItem value="STUDENT">Студент</SelectItem>
+                                <SelectItem value="PARENT">Родитель</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <RoleBadge role={user.role} />
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {isEditing && editData.role === 'STUDENT' ? (
+                            <Select
+                              value={editData.groupId || 'none'}
+                              onValueChange={(v) => setEditData({ ...editData, groupId: v === 'none' ? null : v })}
+                            >
+                              <SelectTrigger className="w-[150px] h-8">
+                                <SelectValue placeholder="Без группы" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">Без группы</SelectItem>
+                                {groups.map((g) => (
+                                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            user.studentGroup?.name || '-'
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {isEditing && editData.role === 'STUDENT' ? (
                             <div className="space-y-1">
                               <div className="flex flex-wrap gap-1">
                                 {selectedParents.map(p => (
@@ -395,22 +518,18 @@ export default function UsersPage() {
                                 Добавить
                               </Button>
                             </div>
-                          ) : (
-                            user.childOf && user.childOf.length > 0 ? (
-                              <div className="flex flex-wrap gap-1">
-                                {user.childOf.map(p => (
-                                  <Badge key={p.id} variant="outline" className="text-xs">
-                                    {formatParentName(p)}
-                                  </Badge>
-                                ))}
-                              </div>
-                            ) : '-'
-                          )
-                        ) : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {user.role === 'STUDENT' ? (
-                          isEditing ? (
+                          ) : user.role === 'STUDENT' && user.childOf && user.childOf.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {user.childOf.map(p => (
+                                <Badge key={p.id} variant="outline" className="text-xs">
+                                  {formatParentName(p)}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : '-'}
+                        </TableCell>
+                        <TableCell>
+                          {isEditing && editData.role === 'STUDENT' ? (
                             <div className="flex items-center gap-1">
                               <Input
                                 type="number"
@@ -430,107 +549,119 @@ export default function UsersPage() {
                                 onChange={(e) => setEditData({ ...editData, currentLine: parseInt(e.target.value) || 1 })}
                               />
                             </div>
-                          ) : (
-                            <Badge variant="outline">
-                              {user.currentPage}-{user.currentLine}
-                            </Badge>
-                          )
-                        ) : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {isEditing ? (
-                          <Select
-                            value={editData.isActive ? 'active' : 'inactive'}
-                            onValueChange={(v) => setEditData({ ...editData, isActive: v === 'active' })}
-                          >
-                            <SelectTrigger className="w-[110px] h-8">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="active">Активен</SelectItem>
-                              <SelectItem value="inactive">Неактивен</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <Badge variant={user.isActive ? 'default' : 'secondary'}>
-                            {user.isActive ? 'Активен' : 'Неактивен'}
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
+                          ) : user.role === 'STUDENT' ? (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center gap-3 text-sm">
+                                <div className="flex items-center gap-1">
+                                  <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                                  <span className="font-medium">{user.currentPage}-{user.currentLine}</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
+                                  <span className="font-medium">{user.taskPassedCount}/{user.taskRequiredCount}</span>
+                                </div>
+                              </div>
+                              <Progress value={user.taskCompletion} className="h-1.5 w-24" />
+                            </div>
+                          ) : '-'}
+                        </TableCell>
+                        <TableCell>
                           {isEditing ? (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                onClick={() => saveEdit(user.id)}
-                                disabled={saving}
-                              >
-                                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4 text-green-600" />}
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                onClick={cancelEdit}
-                              >
-                                <X className="h-4 w-4 text-red-600" />
-                              </Button>
-                            </>
+                            <Select
+                              value={editData.isActive ? 'active' : 'inactive'}
+                              onValueChange={(v) => setEditData({ ...editData, isActive: v === 'active' })}
+                            >
+                              <SelectTrigger className="w-[110px] h-8">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="active">Активен</SelectItem>
+                                <SelectItem value="inactive">Неактивен</SelectItem>
+                              </SelectContent>
+                            </Select>
                           ) : (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                asChild
-                              >
-                                <Link href={`/admin/users/${user.id}`}>
-                                  <Eye className="h-4 w-4" />
-                                </Link>
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
-                                onClick={() => startEdit(user)}
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                            </>
+                            <Badge variant={user.isActive ? 'default' : 'secondary'}>
+                              {user.isActive ? 'Активен' : 'Неактивен'}
+                            </Badge>
                           )}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })
-              )}
-            </TableBody>
-          </Table>
-        )}
-      </Card>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            {isEditing ? (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  onClick={() => saveEdit(user.id)}
+                                  disabled={saving}
+                                >
+                                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4 text-green-600" />}
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  onClick={cancelEdit}
+                                >
+                                  <X className="h-4 w-4 text-red-600" />
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  asChild
+                                >
+                                  <Link href={`/admin/users/${user.id}`}>
+                                    <Eye className="h-4 w-4" />
+                                  </Link>
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8"
+                                  onClick={() => startEdit(user)}
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        </>
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex justify-center gap-2">
+        <div className="flex items-center justify-center gap-2">
           <Button
             variant="outline"
+            size="icon"
             onClick={() => setPage(p => Math.max(1, p - 1))}
             disabled={page === 1}
           >
-            Назад
+            <ChevronLeft className="h-4 w-4" />
           </Button>
-          <span className="flex items-center px-4 text-sm text-muted-foreground">
-            Страница {page} из {totalPages}
+          <span className="flex items-center px-3 text-sm text-muted-foreground">
+            {page} / {totalPages}
           </span>
           <Button
             variant="outline"
+            size="icon"
             onClick={() => setPage(p => p + 1)}
             disabled={page >= totalPages}
           >
-            Вперед
+            <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
       )}

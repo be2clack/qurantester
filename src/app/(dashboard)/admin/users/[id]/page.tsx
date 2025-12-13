@@ -40,6 +40,7 @@ interface Child {
 interface Group {
   id: string
   name: string
+  isActive: boolean
   _count: { students: number }
 }
 
@@ -363,7 +364,9 @@ function StudentView({ user, progressPercent, formatStageName }: {
 }
 
 function UstazView({ user }: { user: UserDetail }) {
-  const totalStudents = user.ustazGroups?.reduce((acc, g) => acc + g._count.students, 0) || 0
+  const activeGroups = user.ustazGroups?.filter(g => g.isActive) || []
+  const inactiveCount = (user.ustazGroups?.length || 0) - activeGroups.length
+  const totalStudents = activeGroups.reduce((acc, g) => acc + g._count.students, 0)
 
   return (
     <>
@@ -371,8 +374,11 @@ function UstazView({ user }: { user: UserDetail }) {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Всего групп</CardDescription>
-            <CardTitle className="text-3xl">{user.ustazGroups?.length || 0}</CardTitle>
+            <CardDescription>Активных групп</CardDescription>
+            <CardTitle className="text-3xl">{activeGroups.length}</CardTitle>
+            {inactiveCount > 0 && (
+              <p className="text-xs text-muted-foreground">+ {inactiveCount} неактивных</p>
+            )}
           </CardHeader>
         </Card>
         <Card>
@@ -390,12 +396,12 @@ function UstazView({ user }: { user: UserDetail }) {
       </div>
 
       {/* Groups */}
-      {user.ustazGroups && user.ustazGroups.length > 0 && (
+      {activeGroups.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
-              Группы устаза
+              Активные группы устаза
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -408,7 +414,7 @@ function UstazView({ user }: { user: UserDetail }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {user.ustazGroups.map(group => (
+                {activeGroups.map(group => (
                   <TableRow key={group.id}>
                     <TableCell className="font-medium">{group.name}</TableCell>
                     <TableCell>

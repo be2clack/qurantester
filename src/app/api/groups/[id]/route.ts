@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
-import { UserRole, GroupLevel } from '@prisma/client'
+import { UserRole, GroupLevel, LessonType } from '@prisma/client'
 import { z } from 'zod'
 
 const updateGroupSchema = z.object({
@@ -9,7 +9,19 @@ const updateGroupSchema = z.object({
   description: z.string().nullable().optional(),
   ustazId: z.string().optional(),
   level: z.nativeEnum(GroupLevel).optional(),
+  lessonType: z.nativeEnum(LessonType).optional(),
   isActive: z.boolean().optional(),
+  // Lesson settings
+  repetitionCount: z.number().min(1).max(200).optional(),
+  stage1Days: z.number().min(1).max(30).optional(),
+  stage2Days: z.number().min(1).max(30).optional(),
+  stage3Days: z.number().min(1).max(30).optional(),
+  allowVoice: z.boolean().optional(),
+  allowVideoNote: z.boolean().optional(),
+  allowText: z.boolean().optional(),
+  showText: z.boolean().optional(),
+  showImage: z.boolean().optional(),
+  showAudio: z.boolean().optional(),
 })
 
 export async function GET(
@@ -42,9 +54,18 @@ export async function GET(
             firstName: true,
             lastName: true,
             phone: true,
+            telegramId: true,
             currentPage: true,
             currentLine: true,
             currentStage: true,
+            tasks: {
+              where: { status: 'IN_PROGRESS' },
+              take: 1,
+              select: {
+                passedCount: true,
+                requiredCount: true,
+              }
+            }
           },
           orderBy: [
             { currentPage: 'desc' },
@@ -54,7 +75,16 @@ export async function GET(
         lessons: {
           where: { isActive: true },
           orderBy: { createdAt: 'desc' },
-          take: 1
+          take: 1,
+          select: {
+            id: true,
+            type: true,
+            repetitionCount: true,
+            stage1Days: true,
+            stage2Days: true,
+            stage3Days: true,
+            isActive: true,
+          }
         },
         _count: {
           select: { students: true, lessons: true }

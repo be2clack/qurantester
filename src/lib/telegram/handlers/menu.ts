@@ -322,6 +322,7 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     include: {
       page: true,
       lesson: true,
+      group: true,
     }
   })
 
@@ -355,20 +356,35 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
   const timeLeft = deadline.getTime() - now.getTime()
   const hoursLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60)))
   const minutesLeft = Math.max(0, Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60)))
+  const deadlineTimeStr = deadline.toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Bishkek'
+  })
+  const deadlineDateStr = deadline.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'Asia/Bishkek'
+  })
   const deadlineStr = timeLeft > 0
-    ? `⏰ Осталось: <b>${hoursLeft}ч ${minutesLeft}м</b>`
+    ? `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
     : `⚠️ <b>Срок истёк!</b>`
 
-  // Build format hint
+  // Build format hint - use group settings (primary) or lesson settings (fallback)
+  const settings = task.group || task.lesson
   let formatHint = ''
-  if (task.lesson.allowVoice && task.lesson.allowVideoNote) {
-    formatHint = '🎤 голос или 📹 кружок'
-  } else if (task.lesson.allowVoice) {
-    formatHint = '🎤 голосовое сообщение'
-  } else if (task.lesson.allowVideoNote) {
-    formatHint = '📹 видео-кружок'
-  } else if (task.lesson.allowText) {
-    formatHint = '📝 текст'
+  if (settings) {
+    if (settings.allowVoice && settings.allowVideoNote) {
+      formatHint = '🎤 голос или 📹 кружок'
+    } else if (settings.allowVoice) {
+      formatHint = '🎤 голосовое сообщение'
+    } else if (settings.allowVideoNote) {
+      formatHint = '📹 видео-кружок'
+    } else if (settings.allowText) {
+      formatHint = '📝 текст'
+    }
+  } else {
+    formatHint = '🎤 голос или 📹 кружок' // default
   }
 
   let message = `📝 <b>Текущее задание</b>\n\n`
@@ -1112,7 +1128,7 @@ async function handleReviewCallback(
     const task = await prisma.task.update({
       where: { id: submission.taskId },
       data: updateData,
-      include: { lesson: true }
+      include: { lesson: true, group: true }
     })
 
     // Check if task is completed - must pass ALL required count with no failures
@@ -1182,6 +1198,32 @@ async function handleReviewCallback(
 
         if (task.failedCount > 0) {
           message += `\n❌ На пересдачу: <b>${task.failedCount}</b>`
+        }
+
+        // Add deadline info
+        const deadline = new Date(submission.task.deadline)
+        const now = new Date()
+        const timeLeft = deadline.getTime() - now.getTime()
+        const hoursLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60)))
+        const minutesLeft = Math.max(0, Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60)))
+
+        // Format deadline time
+        const deadlineTimeStr = deadline.toLocaleTimeString('ru-RU', {
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'Asia/Bishkek'
+        })
+        const deadlineDateStr = deadline.toLocaleDateString('ru-RU', {
+          day: 'numeric',
+          month: 'short',
+          timeZone: 'Asia/Bishkek'
+        })
+
+        if (timeLeft > 0) {
+          message += `\n\n⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
+          message += `\n⏳ Осталось: <b>${hoursLeft}ч ${minutesLeft}м</b>`
+        } else {
+          message += `\n\n⚠️ <b>Срок истёк!</b>`
         }
 
         await bot.api.sendMessage(Number(student.telegramId), message, {
@@ -1472,6 +1514,7 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
     include: {
       page: true,
       lesson: true,
+      group: true,
     }
   })
 
@@ -1503,16 +1546,21 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
   message += `⏳ Осталось: <b>${remaining}</b>\n\n`
   message += `<i>Отправьте запись чтения.</i>`
 
-  // Build format hint
+  // Build format hint - use group settings (primary) or lesson settings (fallback)
+  const settings = task.group || task.lesson
   let formatHint = ''
-  if (task.lesson.allowVoice && task.lesson.allowVideoNote) {
-    formatHint = '🎤 голос или 📹 кружок'
-  } else if (task.lesson.allowVoice) {
-    formatHint = '🎤 голосовое'
-  } else if (task.lesson.allowVideoNote) {
-    formatHint = '📹 кружок'
-  } else if (task.lesson.allowText) {
-    formatHint = '📝 текст'
+  if (settings) {
+    if (settings.allowVoice && settings.allowVideoNote) {
+      formatHint = '🎤 голос или 📹 кружок'
+    } else if (settings.allowVoice) {
+      formatHint = '🎤 голосовое'
+    } else if (settings.allowVideoNote) {
+      formatHint = '📹 кружок'
+    } else if (settings.allowText) {
+      formatHint = '📝 текст'
+    }
+  } else {
+    formatHint = '🎤 голос или 📹 кружок' // default
   }
   message += `\n📤 Принимается: ${formatHint}`
 
