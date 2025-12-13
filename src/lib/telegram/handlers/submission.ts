@@ -38,8 +38,16 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     },
     include: {
       page: true,
-      lesson: true,
-      group: true,
+      lesson: {
+        include: {
+          group: {
+            include: { ustaz: true }
+          }
+        }
+      },
+      group: {
+        include: { ustaz: true }
+      },
     }
   })
 
@@ -85,6 +93,7 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
   }
 
   // Check for previous pending submission and notify ustaz (confirming previous)
+  // This is intentional: student confirms previous submission by sending a new one
   const previousPending = await prisma.submission.findFirst({
     where: {
       taskId: task.id,
@@ -96,10 +105,10 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
 
   if (previousPending) {
     // Notify ustaz about the previous submission (now confirmed by this new one)
-    await notifyUstazAboutSubmission(task, previousPending, user)
+    await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Create submission
+  // Create new submission (will be confirmed by next submission or task completion)
   const submission = await prisma.submission.create({
     data: {
       taskId: task.id,
@@ -181,8 +190,16 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     },
     include: {
       page: true,
-      lesson: true,
-      group: true,
+      lesson: {
+        include: {
+          group: {
+            include: { ustaz: true }
+          }
+        }
+      },
+      group: {
+        include: { ustaz: true }
+      },
     }
   })
 
@@ -228,6 +245,7 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
   }
 
   // Check for previous pending submission and notify ustaz (confirming previous)
+  // This is intentional: student confirms previous submission by sending a new one
   const previousPending = await prisma.submission.findFirst({
     where: {
       taskId: task.id,
@@ -239,10 +257,10 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
 
   if (previousPending) {
     // Notify ustaz about the previous submission (now confirmed by this new one)
-    await notifyUstazAboutSubmission(task, previousPending, user)
+    await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Create submission
+  // Create new submission (will be confirmed by next submission or task completion)
   const submission = await prisma.submission.create({
     data: {
       taskId: task.id,
@@ -321,8 +339,16 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     },
     include: {
       page: true,
-      lesson: true,
-      group: true,
+      lesson: {
+        include: {
+          group: {
+            include: { ustaz: true }
+          }
+        }
+      },
+      group: {
+        include: { ustaz: true }
+      },
     }
   })
 
@@ -373,6 +399,7 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
   }
 
   // Check for previous pending submission and notify ustaz (confirming previous)
+  // This is intentional: student confirms previous submission by sending a new one
   const previousPending = await prisma.submission.findFirst({
     where: {
       taskId: task.id,
@@ -384,10 +411,10 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
 
   if (previousPending) {
     // Notify ustaz about the previous submission (now confirmed by this new one)
-    await notifyUstazAboutSubmission(task, previousPending, user)
+    await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Create submission (store text content as fileId for simplicity)
+  // Create new submission (will be confirmed by next submission or task completion)
   const submission = await prisma.submission.create({
     data: {
       taskId: task.id,
@@ -567,32 +594,91 @@ function buildProgressBar(percent: number): string {
 }
 
 /**
- * Notify ustaz about new submission with review buttons
+ * Process submission and notify ustaz based on AI verification mode
  */
-async function notifyUstazAboutSubmission(
+async function processSubmissionAndNotify(
   task: any,
   submission: any,
   student: any
 ): Promise<void> {
   try {
-    // Get ustaz of the group with full info
-    const lesson = await prisma.lesson.findUnique({
-      where: { id: task.lessonId },
-      include: {
-        group: {
-          include: { ustaz: true }
+    // Get group with AI settings
+    let group = task.group
+    if (!group && task.lessonId) {
+      const lesson = await prisma.lesson.findUnique({
+        where: { id: task.lessonId },
+        include: {
+          group: {
+            include: { ustaz: true }
+          }
         }
-      }
-    })
+      })
+      group = lesson?.group
+    }
 
-    if (!lesson?.group.ustaz.telegramId) return
+    if (!group) {
+      // Fallback: try to get group from task.groupId
+      if (task.groupId) {
+        group = await prisma.group.findUnique({
+          where: { id: task.groupId },
+          include: { ustaz: true }
+        })
+      }
+    }
+
+    if (!group) return
+
+    const verificationMode = group.verificationMode || 'MANUAL'
+    const aiProvider = group.aiProvider || 'NONE'
+
+    // For now, all modes notify ustaz (AI verification to be implemented)
+    // In the future:
+    // - MANUAL: Always notify ustaz
+    // - SEMI_AUTO: Run AI check, then notify ustaz with AI score hint
+    // - FULL_AUTO: Run AI check, auto-accept/reject based on thresholds, notify ustaz only if in middle range
+
+    // TODO: Implement AI verification when AI providers are ready
+    // For now, always notify ustaz regardless of mode
+    await notifyUstazAboutSubmission(task, submission, student, group)
+  } catch (error) {
+    console.error('Failed to process submission:', error)
+  }
+}
+
+/**
+ * Notify ustaz about new submission with review buttons
+ */
+async function notifyUstazAboutSubmission(
+  task: any,
+  submission: any,
+  student: any,
+  group?: any
+): Promise<void> {
+  try {
+    // Get group with ustaz if not passed
+    if (!group) {
+      group = task.group
+      if (!group && task.lessonId) {
+        const lesson = await prisma.lesson.findUnique({
+          where: { id: task.lessonId },
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        })
+        group = lesson?.group
+      }
+    }
+
+    if (!group?.ustaz?.telegramId) return
 
     // Import bot and InlineKeyboard
     const { bot } = await import('../bot')
     const { InlineKeyboard } = await import('grammy')
 
     const studentName = student.firstName || 'Студент'
-    const groupName = lesson.group.name
+    const groupName = group.name
     const lineRange = task.startLine === task.endLine
       ? `строка ${task.startLine}`
       : `строки ${task.startLine}-${task.endLine}`
@@ -607,19 +693,49 @@ async function notifyUstazAboutSubmission(
     }
     const stageName = stageNames[task.stage] || task.stage
 
-    const caption = `📥 <b>Новая работа на проверку</b>\n\n` +
-      `📚 <b>${groupName}</b>\n` +
-      `👤 ${studentName}\n` +
-      `📖 Стр. ${task.page.pageNumber}, ${lineRange}\n` +
-      `🎯 ${stageName}\n` +
-      `📊 ${task.currentCount}/${task.requiredCount}`
+    // Calculate progress
+    const progressPercent = Math.round((task.currentCount / task.requiredCount) * 100)
+    const progressBar = `[${'▓'.repeat(Math.round(progressPercent / 10))}${'░'.repeat(10 - Math.round(progressPercent / 10))}]`
 
-    // Create review keyboard
+    let caption = `📥 <b>Новая работа</b>\n\n`
+    caption += `📚 <b>${groupName}</b>\n`
+    caption += `👤 ${studentName}\n`
+    caption += `📖 Стр. ${task.page.pageNumber}, ${lineRange}\n`
+    caption += `🎯 ${stageName}\n\n`
+    caption += `${progressBar} ${progressPercent}%\n`
+    caption += `📊 <b>${task.currentCount}/${task.requiredCount}</b>`
+
+    // Add passed/failed counts if any
+    if (task.passedCount > 0 || task.failedCount > 0) {
+      caption += `\n✅ ${task.passedCount}`
+      if (task.failedCount > 0) {
+        caption += ` | ❌ ${task.failedCount}`
+      }
+    }
+
+    // Add AI score if available (from submission)
+    if (submission.aiScore !== null && submission.aiScore !== undefined) {
+      const scoreEmoji = submission.aiScore >= 85 ? '🟢' : submission.aiScore >= 50 ? '🟡' : '🔴'
+      caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(submission.aiScore)}%</b>`
+      if (submission.aiTranscript) {
+        caption += `\n<i>${submission.aiTranscript.substring(0, 100)}${submission.aiTranscript.length > 100 ? '...' : ''}</i>`
+      }
+    }
+
+    // Create review keyboard with AI score hint
     const reviewKeyboard = new InlineKeyboard()
-      .text('✅ Сдал', `review:pass:${submission.id}`)
-      .text('❌ Не сдал', `review:fail:${submission.id}`)
 
-    const ustazChatId = Number(lesson.group.ustaz.telegramId)
+    if (submission.aiScore !== null && submission.aiScore >= 85) {
+      reviewKeyboard.text('✅ Принять (AI: ✓)', `review:pass:${submission.id}`)
+    } else if (submission.aiScore !== null && submission.aiScore < 50) {
+      reviewKeyboard.text('❌ Отклонить (AI: ✗)', `review:fail:${submission.id}`)
+    } else {
+      reviewKeyboard.text('✅ Сдал', `review:pass:${submission.id}`)
+    }
+
+    reviewKeyboard.text('❌ Не сдал', `review:fail:${submission.id}`)
+
+    const ustazChatId = Number(group.ustaz.telegramId)
 
     // Send the file with caption and review buttons
     if (submission.fileType === 'voice') {
@@ -629,7 +745,7 @@ async function notifyUstazAboutSubmission(
         reply_markup: reviewKeyboard
       })
     } else if (submission.fileType === 'video_note') {
-      // Video notes don't support captions - send video first, then message as reply
+      // Video notes don't support captions - send video first, then message with buttons
       const videoMsg = await bot.api.sendVideoNote(ustazChatId, submission.fileId)
       // Send details as reply to the video note
       await bot.api.sendMessage(ustazChatId, caption, {
@@ -640,7 +756,7 @@ async function notifyUstazAboutSubmission(
     } else if (submission.fileType === 'text') {
       // For text submissions, show the text content
       const textContent = submission.fileId.replace('text:', '')
-      const textMessage = caption + `\n\n💬 Текст: <i>${textContent}</i>`
+      const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
       await bot.api.sendMessage(ustazChatId, textMessage, {
         parse_mode: 'HTML',
         reply_markup: reviewKeyboard

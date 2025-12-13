@@ -29,9 +29,10 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone, Database, Cloud, Sparkles, Volume2, Check, Palette } from 'lucide-react'
+import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone, Database, Cloud, Sparkles, Volume2, Check, Palette, Bot, Zap, Hand, PlayCircle } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { StageNumber, GroupLevel, LessonType, MushafType } from '@prisma/client'
+import { Slider } from '@/components/ui/slider'
+import { StageNumber, GroupLevel, LessonType, MushafType, AIProvider, VerificationMode } from '@prisma/client'
 
 const GROUP_LEVELS = [
   { value: 'LEVEL_1', label: 'Уровень 1', description: '1 строка за 12ч', num: '1' },
@@ -80,6 +81,19 @@ const POPULAR_RECITERS = [
   { id: 5, name: 'Мухаммад аль-Минщави', style: 'مرتل' },
 ]
 
+const AI_PROVIDERS = [
+  { value: 'NONE', label: 'Без AI', description: 'Только ручная проверка устазом', icon: Hand },
+  { value: 'QURANI_AI', label: 'Qurani.ai', description: 'QRC API для проверки чтения', icon: Sparkles },
+  { value: 'WHISPER', label: 'OpenAI Whisper', description: 'Распознавание речи + сравнение', icon: Mic },
+  { value: 'HUGGINGFACE', label: 'HuggingFace', description: 'Quran ASR модель (скоро)', icon: Bot },
+]
+
+const VERIFICATION_MODES = [
+  { value: 'MANUAL', label: 'Ручная', description: 'Устаз проверяет все работы', icon: Hand },
+  { value: 'SEMI_AUTO', label: 'Полуавто', description: 'AI помогает, устаз подтверждает', icon: Zap },
+  { value: 'FULL_AUTO', label: 'Автоматическая', description: 'AI проверяет по порогам', icon: PlayCircle },
+]
+
 // Parse group name like "ЗА-25-1-3" into components
 function parseGroupName(name: string) {
   const parts = name.split('-')
@@ -113,12 +127,17 @@ interface GroupData {
   showAudio: boolean
   // Mushaf settings
   mushafType: MushafType
-  enableAIRecitation: boolean
   translationId: number | null
   tafsirId: number | null
   showTranslation: boolean
   showTafsir: boolean
+  showTajweed: boolean
   reciterId: number | null
+  // AI Verification settings
+  aiProvider: AIProvider
+  verificationMode: VerificationMode
+  aiAcceptThreshold: number
+  aiRejectThreshold: number
   // Relations
   ustaz: {
     id: string
@@ -197,13 +216,17 @@ export default function EditGroupPage() {
     showAudio: false,
     // Mushaf settings
     mushafType: 'LOCAL' as MushafType,
-    enableAIRecitation: false,
     translationId: 45 as number | null,
     tafsirId: 170 as number | null,
     showTranslation: false,
     showTafsir: false,
     showTajweed: false,
     reciterId: 7 as number | null,
+    // AI Verification settings
+    aiProvider: 'NONE' as AIProvider,
+    verificationMode: 'MANUAL' as VerificationMode,
+    aiAcceptThreshold: 85,
+    aiRejectThreshold: 50,
   })
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [savedSection, setSavedSection] = useState<string | null>(null)
@@ -243,13 +266,17 @@ export default function EditGroupPage() {
           showAudio: groupData.showAudio ?? false,
           // Mushaf settings
           mushafType: groupData.mushafType || 'LOCAL',
-          enableAIRecitation: groupData.enableAIRecitation ?? false,
           translationId: groupData.translationId ?? 45,
           tafsirId: groupData.tafsirId ?? 170,
           showTranslation: groupData.showTranslation ?? false,
           showTafsir: groupData.showTafsir ?? false,
           showTajweed: groupData.showTajweed ?? false,
           reciterId: groupData.reciterId ?? 7,
+          // AI Verification settings
+          aiProvider: groupData.aiProvider || 'NONE',
+          verificationMode: groupData.verificationMode || 'MANUAL',
+          aiAcceptThreshold: groupData.aiAcceptThreshold ?? 85,
+          aiRejectThreshold: groupData.aiRejectThreshold ?? 50,
         })
       } catch (err) {
         setError('Ошибка загрузки данных')
@@ -289,13 +316,17 @@ export default function EditGroupPage() {
           showAudio: formData.showAudio,
           // Mushaf settings
           mushafType: formData.mushafType,
-          enableAIRecitation: formData.enableAIRecitation,
           translationId: formData.translationId,
           tafsirId: formData.tafsirId,
           showTranslation: formData.showTranslation,
           showTafsir: formData.showTafsir,
           showTajweed: formData.showTajweed,
           reciterId: formData.reciterId,
+          // AI Verification settings
+          aiProvider: formData.aiProvider,
+          verificationMode: formData.verificationMode,
+          aiAcceptThreshold: formData.aiAcceptThreshold,
+          aiRejectThreshold: formData.aiRejectThreshold,
         }),
       })
 
@@ -341,13 +372,17 @@ export default function EditGroupPage() {
           showAudio: formData.showAudio,
           // Mushaf settings
           mushafType: formData.mushafType,
-          enableAIRecitation: formData.enableAIRecitation,
           translationId: formData.translationId,
           tafsirId: formData.tafsirId,
           showTranslation: formData.showTranslation,
           showTafsir: formData.showTafsir,
           showTajweed: formData.showTajweed,
           reciterId: formData.reciterId,
+          // AI Verification settings
+          aiProvider: formData.aiProvider,
+          verificationMode: formData.verificationMode,
+          aiAcceptThreshold: formData.aiAcceptThreshold,
+          aiRejectThreshold: formData.aiRejectThreshold,
         }),
       })
 
@@ -1007,25 +1042,134 @@ export default function EditGroupPage() {
                     </Select>
                   </div>
 
-                  {/* AI Recitation */}
-                  <div className="flex items-center justify-between p-3 border rounded-lg bg-background">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-lg bg-amber-100">
-                        <Sparkles className="h-4 w-4 text-amber-600" />
-                      </div>
-                      <div>
-                        <Label htmlFor="enableAIRecitation" className="font-medium">AI проверка чтения</Label>
-                        <p className="text-xs text-muted-foreground">Qurani.ai QRC (требуется API ключ)</p>
-                      </div>
-                    </div>
-                    <Switch
-                      id="enableAIRecitation"
-                      checked={formData.enableAIRecitation}
-                      onCheckedChange={(checked) => setFormData({ ...formData, enableAIRecitation: checked })}
-                    />
-                  </div>
                 </div>
               )}
+
+              {/* AI Verification Settings */}
+              <div className="space-y-4 p-4 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-amber-600" />
+                  AI Проверка чтения
+                </p>
+
+                {/* AI Provider Selection */}
+                <div className="space-y-2">
+                  <Label>AI провайдер</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {AI_PROVIDERS.map((provider) => {
+                      const Icon = provider.icon
+                      const isSelected = formData.aiProvider === provider.value
+                      const isDisabled = provider.value === 'HUGGINGFACE'
+                      return (
+                        <div
+                          key={provider.value}
+                          onClick={() => !isDisabled && setFormData({ ...formData, aiProvider: provider.value as AIProvider })}
+                          className={`p-3 rounded-lg border-2 transition-all ${
+                            isDisabled
+                              ? 'opacity-50 cursor-not-allowed border-muted bg-muted/30'
+                              : isSelected
+                                ? 'border-amber-500 bg-amber-100/50 dark:bg-amber-900/30 cursor-pointer'
+                                : 'border-transparent bg-background hover:border-muted-foreground/50 cursor-pointer'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Icon className={`h-4 w-4 ${isSelected ? 'text-amber-600' : 'text-muted-foreground'}`} />
+                            <div>
+                              <p className="text-sm font-medium">{provider.label}</p>
+                              <p className="text-xs text-muted-foreground">{provider.description}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* Verification Mode (only when AI is enabled) */}
+                {formData.aiProvider !== 'NONE' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Режим верификации</Label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {VERIFICATION_MODES.map((mode) => {
+                          const Icon = mode.icon
+                          const isSelected = formData.verificationMode === mode.value
+                          return (
+                            <div
+                              key={mode.value}
+                              onClick={() => setFormData({ ...formData, verificationMode: mode.value as VerificationMode })}
+                              className={`p-3 rounded-lg border-2 transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'border-primary bg-primary/5'
+                                  : 'border-transparent bg-background hover:border-muted-foreground/50'
+                              }`}
+                            >
+                              <div className="text-center">
+                                <Icon className={`h-5 w-5 mx-auto mb-1 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                                <p className="text-xs font-medium">{mode.label}</p>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {VERIFICATION_MODES.find(m => m.value === formData.verificationMode)?.description}
+                      </p>
+                    </div>
+
+                    {/* Thresholds (only for SEMI_AUTO and FULL_AUTO) */}
+                    {formData.verificationMode !== 'MANUAL' && (
+                      <div className="space-y-4 pt-2 border-t border-amber-200 dark:border-amber-800">
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-green-700 dark:text-green-400">Порог автопринятия</Label>
+                            <Badge variant="outline" className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                              {formData.aiAcceptThreshold}%
+                            </Badge>
+                          </div>
+                          <Slider
+                            value={[formData.aiAcceptThreshold]}
+                            onValueChange={([value]) => setFormData({ ...formData, aiAcceptThreshold: value })}
+                            min={50}
+                            max={100}
+                            step={5}
+                            className="[&_[role=slider]]:bg-green-500"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Работы с оценкой выше {formData.aiAcceptThreshold}% будут автоматически приняты
+                          </p>
+                        </div>
+
+                        {formData.verificationMode === 'FULL_AUTO' && (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <Label className="text-red-700 dark:text-red-400">Порог автоотклонения</Label>
+                              <Badge variant="outline" className="bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
+                                {formData.aiRejectThreshold}%
+                              </Badge>
+                            </div>
+                            <Slider
+                              value={[formData.aiRejectThreshold]}
+                              onValueChange={([value]) => setFormData({ ...formData, aiRejectThreshold: value })}
+                              min={0}
+                              max={formData.aiAcceptThreshold - 10}
+                              step={5}
+                              className="[&_[role=slider]]:bg-red-500"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Работы с оценкой ниже {formData.aiRejectThreshold}% будут автоматически отклонены
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="p-2 bg-amber-100/50 dark:bg-amber-900/30 rounded text-xs text-amber-800 dark:text-amber-200">
+                          Работы с оценкой между порогами отправляются устазу на ручную проверку
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
 
               {formData.mushafType === 'LOCAL' && (
                 <div className="p-4 bg-muted/30 rounded-lg border border-dashed text-center">

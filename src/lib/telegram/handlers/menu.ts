@@ -46,6 +46,8 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
   // Parse callback data
   const [category, action, id] = data.split(':')
 
+  let callbackAnswered = false
+
   try {
     switch (category) {
       case 'admin':
@@ -64,7 +66,9 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         await handleTaskCallback(ctx, user, action, id)
         break
       case 'review':
+        // Review handler answers callback itself
         await handleReviewCallback(ctx, user, action, id)
+        callbackAnswered = true
         break
       case 'auth':
         await handleAuthCallback(ctx, user, action)
@@ -77,6 +81,7 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         break
       default:
         await ctx.answerCallbackQuery({ text: 'Неизвестное действие' })
+        callbackAnswered = true
     }
   } catch (error: any) {
     // Ignore "message not modified" errors
@@ -84,12 +89,16 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
       // Message is already the same, just answer callback
     } else {
       console.error('Callback error:', error)
-      await ctx.answerCallbackQuery({ text: 'Произошла ошибка' })
+      if (!callbackAnswered) {
+        await ctx.answerCallbackQuery({ text: 'Произошла ошибка' })
+      }
       return
     }
   }
 
-  await ctx.answerCallbackQuery()
+  if (!callbackAnswered) {
+    await ctx.answerCallbackQuery()
+  }
 }
 
 // ============== STUDENT HANDLERS ==============
@@ -213,10 +222,28 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
 
   message += `Выберите действие:`
 
-  await ctx.editMessageText(message, {
-    parse_mode: 'HTML',
-    reply_markup: getMainMenuKeyboard(fullUser.role, menuInfo)
-  })
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: getMainMenuKeyboard(fullUser.role, menuInfo)
+    })
+  } catch (error: any) {
+    // If can't edit, delete and send new
+    if (error?.description?.includes("can't be edited") ||
+        error?.description?.includes('message to edit not found')) {
+      try {
+        await ctx.deleteMessage()
+      } catch (e) {
+        // Ignore if can't delete
+      }
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: getMainMenuKeyboard(fullUser.role, menuInfo)
+      })
+    } else {
+      throw error
+    }
+  }
 }
 
 async function showStudentMenu(ctx: BotContext, user: any): Promise<void> {
@@ -836,14 +863,15 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
     select: { id: true }
   })
 
+  const groupIds = groups.map(g => g.id)
+
   const pendingCount = await prisma.submission.count({
     where: {
       status: SubmissionStatus.PENDING,
-      task: {
-        lesson: {
-          groupId: { in: groups.map(g => g.id) }
-        }
-      }
+      OR: [
+        { task: { lesson: { groupId: { in: groupIds } } } },
+        { task: { groupId: { in: groupIds } } }
+      ]
     }
   })
 
@@ -852,10 +880,28 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
     `📝 Работ на проверку: <b>${pendingCount}</b>\n\n` +
     `Выберите действие:`
 
-  await ctx.editMessageText(message, {
-    parse_mode: 'HTML',
-    reply_markup: getMainMenuKeyboard(user.role)
-  })
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: getMainMenuKeyboard(user.role)
+    })
+  } catch (error: any) {
+    // If can't edit (e.g., voice message), delete and send new
+    if (error?.description?.includes("can't be edited") ||
+        error?.description?.includes('message to edit not found')) {
+      try {
+        await ctx.deleteMessage()
+      } catch (e) {
+        // Ignore if can't delete
+      }
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: getMainMenuKeyboard(user.role)
+      })
+    } else {
+      throw error // Re-throw other errors
+    }
+  }
 }
 
 async function showUstazMenu(ctx: BotContext, user: any): Promise<void> {
@@ -867,14 +913,15 @@ async function showUstazMenu(ctx: BotContext, user: any): Promise<void> {
     select: { id: true }
   })
 
+  const groupIds = groups.map(g => g.id)
+
   const pendingCount = await prisma.submission.count({
     where: {
       status: SubmissionStatus.PENDING,
-      task: {
-        lesson: {
-          groupId: { in: groups.map(g => g.id) }
-        }
-      }
+      OR: [
+        { task: { lesson: { groupId: { in: groupIds } } } },
+        { task: { groupId: { in: groupIds } } }
+      ]
     }
   })
 
@@ -902,20 +949,40 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
     select: { id: true }
   })
 
-  // Get pending submissions
+  const groupIds = groups.map(g => g.id)
+
+  // Get pending submissions - check both lesson.groupId and task.groupId
   const submissions = await prisma.submission.findMany({
     where: {
       status: SubmissionStatus.PENDING,
-      task: {
-        lesson: {
-          groupId: { in: groups.map(g => g.id) }
+      OR: [
+        {
+          task: {
+            lesson: {
+              groupId: { in: groupIds }
+            }
+          }
+        },
+        {
+          task: {
+            groupId: { in: groupIds }
+          }
         }
-      }
+      ]
     },
     include: {
-      student: true,
+      student: {
+        include: {
+          studentGroup: {
+            select: { name: true }
+          }
+        }
+      },
       task: {
-        include: { page: true }
+        include: {
+          page: true,
+          group: true
+        }
       }
     },
     orderBy: { createdAt: 'asc' },
@@ -933,37 +1000,247 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
     return
   }
 
-  let message = `<b>📝 Работы на проверку</b>\n\n`
-  message += `Всего: ${submissions.length}\n\n`
-
-  // Show first submission details
+  // Show first submission with file and buttons together
   const first = submissions[0]
   const studentName = first.student.firstName || 'Студент'
+  const groupName = first.student.studentGroup?.name || first.task.group?.name || ''
 
-  message += `<b>Следующая работа:</b>\n`
-  message += `👤 ${studentName}\n`
-  message += `📖 Страница ${first.task.page.pageNumber}\n`
-  message += `🎙 ${first.fileType === 'voice' ? 'Голосовое' : 'Кружок'}\n`
+  const lineRange = first.task.startLine === first.task.endLine
+    ? `строка ${first.task.startLine}`
+    : `строки ${first.task.startLine}-${first.task.endLine}`
 
-  await ctx.editMessageText(message, {
-    parse_mode: 'HTML',
-    reply_markup: getUstazSubmissionKeyboard(first.id)
-  })
+  // Get stage name
+  const stageNames: Record<string, string> = {
+    STAGE_1_1: 'Этап 1.1',
+    STAGE_1_2: 'Этап 1.2',
+    STAGE_2_1: 'Этап 2.1',
+    STAGE_2_2: 'Этап 2.2',
+    STAGE_3: 'Этап 3',
+  }
+  const stageName = stageNames[first.task.stage] || first.task.stage
 
-  // Send the audio/video to ustaz
+  // Calculate progress
+  const progressPercent = Math.round((first.task.currentCount / first.task.requiredCount) * 100)
+  const progressBar = `[${'▓'.repeat(Math.round(progressPercent / 10))}${'░'.repeat(10 - Math.round(progressPercent / 10))}]`
+
+  let caption = `📝 <b>Работа 1/${submissions.length}</b>\n\n`
+  if (groupName) caption += `📚 <b>${groupName}</b>\n`
+  caption += `👤 ${studentName}\n`
+  caption += `📖 Стр. ${first.task.page.pageNumber}, ${lineRange}\n`
+  caption += `🎯 ${stageName}\n\n`
+  caption += `${progressBar} ${progressPercent}%\n`
+  caption += `📊 <b>${first.task.currentCount}/${first.task.requiredCount}</b>`
+
+  // Add passed/failed counts if any
+  if (first.task.passedCount > 0 || first.task.failedCount > 0) {
+    caption += `\n✅ ${first.task.passedCount}`
+    if (first.task.failedCount > 0) {
+      caption += ` | ❌ ${first.task.failedCount}`
+    }
+  }
+
+  // Add AI score if available
+  if (first.aiScore !== null && first.aiScore !== undefined) {
+    const scoreEmoji = first.aiScore >= 85 ? '🟢' : first.aiScore >= 50 ? '🟡' : '🔴'
+    caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(first.aiScore)}%</b>`
+  }
+
+  // Create review keyboard
+  const reviewKeyboard = new InlineKeyboard()
+
+  if (first.aiScore !== null && first.aiScore >= 85) {
+    reviewKeyboard.text('✅ Принять (AI: ✓)', `review:pass:${first.id}`)
+  } else if (first.aiScore !== null && first.aiScore < 50) {
+    reviewKeyboard.text('❌ Отклонить (AI: ✗)', `review:fail:${first.id}`)
+  } else {
+    reviewKeyboard.text('✅ Сдал', `review:pass:${first.id}`)
+  }
+  reviewKeyboard.text('❌ Не сдал', `review:fail:${first.id}`).row()
+
+  if (submissions.length > 1) {
+    reviewKeyboard.text(`➡️ След. (${submissions.length - 1})`, 'ustaz:next_submission')
+  }
+  reviewKeyboard.text('◀️ Меню', 'ustaz:menu')
+
+  // Delete old message first
+  try {
+    await ctx.deleteMessage()
+  } catch (e) {
+    // Ignore if can't delete
+  }
+
+  // Send file with caption and buttons
   try {
     if (first.fileType === 'voice') {
-      await ctx.replyWithVoice(first.fileId)
-    } else {
-      await ctx.replyWithVideoNote(first.fileId)
+      await ctx.replyWithVoice(first.fileId, {
+        caption,
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+    } else if (first.fileType === 'video_note') {
+      // Video notes don't support captions - send video first, then message with buttons
+      const videoMsg = await ctx.replyWithVideoNote(first.fileId)
+      await ctx.reply(caption, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard,
+        reply_parameters: { message_id: videoMsg.message_id }
+      })
+    } else if (first.fileType === 'text') {
+      const textContent = first.fileId.replace('text:', '')
+      const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
+      await ctx.reply(textMessage, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
     }
   } catch (error) {
     console.error('Failed to send submission file:', error)
+    // Fallback to text message
+    await ctx.reply(caption + '\n\n⚠️ Не удалось загрузить файл', {
+      parse_mode: 'HTML',
+      reply_markup: reviewKeyboard
+    })
   }
 }
 
 async function showNextSubmission(ctx: BotContext, user: any): Promise<void> {
   await showPendingSubmissions(ctx, user)
+}
+
+/**
+ * Show next pending submission after review (sends NEW message, doesn't edit)
+ * Called after pass/fail action when old message was already deleted
+ */
+async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any): Promise<void> {
+  // Get ustaz's groups
+  const groups = await prisma.group.findMany({
+    where: { ustazId: user.id },
+    select: { id: true }
+  })
+
+  const groupIds = groups.map(g => g.id)
+
+  // Get next pending submission
+  const submissions = await prisma.submission.findMany({
+    where: {
+      status: SubmissionStatus.PENDING,
+      OR: [
+        { task: { lesson: { groupId: { in: groupIds } } } },
+        { task: { groupId: { in: groupIds } } }
+      ]
+    },
+    include: {
+      student: {
+        include: {
+          studentGroup: { select: { name: true } }
+        }
+      },
+      task: {
+        include: { page: true, group: true }
+      }
+    },
+    orderBy: { createdAt: 'asc' },
+    take: 10
+  })
+
+  // No more submissions - show "all done" message
+  if (submissions.length === 0) {
+    await ctx.reply(
+      '📝 <b>Работы на проверку</b>\n\n✅ <b>Все работы проверены!</b>\n\nОтличная работа! 🎉',
+      {
+        parse_mode: 'HTML',
+        reply_markup: getBackKeyboard('ustaz:menu', '◀️ В меню')
+      }
+    )
+    return
+  }
+
+  // Show next submission
+  const first = submissions[0]
+  const studentName = first.student.firstName || 'Студент'
+  const groupName = first.student.studentGroup?.name || first.task.group?.name || ''
+
+  const lineRange = first.task.startLine === first.task.endLine
+    ? `строка ${first.task.startLine}`
+    : `строки ${first.task.startLine}-${first.task.endLine}`
+
+  const stageNames: Record<string, string> = {
+    STAGE_1_1: 'Этап 1.1',
+    STAGE_1_2: 'Этап 1.2',
+    STAGE_2_1: 'Этап 2.1',
+    STAGE_2_2: 'Этап 2.2',
+    STAGE_3: 'Этап 3',
+  }
+  const stageName = stageNames[first.task.stage] || first.task.stage
+
+  const progressPercent = Math.round((first.task.currentCount / first.task.requiredCount) * 100)
+  const progressBar = `[${'▓'.repeat(Math.round(progressPercent / 10))}${'░'.repeat(10 - Math.round(progressPercent / 10))}]`
+
+  let caption = `📝 <b>Работа 1/${submissions.length}</b>\n\n`
+  if (groupName) caption += `📚 <b>${groupName}</b>\n`
+  caption += `👤 ${studentName}\n`
+  caption += `📖 Стр. ${first.task.page.pageNumber}, ${lineRange}\n`
+  caption += `🎯 ${stageName}\n\n`
+  caption += `${progressBar} ${progressPercent}%\n`
+  caption += `📊 <b>${first.task.currentCount}/${first.task.requiredCount}</b>`
+
+  if (first.task.passedCount > 0 || first.task.failedCount > 0) {
+    caption += `\n✅ ${first.task.passedCount}`
+    if (first.task.failedCount > 0) {
+      caption += ` | ❌ ${first.task.failedCount}`
+    }
+  }
+
+  if (first.aiScore !== null && first.aiScore !== undefined) {
+    const scoreEmoji = first.aiScore >= 85 ? '🟢' : first.aiScore >= 50 ? '🟡' : '🔴'
+    caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(first.aiScore)}%</b>`
+  }
+
+  const reviewKeyboard = new InlineKeyboard()
+  if (first.aiScore !== null && first.aiScore >= 85) {
+    reviewKeyboard.text('✅ Принять (AI: ✓)', `review:pass:${first.id}`)
+  } else if (first.aiScore !== null && first.aiScore < 50) {
+    reviewKeyboard.text('❌ Отклонить (AI: ✗)', `review:fail:${first.id}`)
+  } else {
+    reviewKeyboard.text('✅ Сдал', `review:pass:${first.id}`)
+  }
+  reviewKeyboard.text('❌ Не сдал', `review:fail:${first.id}`).row()
+
+  if (submissions.length > 1) {
+    reviewKeyboard.text(`➡️ След. (${submissions.length - 1})`, 'ustaz:next_submission')
+  }
+  reviewKeyboard.text('◀️ Меню', 'ustaz:menu')
+
+  // Send file with caption and buttons (using reply, not edit)
+  try {
+    if (first.fileType === 'voice') {
+      await ctx.replyWithVoice(first.fileId, {
+        caption,
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+    } else if (first.fileType === 'video_note') {
+      const videoMsg = await ctx.replyWithVideoNote(first.fileId)
+      await ctx.reply(caption, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard,
+        reply_parameters: { message_id: videoMsg.message_id }
+      })
+    } else if (first.fileType === 'text') {
+      const textContent = first.fileId.replace('text:', '')
+      const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
+      await ctx.reply(textMessage, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+    }
+  } catch (error) {
+    console.error('Failed to send next submission:', error)
+    await ctx.reply(caption + '\n\n⚠️ Не удалось загрузить файл', {
+      parse_mode: 'HTML',
+      reply_markup: reviewKeyboard
+    })
+  }
 }
 
 async function showUstazGroups(ctx: BotContext, user: any): Promise<void> {
@@ -1040,20 +1317,28 @@ async function showUstazStats(ctx: BotContext, user: any): Promise<void> {
     select: { id: true }
   })
 
+  const groupIds = groups.map(g => g.id)
+
   const [totalStudents, completedTasks, pendingSubmissions] = await Promise.all([
     prisma.user.count({
-      where: { groupId: { in: groups.map(g => g.id) } }
+      where: { groupId: { in: groupIds } }
     }),
     prisma.task.count({
       where: {
         status: TaskStatus.PASSED,
-        lesson: { groupId: { in: groups.map(g => g.id) } }
+        OR: [
+          { lesson: { groupId: { in: groupIds } } },
+          { groupId: { in: groupIds } }
+        ]
       }
     }),
     prisma.submission.count({
       where: {
         status: SubmissionStatus.PENDING,
-        task: { lesson: { groupId: { in: groups.map(g => g.id) } } }
+        OR: [
+          { task: { lesson: { groupId: { in: groupIds } } } },
+          { task: { groupId: { in: groupIds } } }
+        ]
       }
     })
   ])
@@ -1239,6 +1524,9 @@ async function handleReviewCallback(
     } catch (e) {
       console.error('Failed to notify student:', e)
     }
+
+    // Show next submission or "all done" message
+    await showNextPendingSubmissionAfterReview(ctx, user)
   }
 }
 

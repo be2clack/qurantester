@@ -62,6 +62,19 @@ enum MushafType {
   MEDINA_API      // Мединский мусхаф (Quran.com API)
 }
 
+enum AIProvider {
+  NONE            // Без AI проверки (только устаз)
+  QURANI_AI       // Qurani.ai QRC API
+  WHISPER         // OpenAI Whisper
+  HUGGINGFACE     // HuggingFace Quran ASR модель
+}
+
+enum VerificationMode {
+  MANUAL          // Только устаз проверяет
+  SEMI_AUTO       // AI проверяет, устаз подтверждает
+  FULL_AUTO       // AI проверяет автоматически
+}
+
 // ============== USERS ==============
 
 model User {
@@ -149,13 +162,18 @@ model Group {
 
   // Mushaf settings
   mushafType        MushafType @default(LOCAL)  // Тип мусхафа
-  enableAIRecitation Boolean   @default(false)  // AI проверка чтения (QRC)
   translationId     Int?       // ID перевода Quran.com (45 = Кулиев)
   tafsirId          Int?       // ID тафсира Quran.com (170 = ас-Саади)
   showTranslation   Boolean    @default(false)  // Показывать перевод
   showTafsir        Boolean    @default(false)  // Показывать тафсир
   showTajweed       Boolean    @default(false)  // Показывать таджвид
   reciterId         Int?       // ID чтеца для аудио
+
+  // AI Verification settings
+  aiProvider          AIProvider       @default(NONE)    // AI провайдер
+  verificationMode    VerificationMode @default(MANUAL)  // Режим верификации
+  aiAcceptThreshold   Int              @default(85)      // Порог для автопринятия (%)
+  aiRejectThreshold   Int              @default(50)      // Порог для автоотклонения (%)
 
   // Relations
   ustaz       User       @relation("UstazGroups", fields: [ustazId], references: [id])
@@ -305,6 +323,14 @@ model Submission {
   reviewerId      String?
   reviewedAt      DateTime?
   feedback        String?
+
+  // AI Verification results
+  aiProvider      String?          // Какой AI использовался
+  aiScore         Float?           // Оценка точности (0-100%)
+  aiTranscript    String?   @db.Text  // Расшифровка от AI
+  aiErrors        String?   @db.Text  // JSON с ошибками
+  aiProcessedAt   DateTime?        // Когда проверено AI
+  aiRawResponse   String?   @db.Text  // Полный ответ API (для отладки)
 
   // Telegram message tracking
   telegramMsgId   BigInt?

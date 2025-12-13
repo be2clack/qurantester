@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
-import { UserRole, GroupLevel, LessonType, MushafType } from '@prisma/client'
+import { UserRole, GroupLevel, LessonType, MushafType, AIProvider, VerificationMode } from '@prisma/client'
 import { z } from 'zod'
 
 const updateGroupSchema = z.object({
@@ -24,13 +24,17 @@ const updateGroupSchema = z.object({
   showAudio: z.boolean().optional(),
   // Mushaf settings
   mushafType: z.nativeEnum(MushafType).optional(),
-  enableAIRecitation: z.boolean().optional(),
   translationId: z.number().nullable().optional(),
   tafsirId: z.number().nullable().optional(),
   showTranslation: z.boolean().optional(),
   showTafsir: z.boolean().optional(),
   showTajweed: z.boolean().optional(),
   reciterId: z.number().nullable().optional(),
+  // AI Verification settings
+  aiProvider: z.nativeEnum(AIProvider).optional(),
+  verificationMode: z.nativeEnum(VerificationMode).optional(),
+  aiAcceptThreshold: z.number().min(0).max(100).optional(),
+  aiRejectThreshold: z.number().min(0).max(100).optional(),
 })
 
 export async function GET(

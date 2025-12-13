@@ -35,9 +35,19 @@ export async function GET(req: NextRequest) {
     if (currentUser.role === UserRole.STUDENT) {
       where.studentId = currentUser.id
     } else if (currentUser.role === UserRole.USTAZ) {
-      where.student = {
-        studentGroup: { ustazId: currentUser.id }
-      }
+      // Get ustaz's groups first
+      const ustazGroups = await prisma.group.findMany({
+        where: { ustazId: currentUser.id },
+        select: { id: true }
+      })
+      const groupIds = ustazGroups.map(g => g.id)
+
+      // Filter submissions by: student in ustaz's groups OR task in ustaz's groups
+      where.OR = [
+        { student: { groupId: { in: groupIds } } },
+        { task: { groupId: { in: groupIds } } },
+        { task: { lesson: { groupId: { in: groupIds } } } }
+      ]
     } else if (currentUser.role === UserRole.PARENT) {
       where.student = {
         childOf: { some: { id: currentUser.id } }
@@ -59,6 +69,12 @@ export async function GET(req: NextRequest) {
               firstName: true,
               lastName: true,
               phone: true,
+              studentGroup: {
+                select: {
+                  id: true,
+                  name: true,
+                }
+              }
             }
           },
           task: {
@@ -67,6 +83,8 @@ export async function GET(req: NextRequest) {
               stage: true,
               startLine: true,
               endLine: true,
+              passedCount: true,
+              requiredCount: true,
               page: {
                 select: { pageNumber: true }
               }
@@ -77,8 +95,14 @@ export async function GET(req: NextRequest) {
       prisma.submission.count({ where })
     ])
 
+    // Map to frontend format with additional fields
+    const mappedSubmissions = submissions.map(s => ({
+      ...s,
+      telegramFileId: s.fileId, // Alias for compatibility
+    }))
+
     return NextResponse.json({
-      items: submissions,
+      items: mappedSubmissions,
       total,
       page,
       limit,
