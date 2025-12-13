@@ -1,0 +1,364 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============== ENUMS ==============
+
+enum UserRole {
+  ADMIN
+  USTAZ
+  STUDENT
+  PARENT
+  PENDING       // Ожидает подтверждения админом
+}
+
+enum LessonType {
+  MEMORIZATION  // Заучивание
+  REVISION      // Повторение
+  TRANSLATION   // Перевод
+}
+
+enum SubmissionStatus {
+  PENDING       // Ожидает проверки
+  PASSED        // Сдал
+  FAILED        // Не сдал
+}
+
+enum TaskStatus {
+  IN_PROGRESS   // В процессе
+  SUBMITTED     // Отправлено на проверку
+  PASSED        // Сдано
+  FAILED        // Не сдано, пересдача
+}
+
+enum StageNumber {
+  STAGE_1_1     // Строки 1-7 по одной (или 3/7 в зависимости от уровня)
+  STAGE_1_2     // Строки 1-7 вместе (80 раз)
+  STAGE_2_1     // Строки 8-15 по одной
+  STAGE_2_2     // Строки 8-15 вместе (80 раз)
+  STAGE_3       // Вся страница (80 раз)
+}
+
+enum GroupLevel {
+  LEVEL_1       // 1 строка за 12 часов
+  LEVEL_2       // 3 строки за 12 часов
+  LEVEL_3       // 7 строк за 12 часов
+}
+
+enum ContentType {
+  TEXT
+  IMAGE
+  AUDIO
+}
+
+// ============== USERS ==============
+
+model User {
+  id                String    @id @default(cuid())
+  phone             String    @unique
+  firstName         String?
+  lastName          String?
+  birthDate         DateTime? // Дата рождения
+  telegramId        BigInt?   @unique
+  telegramUsername  String?
+  telegramPhoto     String?
+  role              UserRole  @default(STUDENT)
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  ustazGroups       Group[]   @relation("UstazGroups")
+  studentGroup      Group?    @relation("StudentGroup", fields: [groupId], references: [id])
+  groupId           String?
+  
+  // Parent-Child relations
+  parentOf          User[]    @relation("ParentChild")
+  childOf           User[]    @relation("ParentChild")
+  
+  // Student progress
+  currentPage       Int       @default(1)
+  currentLine       Int       @default(1)
+  currentStage      StageNumber @default(STAGE_1_1)
+  
+  // Tasks and submissions
+  tasks             Task[]
+  submissions       Submission[]
+  
+  // Auth tokens
+  authTokens        AuthToken[]
+  
+  // Statistics
+  statistics        UserStatistics?
+  
+  @@index([phone])
+  @@index([telegramId])
+  @@index([role])
+}
+
+model AuthToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  
+  @@index([token])
+  @@index([userId])
+}
+
+// ============== GROUPS ==============
+
+model Group {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  level       GroupLevel @default(LEVEL_1)
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  ustaz       User       @relation("UstazGroups", fields: [ustazId], references: [id])
+  ustazId     String
+  students    User[]     @relation("StudentGroup")
+  lessons     Lesson[]
+
+  @@index([ustazId])
+}
+
+// ============== QURAN CONTENT ==============
+
+model QuranPage {
+  id          String      @id @default(cuid())
+  pageNumber  Int         @unique
+  totalLines  Int         @default(15)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  lines       QuranLine[]
+  tasks       Task[]
+  
+  @@index([pageNumber])
+}
+
+model QuranLine {
+  id          String    @id @default(cuid())
+  lineNumber  Int
+  pageId      String
+  page        QuranPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  
+  // Content (optional, can be filled later)
+  textArabic  String?   @db.Text
+  textTajweed String?   @db.Text  // HTML/styled text with tajweed
+  imageFileId String?   // Telegram file_id
+  audioFileId String?   // Telegram file_id
+  translation String?   @db.Text
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([pageId, lineNumber])
+  @@index([pageId])
+}
+
+// ============== LESSONS ==============
+
+model Lesson {
+  id              String     @id @default(cuid())
+  name            String
+  type            LessonType
+  isActive        Boolean    @default(true)
+  
+  // Settings
+  repetitionCount Int        @default(80)  // Количество повторений (студент должен сдать все 80)
+  
+  // Stage durations (in days)
+  stage1Days      Int        @default(1)   // Дни на этап 1 (по строке)
+  stage2Days      Int        @default(2)   // Дни на этап 2 (половина)
+  stage3Days      Int        @default(2)   // Дни на этап 3 (вся страница)
+  
+  // Content settings
+  showText        Boolean    @default(false)
+  showImage       Boolean    @default(false)
+  showAudio       Boolean    @default(false)
+  
+  // Submission settings
+  allowVoice      Boolean    @default(true)  // Голосовые сообщения
+  allowVideoNote  Boolean    @default(true)  // Кружочки
+  allowText       Boolean    @default(false) // Текстовые сообщения
+  
+  groupId         String
+  group           Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  
+  tasks           Task[]
+  
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  
+  @@index([groupId])
+  @@index([type])
+}
+
+// ============== TASKS ==============
+
+model Task {
+  id              String      @id @default(cuid())
+  
+  // Assignment details
+  lessonId        String
+  lesson          Lesson      @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  studentId       String
+  student         User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  // What to learn
+  pageId          String
+  page            QuranPage   @relation(fields: [pageId], references: [id])
+  startLine       Int
+  endLine         Int
+  stage           StageNumber
+  
+  // Progress
+  status          TaskStatus  @default(IN_PROGRESS)
+  currentCount    Int         @default(0)  // Сколько раз отправил
+  requiredCount   Int         @default(80) // Сколько нужно
+  passedCount     Int         @default(0)  // Сколько сдал
+  failedCount     Int         @default(0)  // Сколько не сдал
+  
+  // Timing
+  startedAt       DateTime    @default(now())
+  deadline        DateTime
+  completedAt     DateTime?
+  
+  submissions     Submission[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([studentId])
+  @@index([lessonId])
+  @@index([status])
+  @@index([pageId])
+}
+
+// ============== SUBMISSIONS ==============
+
+model Submission {
+  id              String           @id @default(cuid())
+  
+  taskId          String
+  task            Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  studentId       String
+  student         User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  // Content (Telegram file_id)
+  fileId          String
+  fileType        String           // "voice" or "video_note"
+  duration        Int?             // Duration in seconds
+  
+  // Review
+  status          SubmissionStatus @default(PENDING)
+  reviewerId      String?
+  reviewedAt      DateTime?
+  feedback        String?
+
+  // Telegram message tracking
+  telegramMsgId   BigInt?
+  
+  createdAt       DateTime         @default(now())
+  
+  @@index([taskId])
+  @@index([studentId])
+  @@index([status])
+}
+
+// ============== STATISTICS ==============
+
+model UserStatistics {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Overall progress
+  totalPagesCompleted Int      @default(0)
+  totalLinesCompleted Int      @default(0)
+  totalTasksCompleted Int      @default(0)
+  totalTasksFailed    Int      @default(0)
+  
+  // Time tracking
+  averageCompletionTime Float? // Average hours per page
+  fastestPageTime     Float?   // Fastest page completion in hours
+  
+  // Predictions
+  estimatedCompletionDate DateTime?
+  
+  // Weekly/Monthly comparisons
+  lastWeekProgress    Int      @default(0)  // Pages completed last week
+  thisWeekProgress    Int      @default(0)  // Pages completed this week
+  lastMonthProgress   Int      @default(0)  // Pages completed last month
+  thisMonthProgress   Int      @default(0)  // Pages completed this month
+  
+  // Submissions
+  totalSubmissions    Int      @default(0)
+  passedSubmissions   Int      @default(0)
+  totalReviews        Int      @default(0)  // For ustaz
+
+  // Streaks
+  currentStreak       Int      @default(0)
+  longestStreak       Int      @default(0)
+
+  // Weekly stats
+  averagePagesPerWeek Float    @default(0)
+
+  // Ranking
+  globalRank          Int?
+  groupRank           Int?
+
+  updatedAt           DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([globalRank])
+}
+
+// ============== SYSTEM SETTINGS ==============
+
+model SystemSettings {
+  id                  String   @id @default(cuid())
+  key                 String   @unique
+  value               String   @db.Text
+  description         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@index([key])
+}
+
+// ============== BOT MESSAGE TRACKING ==============
+
+model BotMessage {
+  id              String   @id @default(cuid())
+  chatId          BigInt
+  messageId       BigInt
+  userId          String?
+  messageType     String   // menu, task, notification, etc.
+  createdAt       DateTime @default(now())
+
+  @@index([chatId])
+  @@index([userId])
+}
+
+// ============== BOT SESSION ==============
+
+model BotSession {
+  id        String   @id
+  data      String   @db.Text  // JSON session data
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
