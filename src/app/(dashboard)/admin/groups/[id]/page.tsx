@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
+import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Table,
@@ -28,7 +29,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { StageNumber, GroupLevel, LessonType } from '@prisma/client'
 
@@ -151,8 +152,6 @@ export default function EditGroupPage() {
     level: 'LEVEL_1' as GroupLevel,
     isActive: true,
     lessonType: 'MEMORIZATION',
-    year: new Date().getFullYear().toString().slice(-2),
-    groupNum: '1',
     // Lesson settings
     repetitionCount: 80,
     stage1Days: 1,
@@ -182,17 +181,12 @@ export default function EditGroupPage() {
         setGroup(groupData)
         setUstazList(ustazData.items || [])
 
-        // Parse group name to extract components
-        const parsed = parseGroupName(groupData.name)
-
         setFormData({
           description: groupData.description || '',
           ustazId: groupData.ustazId,
           level: groupData.level || 'LEVEL_1',
           isActive: groupData.isActive,
-          lessonType: parsed?.lessonType || groupData.lessonType || 'MEMORIZATION',
-          year: parsed?.year || new Date().getFullYear().toString().slice(-2),
-          groupNum: parsed?.groupNum || '1',
+          lessonType: groupData.lessonType || 'MEMORIZATION',
           // Lesson settings
           repetitionCount: groupData.repetitionCount || 80,
           stage1Days: groupData.stage1Days || 1,
@@ -215,25 +209,16 @@ export default function EditGroupPage() {
     fetchData()
   }, [params.id])
 
-  // Generate group name from components
-  const generateGroupName = () => {
-    const typePrefix = LESSON_TYPES.find(t => t.value === formData.lessonType)?.prefix || 'ЗА'
-    const levelNum = GROUP_LEVELS.find(l => l.value === formData.level)?.num || '1'
-    return `${typePrefix}-${formData.year}-${levelNum}-${formData.groupNum}`
-  }
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
     setError('')
 
     try {
-      const newName = generateGroupName()
       const res = await fetch(`/api/groups/${params.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: newName,
           description: formData.description,
           ustazId: formData.ustazId,
           level: formData.level,
@@ -373,7 +358,7 @@ export default function EditGroupPage() {
         </Button>
         <div className="flex-1">
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold tracking-tight">{generateGroupName()}</h1>
+            <h1 className="text-3xl font-bold tracking-tight">{group.name}</h1>
             <Badge variant={formData.isActive ? 'default' : 'secondary'}>
               {formData.isActive ? 'Активна' : 'Неактивна'}
             </Badge>
@@ -385,7 +370,7 @@ export default function EditGroupPage() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
             <CardDescription>Студентов</CardDescription>
@@ -466,7 +451,8 @@ export default function EditGroupPage() {
                   <Edit3 className="h-4 w-4 text-muted-foreground" />
                   <Label className="font-medium">Название группы</Label>
                 </div>
-                <p className="text-2xl font-bold">{generateGroupName()}</p>
+                <p className="text-2xl font-bold">{group.name}</p>
+                <p className="text-xs text-muted-foreground">Год и номер генерируются автоматически при создании</p>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Тип урока</Label>
@@ -487,15 +473,6 @@ export default function EditGroupPage() {
                     </Select>
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Год</Label>
-                    <Input
-                      className="h-9"
-                      value={formData.year}
-                      onChange={(e) => setFormData({ ...formData, year: e.target.value })}
-                      maxLength={2}
-                    />
-                  </div>
-                  <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Уровень</Label>
                     <Select
                       value={formData.level}
@@ -512,15 +489,6 @@ export default function EditGroupPage() {
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Номер группы</Label>
-                    <Input
-                      className="h-9"
-                      value={formData.groupNum}
-                      onChange={(e) => setFormData({ ...formData, groupNum: e.target.value })}
-                      maxLength={2}
-                    />
                   </div>
                 </div>
               </div>
@@ -831,8 +799,7 @@ export default function EditGroupPage() {
                 <TableRow>
                   <TableHead>Студент</TableHead>
                   <TableHead>Телефон</TableHead>
-                  <TableHead className="text-center">Прогресс</TableHead>
-                  <TableHead className="text-center">Задание</TableHead>
+                  <TableHead>Прогресс</TableHead>
                   <TableHead className="text-center">Чат</TableHead>
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
@@ -840,9 +807,9 @@ export default function EditGroupPage() {
               <TableBody>
                 {group.students.map((student) => {
                   const activeTask = student.tasks?.[0]
-                  const progress = activeTask
+                  const taskCompletion = activeTask
                     ? Math.round((activeTask.passedCount / activeTask.requiredCount) * 100)
-                    : null
+                    : 0
                   const phoneClean = student.phone.replace(/\D/g, '')
 
                   return (
@@ -858,25 +825,20 @@ export default function EditGroupPage() {
                       <TableCell className="font-mono text-sm text-muted-foreground">
                         {student.phone}
                       </TableCell>
-                      <TableCell className="text-center">
-                        <div className="flex items-center justify-center gap-1">
-                          <Badge variant="outline" className="text-xs">
-                            📖 {student.currentPage}-{student.currentLine}
-                          </Badge>
-                          <Badge variant="secondary" className="text-xs">
-                            {getStageLabel(student.currentStage)}
-                          </Badge>
+                      <TableCell>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-3 text-sm">
+                            <div className="flex items-center gap-1">
+                              <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="font-medium">{student.currentPage}-{student.currentLine}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
+                              <span className="font-medium">{activeTask?.passedCount || 0}/{activeTask?.requiredCount || 0}</span>
+                            </div>
+                          </div>
+                          <Progress value={taskCompletion} className="h-1.5 w-24" />
                         </div>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {progress !== null ? (
-                          <Badge variant={progress >= 100 ? 'default' : 'outline'} className="text-xs">
-                            <CheckCircle2 className="h-3 w-3 mr-1" />
-                            {activeTask?.passedCount}/{activeTask?.requiredCount}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-1">
