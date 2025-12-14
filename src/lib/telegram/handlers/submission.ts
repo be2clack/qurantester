@@ -1,8 +1,11 @@
 import type { BotContext } from '../bot'
 import { prisma } from '@/lib/prisma'
 import { TaskStatus, SubmissionStatus } from '@prisma/client'
-import { sendAndTrack, deleteUserMessage } from '../utils/message-cleaner'
+import { sendAndTrack, deleteUserMessage, deleteMessagesByType, deleteMessagesByTypeForChat } from '../utils/message-cleaner'
 import { getStudentTaskKeyboard, getBackKeyboard } from '../keyboards/main-menu'
+
+// Auto-delete confirmation messages after this many minutes
+const CONFIRMATION_AUTO_DELETE_MINUTES = 2
 
 /**
  * Handle voice message submission
@@ -104,11 +107,24 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
   })
 
   if (previousPending) {
+    // Delete previous student message (the audio/video that was just confirmed)
+    if (previousPending.studentMsgId && ctx.chat?.id) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat.id, Number(previousPending.studentMsgId))
+      } catch (e) {
+        // Message might already be deleted
+      }
+    }
     // Notify ustaz about the previous submission (now confirmed by this new one)
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
+  // Delete previous confirmation message and main menu to keep chat clean
+  await deleteMessagesByType(ctx, 'submission_confirm')
+  await deleteMessagesByType(ctx, 'menu')
+
   // Create new submission (will be confirmed by next submission or task completion)
+  // Student's message is kept until confirmed by next submission
   const submission = await prisma.submission.create({
     data: {
       taskId: task.id,
@@ -117,7 +133,7 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
       fileType: 'voice',
       duration: voice.duration,
       status: SubmissionStatus.PENDING,
-      telegramMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
+      studentMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
     }
   })
 
@@ -129,7 +145,7 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     }
   })
 
-  // Send confirmation
+  // Send confirmation (auto-delete after N minutes)
   const remaining = task.requiredCount - updatedTask.currentCount
   const progressPercent = ((updatedTask.currentCount / task.requiredCount) * 100).toFixed(0)
 
@@ -152,7 +168,8 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
       parse_mode: 'HTML'
     },
     user.id,
-    'submission_confirm'
+    'submission_confirm',
+    CONFIRMATION_AUTO_DELETE_MINUTES
   )
 }
 
@@ -256,11 +273,24 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
   })
 
   if (previousPending) {
+    // Delete previous student message (the audio/video that was just confirmed)
+    if (previousPending.studentMsgId && ctx.chat?.id) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat.id, Number(previousPending.studentMsgId))
+      } catch (e) {
+        // Message might already be deleted
+      }
+    }
     // Notify ustaz about the previous submission (now confirmed by this new one)
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
+  // Delete previous confirmation message and main menu to keep chat clean
+  await deleteMessagesByType(ctx, 'submission_confirm')
+  await deleteMessagesByType(ctx, 'menu')
+
   // Create new submission (will be confirmed by next submission or task completion)
+  // Student's message is kept until confirmed by next submission
   const submission = await prisma.submission.create({
     data: {
       taskId: task.id,
@@ -269,7 +299,7 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
       fileType: 'video_note',
       duration: videoNote.duration,
       status: SubmissionStatus.PENDING,
-      telegramMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
+      studentMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
     }
   })
 
@@ -281,7 +311,7 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     }
   })
 
-  // Send confirmation
+  // Send confirmation (auto-delete after N minutes)
   const remaining = task.requiredCount - updatedTask.currentCount
   const progressPercent = ((updatedTask.currentCount / task.requiredCount) * 100).toFixed(0)
 
@@ -304,7 +334,8 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
       parse_mode: 'HTML'
     },
     user.id,
-    'submission_confirm'
+    'submission_confirm',
+    CONFIRMATION_AUTO_DELETE_MINUTES
   )
 }
 
@@ -410,11 +441,24 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
   })
 
   if (previousPending) {
+    // Delete previous student message (the text that was just confirmed)
+    if (previousPending.studentMsgId && ctx.chat?.id) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat.id, Number(previousPending.studentMsgId))
+      } catch (e) {
+        // Message might already be deleted
+      }
+    }
     // Notify ustaz about the previous submission (now confirmed by this new one)
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
+  // Delete previous confirmation message and main menu to keep chat clean
+  await deleteMessagesByType(ctx, 'submission_confirm')
+  await deleteMessagesByType(ctx, 'menu')
+
   // Create new submission (will be confirmed by next submission or task completion)
+  // Student's message is kept until confirmed by next submission
   const submission = await prisma.submission.create({
     data: {
       taskId: task.id,
@@ -422,7 +466,7 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
       fileId: `text:${text.substring(0, 100)}`, // Store prefix of text
       fileType: 'text',
       status: SubmissionStatus.PENDING,
-      telegramMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
+      studentMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
     }
   })
 
@@ -434,7 +478,7 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     }
   })
 
-  // Send confirmation
+  // Send confirmation (auto-delete after N minutes)
   const remaining = task.requiredCount - updatedTask.currentCount
   const progressPercent = ((updatedTask.currentCount / task.requiredCount) * 100).toFixed(0)
 
@@ -457,7 +501,8 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
       parse_mode: 'HTML'
     },
     user.id,
-    'submission_confirm'
+    'submission_confirm',
+    CONFIRMATION_AUTO_DELETE_MINUTES
   )
 }
 
@@ -677,6 +722,14 @@ async function notifyUstazAboutSubmission(
     const { bot } = await import('../bot')
     const { InlineKeyboard } = await import('grammy')
 
+    const ustazChatId = Number(group.ustaz.telegramId)
+    const botToken = process.env.TELEGRAM_BOT_TOKEN
+
+    // Delete ustaz menu to keep chat clean (avoid duplicate menus after review)
+    if (botToken) {
+      await deleteMessagesByTypeForChat(ustazChatId, 'menu', botToken)
+    }
+
     const studentName = student.firstName || 'Студент'
     const groupName = group.name
     const lineRange = task.startLine === task.endLine
@@ -735,8 +788,6 @@ async function notifyUstazAboutSubmission(
 
     reviewKeyboard.text('❌ Не сдал', `review:fail:${submission.id}`)
 
-    const ustazChatId = Number(group.ustaz.telegramId)
-
     // Send the file with caption and review buttons
     if (submission.fileType === 'voice') {
       await bot.api.sendVoice(ustazChatId, submission.fileId, {
@@ -762,6 +813,12 @@ async function notifyUstazAboutSubmission(
         reply_markup: reviewKeyboard
       })
     }
+
+    // Mark submission as sent to ustaz
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: { sentToUstazAt: new Date() }
+    })
   } catch (error) {
     console.error('Failed to notify ustaz:', error)
   }

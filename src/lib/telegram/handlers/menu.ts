@@ -2,7 +2,7 @@ import type { BotContext } from '../bot'
 import { InlineKeyboard } from 'grammy'
 import { prisma } from '@/lib/prisma'
 import { TaskStatus, SubmissionStatus } from '@prisma/client'
-import { sendAndTrack, cleanupAllMessages } from '../utils/message-cleaner'
+import { sendAndTrack, cleanupAllMessages, deleteMessagesByType } from '../utils/message-cleaner'
 import {
   getMainMenuKeyboard,
   getBackKeyboard,
@@ -868,6 +868,7 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
   const pendingCount = await prisma.submission.count({
     where: {
       status: SubmissionStatus.PENDING,
+      sentToUstazAt: { not: null }, // Only count submissions that were sent to ustaz
       OR: [
         { task: { lesson: { groupId: { in: groupIds } } } },
         { task: { groupId: { in: groupIds } } }
@@ -918,6 +919,7 @@ async function showUstazMenu(ctx: BotContext, user: any): Promise<void> {
   const pendingCount = await prisma.submission.count({
     where: {
       status: SubmissionStatus.PENDING,
+      sentToUstazAt: { not: null }, // Only count submissions that were sent to ustaz
       OR: [
         { task: { lesson: { groupId: { in: groupIds } } } },
         { task: { groupId: { in: groupIds } } }
@@ -952,9 +954,11 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   const groupIds = groups.map(g => g.id)
 
   // Get pending submissions - check both lesson.groupId and task.groupId
+  // Only show submissions that were actually sent to ustaz (confirmed by student)
   const submissions = await prisma.submission.findMany({
     where: {
       status: SubmissionStatus.PENDING,
+      sentToUstazAt: { not: null }, // Only show confirmed submissions
       OR: [
         {
           task: {
@@ -1112,6 +1116,9 @@ async function showNextSubmission(ctx: BotContext, user: any): Promise<void> {
  * Called after pass/fail action when old message was already deleted
  */
 async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any): Promise<void> {
+  // Delete any old menus to keep chat clean
+  await deleteMessagesByType(ctx, 'menu')
+
   // Get ustaz's groups
   const groups = await prisma.group.findMany({
     where: { ustazId: user.id },
@@ -1120,10 +1127,11 @@ async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any):
 
   const groupIds = groups.map(g => g.id)
 
-  // Get next pending submission
+  // Get next pending submission (only those that were sent to ustaz)
   const submissions = await prisma.submission.findMany({
     where: {
       status: SubmissionStatus.PENDING,
+      sentToUstazAt: { not: null }, // Only show submissions that were actually sent to ustaz
       OR: [
         { task: { lesson: { groupId: { in: groupIds } } } },
         { task: { groupId: { in: groupIds } } }
@@ -1517,9 +1525,19 @@ async function handleReviewCallback(
           message += `\n\n⚠️ <b>Срок истёк!</b>`
         }
 
-        await bot.api.sendMessage(Number(student.telegramId), message, {
+        const sentMsg = await bot.api.sendMessage(Number(student.telegramId), message, {
           parse_mode: 'HTML'
         })
+
+        // Track message for auto-delete after 1 minute
+        const { trackMessageForChat } = await import('../utils/message-cleaner')
+        await trackMessageForChat(
+          Number(student.telegramId),
+          sentMsg.message_id,
+          student.id,
+          'review_result',
+          1 // Delete after 1 minute
+        )
       }
     } catch (e) {
       console.error('Failed to notify student:', e)

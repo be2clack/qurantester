@@ -333,8 +333,10 @@ model Submission {
   aiRawResponse   String?   @db.Text  // Полный ответ API (для отладки)
 
   // Telegram message tracking
-  telegramMsgId   BigInt?
-  
+  telegramMsgId   BigInt?          // Bot confirmation message ID
+  studentMsgId    BigInt?          // Student's original message ID (voice/video)
+  sentToUstazAt   DateTime?        // When this submission was sent to ustaz for review
+
   createdAt       DateTime         @default(now())
   
   @@index([taskId])
@@ -406,15 +408,35 @@ model SystemSettings {
 // ============== BOT MESSAGE TRACKING ==============
 
 model BotMessage {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   chatId          BigInt
   messageId       BigInt
   userId          String?
-  messageType     String   // menu, task, notification, etc.
-  createdAt       DateTime @default(now())
+  messageType     String    // menu, task, notification, submission_confirm, etc.
+  deleteAfter     DateTime? // When to auto-delete this message (null = never)
+  createdAt       DateTime  @default(now())
 
   @@index([chatId])
   @@index([userId])
+  @@index([deleteAfter])
+}
+
+// ============== CRON JOBS ==============
+
+model CronJob {
+  id              String   @id @default(cuid())
+  externalId      String?  @unique // ID from cron-job.org
+  name            String   @unique
+  url             String
+  schedule        String   // Cron expression
+  isEnabled       Boolean  @default(true)
+  lastRunAt       DateTime?
+  lastStatus      String?  // success, error, etc.
+  lastError       String?
+  runCount        Int      @default(0)
+  errorCount      Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 // ============== BOT SESSION ==============

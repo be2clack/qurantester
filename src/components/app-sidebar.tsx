@@ -14,7 +14,8 @@ import {
   LogOut,
   BookOpenCheck,
   ChevronUp,
-  User2
+  User2,
+  Clock,
 } from 'lucide-react'
 
 import {
@@ -62,6 +63,7 @@ const navItemsByRole: Record<UserRole, NavItem[]> = {
     { title: 'Уроки', href: '/admin/lessons', icon: BookOpen },
     { title: 'Коран', href: '/admin/quran', icon: BookOpenCheck },
     { title: 'Аналитика', href: '/admin/analytics', icon: BarChart3 },
+    { title: 'Cron задачи', href: '/admin/cron', icon: Clock },
     { title: 'Настройки', href: '/admin/settings', icon: Settings },
   ],
   USTAZ: [
