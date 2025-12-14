@@ -4,8 +4,9 @@ import { TaskStatus, SubmissionStatus } from '@prisma/client'
 import { sendAndTrack, deleteUserMessage, deleteMessagesByType, deleteMessagesByTypeForChat } from '../utils/message-cleaner'
 import { getStudentTaskKeyboard, getBackKeyboard } from '../keyboards/main-menu'
 
-// Auto-delete confirmation messages after this many minutes
-const CONFIRMATION_AUTO_DELETE_MINUTES = 2
+// Note: submission_confirm messages are NOT auto-deleted by cron
+// They are deleted when student sends next submission or navigates away
+// Only review_result notifications are auto-deleted (30 seconds after sent)
 
 /**
  * Handle voice message submission
@@ -168,8 +169,8 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
       parse_mode: 'HTML'
     },
     user.id,
-    'submission_confirm',
-    CONFIRMATION_AUTO_DELETE_MINUTES
+    'submission_confirm'
+    // No auto-delete - stays until next submission or navigation
   )
 }
 
@@ -334,8 +335,8 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
       parse_mode: 'HTML'
     },
     user.id,
-    'submission_confirm',
-    CONFIRMATION_AUTO_DELETE_MINUTES
+    'submission_confirm'
+    // No auto-delete - stays until next submission or navigation
   )
 }
 
@@ -501,8 +502,8 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
       parse_mode: 'HTML'
     },
     user.id,
-    'submission_confirm',
-    CONFIRMATION_AUTO_DELETE_MINUTES
+    'submission_confirm'
+    // No auto-delete - stays until next submission or navigation
   )
 }
 

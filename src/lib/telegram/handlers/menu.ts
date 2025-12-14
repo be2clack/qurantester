@@ -1529,14 +1529,14 @@ async function handleReviewCallback(
           parse_mode: 'HTML'
         })
 
-        // Track message for auto-delete after 1 minute
+        // Track message for auto-delete after 30 seconds
         const { trackMessageForChat } = await import('../utils/message-cleaner')
         await trackMessageForChat(
           Number(student.telegramId),
           sentMsg.message_id,
           student.id,
           'review_result',
-          1 // Delete after 1 minute
+          0.5 // Delete after 30 seconds
         )
       }
     } catch (e) {
