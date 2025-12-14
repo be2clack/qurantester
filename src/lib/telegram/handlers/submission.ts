@@ -119,9 +119,9 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Delete previous confirmation message and main menu to keep chat clean
+  // Delete previous confirmation message to keep chat clean
+  // Note: Keep menu - don't delete it, student needs it after confirmation auto-deletes
   await deleteMessagesByType(ctx, 'submission_confirm')
-  await deleteMessagesByType(ctx, 'menu')
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -285,9 +285,9 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Delete previous confirmation message and main menu to keep chat clean
+  // Delete previous confirmation message to keep chat clean
+  // Note: Keep menu - don't delete it, student needs it after confirmation auto-deletes
   await deleteMessagesByType(ctx, 'submission_confirm')
-  await deleteMessagesByType(ctx, 'menu')
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -453,9 +453,9 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Delete previous confirmation message and main menu to keep chat clean
+  // Delete previous confirmation message to keep chat clean
+  // Note: Keep menu - don't delete it, student needs it after confirmation auto-deletes
   await deleteMessagesByType(ctx, 'submission_confirm')
-  await deleteMessagesByType(ctx, 'menu')
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
