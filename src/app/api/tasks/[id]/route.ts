@@ -30,8 +30,11 @@ export async function GET(
             firstName: true,
             lastName: true,
             phone: true,
-            studentGroup: {
-              select: { id: true, name: true, ustazId: true }
+            studentGroups: {
+              select: {
+                group: { select: { id: true, name: true, ustazId: true } }
+              },
+              take: 1
             }
           }
         },
@@ -70,7 +73,8 @@ export async function GET(
     }
 
     if (currentUser.role === UserRole.USTAZ) {
-      if (task.student.studentGroup?.ustazId !== currentUser.id) {
+      const studentGroup = task.student.studentGroups[0]?.group
+      if (studentGroup?.ustazId !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }
@@ -123,7 +127,10 @@ export async function PATCH(
       include: {
         student: {
           include: {
-            studentGroup: true
+            studentGroups: {
+              include: { group: true },
+              take: 1
+            }
           }
         }
       }
@@ -135,7 +142,8 @@ export async function PATCH(
 
     // Ustaz can only update their students' tasks
     if (currentUser.role === UserRole.USTAZ) {
-      if (task.student.studentGroup?.ustazId !== currentUser.id) {
+      const studentGroup = task.student.studentGroups[0]?.group
+      if (studentGroup?.ustazId !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }

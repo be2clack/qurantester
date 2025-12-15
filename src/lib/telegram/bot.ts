@@ -3,13 +3,15 @@ import { prisma } from '@/lib/prisma'
 
 // Session data interface
 export interface SessionData {
-  step: 'idle' | 'awaiting_contact' | 'awaiting_name' | 'awaiting_birthdate' | 'awaiting_submission' | 'browsing_menu'
+  step: 'idle' | 'awaiting_contact' | 'awaiting_name' | 'awaiting_birthdate' | 'awaiting_role' | 'awaiting_ustaz_selection' | 'awaiting_ustaz_confirm' | 'awaiting_child_phone' | 'awaiting_submission' | 'browsing_menu'
   messageIds: number[]
   pendingTaskId?: string
   currentMenuPath?: string
   // Registration data
   registrationPhone?: string
   registrationName?: string
+  registrationBirthDate?: string
+  selectedUstazId?: string
 }
 
 // Bot context with session

@@ -25,8 +25,11 @@ export async function GET(
             lastName: true,
             phone: true,
             telegramId: true,
-            studentGroup: {
-              select: { id: true, name: true, ustazId: true }
+            studentGroups: {
+              select: {
+                group: { select: { id: true, name: true, ustazId: true } }
+              },
+              take: 1
             }
           }
         },
@@ -61,7 +64,8 @@ export async function GET(
     }
 
     if (currentUser.role === UserRole.USTAZ) {
-      if (submission.student.studentGroup?.ustazId !== currentUser.id) {
+      const studentGroup = submission.student.studentGroups[0]?.group
+      if (studentGroup?.ustazId !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }

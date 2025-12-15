@@ -36,7 +36,7 @@ export async function GET(
         const student = await prisma.user.findFirst({
           where: {
             id,
-            studentGroup: { ustazId: currentUser.id }
+            studentGroups: { some: { group: { ustazId: currentUser.id } } }
           }
         })
         if (!student) {
@@ -50,8 +50,10 @@ export async function GET(
     const user = await prisma.user.findUnique({
       where: { id },
       include: {
-        studentGroup: {
-          select: { id: true, name: true, ustazId: true }
+        studentGroups: {
+          select: {
+            group: { select: { id: true, name: true, ustazId: true } }
+          }
         },
         childOf: {
           select: { id: true, firstName: true, lastName: true, phone: true }
@@ -76,6 +78,7 @@ export async function GET(
     return NextResponse.json({
       ...user,
       telegramId: user.telegramId?.toString() || null,
+      studentGroup: user.studentGroups[0]?.group || null, // For backward compatibility
     })
   } catch (error) {
     console.error('Get user error:', error)
@@ -111,10 +114,15 @@ export async function PATCH(
 
     const { parentIds, ...data } = validation.data
 
-    // If changing role to non-student, remove from group
+    // If changing role to non-student, remove from all groups
     if (data.role && data.role !== UserRole.STUDENT) {
-      data.groupId = null
+      await prisma.studentGroup.deleteMany({
+        where: { studentId: id }
+      })
     }
+
+    // Remove groupId from data as it's now managed via StudentGroup
+    delete (data as any).groupId
 
     // Build update data with parent connection
     const updateData: any = { ...data }
@@ -128,8 +136,10 @@ export async function PATCH(
       where: { id },
       data: updateData,
       include: {
-        studentGroup: {
-          select: { id: true, name: true }
+        studentGroups: {
+          select: {
+            group: { select: { id: true, name: true } }
+          }
         },
         childOf: {
           select: { id: true, firstName: true, lastName: true, phone: true }
@@ -145,6 +155,7 @@ export async function PATCH(
     return NextResponse.json({
       ...user,
       telegramId: user.telegramId?.toString() || null,
+      studentGroup: user.studentGroups[0]?.group || null, // For backward compatibility
     })
   } catch (error) {
     console.error('Update user error:', error)

@@ -24,10 +24,15 @@ export async function GET() {
         students: {
           where: { isActive: true },
           select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            currentPage: true,
+            student: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                currentPage: true,
+                isActive: true,
+              }
+            }
           }
         },
         _count: {
@@ -42,7 +47,7 @@ export async function GET() {
     const students = await prisma.user.findMany({
       where: {
         role: UserRole.STUDENT,
-        groupId: { in: groupIds },
+        studentGroups: { some: { groupId: { in: groupIds }, isActive: true } },
         isActive: true
       },
       select: {
@@ -50,8 +55,11 @@ export async function GET() {
         firstName: true,
         lastName: true,
         currentPage: true,
-        studentGroup: {
-          select: { name: true }
+        studentGroups: {
+          select: {
+            group: { select: { name: true } }
+          },
+          take: 1
         }
       },
       orderBy: { currentPage: 'desc' },
@@ -88,20 +96,25 @@ export async function GET() {
 
     // Calculate totals
     const totalStudents = groups.reduce((sum, g) => sum + g._count.students, 0)
-    const allPages = groups.flatMap(g => g.students.map(s => s.currentPage))
+    const allPages = groups.flatMap(g =>
+      g.students.filter(sg => sg.student.isActive).map(sg => sg.student.currentPage)
+    )
     const avgPage = allPages.length > 0
       ? Math.round(allPages.reduce((a, b) => a + b, 0) / allPages.length)
       : 0
 
     // Group stats
-    const groupStats = groups.map(g => ({
-      id: g.id,
-      name: g.name,
-      studentCount: g._count.students,
-      avgPage: g.students.length > 0
-        ? Math.round(g.students.reduce((sum, s) => sum + s.currentPage, 0) / g.students.length)
-        : 0
-    })).sort((a, b) => b.avgPage - a.avgPage)
+    const groupStats = groups.map(g => {
+      const activeStudents = g.students.filter(sg => sg.student.isActive)
+      return {
+        id: g.id,
+        name: g.name,
+        studentCount: g._count.students,
+        avgPage: activeStudents.length > 0
+          ? Math.round(activeStudents.reduce((sum, sg) => sum + sg.student.currentPage, 0) / activeStudents.length)
+          : 0
+      }
+    }).sort((a, b) => b.avgPage - a.avgPage)
 
     // Top students with group info
     const topStudents = students.map(s => ({
@@ -109,7 +122,7 @@ export async function GET() {
       firstName: s.firstName,
       lastName: s.lastName,
       currentPage: s.currentPage,
-      group: s.studentGroup
+      group: s.studentGroups[0]?.group || null
     }))
 
     return NextResponse.json({

@@ -1,5 +1,5 @@
 import { InlineKeyboard, Keyboard } from 'grammy'
-import { UserRole } from '@prisma/client'
+import { UserRole, LessonType } from '@prisma/client'
 
 /**
  * Contact request keyboard (one-time, resized)
@@ -9,6 +9,20 @@ export function getContactKeyboard(): Keyboard {
     .requestContact('📱 Отправить номер телефона')
     .resized()
     .oneTime()
+}
+
+/**
+ * Lesson type info for student menu
+ */
+export interface LessonTypeInfo {
+  type: LessonType
+  groupId: string
+  groupName: string
+  currentPage: number
+  currentLine: number
+  currentStage: string
+  hasActiveTask: boolean
+  taskProgress?: { current: number; required: number }
 }
 
 /**
@@ -25,6 +39,8 @@ export interface StudentMenuInfo {
   rankInGroup?: number
   totalInGroup?: number
   totalTasksCompleted?: number
+  // New: lesson types available to student
+  lessonTypes?: LessonTypeInfo[]
 }
 
 /**
@@ -55,11 +71,34 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
       break
 
     case UserRole.STUDENT:
-      // Dynamic task button based on task status
-      if (menuInfo?.hasActiveTask && menuInfo.currentCount !== undefined && menuInfo.requiredCount !== undefined) {
-        keyboard.text(`📤 Сдать задание (${menuInfo.currentCount}/${menuInfo.requiredCount})`, 'student:current_task').row()
+      // Show lesson types if available (new multi-group flow)
+      if (menuInfo?.lessonTypes && menuInfo.lessonTypes.length > 0) {
+        // Group lesson types by type
+        for (const lesson of menuInfo.lessonTypes) {
+          const typeName = getLessonTypeName(lesson.type)
+          const stageShort = lesson.currentStage.replace('STAGE_', '').replace('_', '.')
+          const progress = `${stageShort}`
+
+          // Show task progress if has active task
+          if (lesson.hasActiveTask && lesson.taskProgress) {
+            keyboard.text(
+              `📖 ${typeName} (${progress}) [${lesson.taskProgress.current}/${lesson.taskProgress.required}]`,
+              `lesson_type:${lesson.type}:${lesson.groupId}`
+            ).row()
+          } else {
+            keyboard.text(
+              `📖 ${typeName} (${progress})`,
+              `lesson_type:${lesson.type}:${lesson.groupId}`
+            ).row()
+          }
+        }
       } else {
-        keyboard.text('▶️ Начать задание', 'student:current_task').row()
+        // Fallback to old single-task flow
+        if (menuInfo?.hasActiveTask && menuInfo.currentCount !== undefined && menuInfo.requiredCount !== undefined) {
+          keyboard.text(`📤 Сдать задание (${menuInfo.currentCount}/${menuInfo.requiredCount})`, 'student:current_task').row()
+        } else {
+          keyboard.text('▶️ Начать задание', 'student:current_task').row()
+        }
       }
 
       // Chat with ustaz button (only when username available - tg://user URL causes privacy errors)
@@ -68,7 +107,7 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
       }
 
       keyboard
-        .text('📚 Моя группа', 'student:group').row()
+        .text('📚 Мои группы', 'student:groups').row()
         .text('📈 Мой прогресс', 'student:progress')
         .text('📋 История', 'student:tasks').row()
         .text('📖 Коран', 'student:quran')
@@ -220,4 +259,92 @@ export function getQuranNavigationKeyboard(
   keyboard.text('Назад в меню', 'student:menu')
 
   return keyboard
+}
+
+// ============== REGISTRATION KEYBOARDS ==============
+
+/**
+ * Role selection keyboard for registration
+ */
+export function getRoleSelectionKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('📚 Студент', 'reg:role:STUDENT').row()
+    .text('👨‍🏫 Устаз', 'reg:role:USTAZ').row()
+    .text('👨‍👩‍👧 Родитель', 'reg:role:PARENT')
+}
+
+/**
+ * Ustaz list keyboard for student registration
+ */
+export function getUstazListKeyboard(
+  ustazList: Array<{
+    id: string
+    firstName: string | null
+    lastName: string | null
+    phone: string
+    _count: { ustazGroups: number }
+  }>
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  for (const ustaz of ustazList) {
+    const name = [ustaz.firstName, ustaz.lastName].filter(Boolean).join(' ') || 'Устаз'
+    const groupCount = ustaz._count.ustazGroups
+    keyboard.text(`${name} (${groupCount} групп)`, `reg:ustaz:${ustaz.id}`).row()
+  }
+
+  keyboard.text('◀️ Назад', 'reg:back_to_role')
+
+  return keyboard
+}
+
+/**
+ * Ustaz confirmation keyboard
+ */
+export function getUstazConfirmKeyboard(ustazId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('✅ Подтвердить', `reg:confirm_ustaz:${ustazId}`).row()
+    .text('◀️ Выбрать другого', 'reg:back_to_ustaz_list')
+}
+
+/**
+ * Back to role selection keyboard
+ */
+export function getBackToRoleKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('◀️ Назад к выбору роли', 'reg:back_to_role')
+}
+
+// ============== HELPER FUNCTIONS ==============
+
+/**
+ * Get human-readable lesson type name
+ */
+export function getLessonTypeName(type: LessonType): string {
+  switch (type) {
+    case LessonType.MEMORIZATION:
+      return 'Заучивание'
+    case LessonType.REVISION:
+      return 'Повторение'
+    case LessonType.TRANSLATION:
+      return 'Перевод'
+    default:
+      return type
+  }
+}
+
+/**
+ * Get lesson type icon
+ */
+export function getLessonTypeIcon(type: LessonType): string {
+  switch (type) {
+    case LessonType.MEMORIZATION:
+      return '📖'
+    case LessonType.REVISION:
+      return '🔄'
+    case LessonType.TRANSLATION:
+      return '📝'
+    default:
+      return '📚'
+  }
 }

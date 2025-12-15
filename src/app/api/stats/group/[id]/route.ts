@@ -41,7 +41,7 @@ export async function GET(
 
     // Get student IDs
     const students = await prisma.user.findMany({
-      where: { groupId: id, role: UserRole.STUDENT, isActive: true },
+      where: { studentGroups: { some: { groupId: id } }, role: UserRole.STUDENT, isActive: true },
       select: { id: true, currentPage: true, currentLine: true }
     })
     const studentIds = students.map(s => s.id)
@@ -68,7 +68,7 @@ export async function GET(
 
     // Get top students
     const topStudents = await prisma.user.findMany({
-      where: { groupId: id, role: UserRole.STUDENT, isActive: true },
+      where: { studentGroups: { some: { groupId: id } }, role: UserRole.STUDENT, isActive: true },
       select: {
         id: true,
         firstName: true,
@@ -88,7 +88,7 @@ export async function GET(
 
     // Get struggling students (lowest progress)
     const strugglingStudents = await prisma.user.findMany({
-      where: { groupId: id, role: UserRole.STUDENT, isActive: true },
+      where: { studentGroups: { some: { groupId: id } }, role: UserRole.STUDENT, isActive: true },
       select: {
         id: true,
         firstName: true,

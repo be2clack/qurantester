@@ -44,7 +44,7 @@ export async function GET(req: NextRequest) {
 
       // Filter submissions by: student in ustaz's groups OR task in ustaz's groups
       where.OR = [
-        { student: { groupId: { in: groupIds } } },
+        { student: { studentGroups: { some: { groupId: { in: groupIds } } } } },
         { task: { groupId: { in: groupIds } } },
         { task: { lesson: { groupId: { in: groupIds } } } }
       ]
@@ -69,11 +69,16 @@ export async function GET(req: NextRequest) {
               firstName: true,
               lastName: true,
               phone: true,
-              studentGroup: {
+              studentGroups: {
                 select: {
-                  id: true,
-                  name: true,
-                }
+                  group: {
+                    select: {
+                      id: true,
+                      name: true,
+                    }
+                  }
+                },
+                take: 1
               }
             }
           },

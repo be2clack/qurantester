@@ -21,9 +21,13 @@ export default async function ParentDashboard() {
     },
     include: {
       statistics: true,
-      studentGroup: {
+      studentGroups: {
         include: {
-          ustaz: { select: { firstName: true, lastName: true } }
+          group: {
+            include: {
+              ustaz: { select: { firstName: true, lastName: true } }
+            }
+          }
         }
       }
     }
@@ -82,11 +86,11 @@ export default async function ParentDashboard() {
                     {child.currentPage}-{child.currentLine}
                   </Badge>
                 </div>
-                {child.studentGroup && (
+                {child.studentGroups[0]?.group && (
                   <CardDescription>
-                    Группа: {child.studentGroup.name}
-                    {child.studentGroup.ustaz && (
-                      <> · Устаз: {child.studentGroup.ustaz.firstName}</>
+                    Группа: {child.studentGroups[0].group.name}
+                    {child.studentGroups[0].group.ustaz && (
+                      <> · Устаз: {child.studentGroups[0].group.ustaz.firstName}</>
                     )}
                   </CardDescription>
                 )}

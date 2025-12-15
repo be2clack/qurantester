@@ -29,7 +29,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone, Database, Cloud, Sparkles, Volume2, Check, Palette, Bot, Zap, Hand, PlayCircle } from 'lucide-react'
+import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone, Cloud, Sparkles, Volume2, Check, Palette, Bot, Zap, Hand, PlayCircle } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Slider } from '@/components/ui/slider'
 import { StageNumber, GroupLevel, LessonType, MushafType, AIProvider, VerificationMode } from '@prisma/client'
@@ -58,10 +58,8 @@ const LEVEL_COLORS: Record<string, string> = {
   LEVEL_3: 'bg-purple-100 text-purple-800',
 }
 
-const MUSHAF_TYPES = [
-  { value: 'LOCAL', label: 'Наш Мусхаф', description: 'Локальная база данных', icon: Database },
-  { value: 'MEDINA_API', label: 'Мединский', description: 'Quran.com API', icon: Cloud },
-]
+// Only Medina API mushaf is supported
+const MUSHAF_TYPE_LABEL = 'Мединский мусхаф (Quran.com API)'
 
 const RUSSIAN_TRANSLATIONS = [
   { id: 45, name: 'Кулиев', author: 'Эльмир Кулиев', isDefault: true },
@@ -214,8 +212,8 @@ export default function EditGroupPage() {
     showText: false,
     showImage: false,
     showAudio: false,
-    // Mushaf settings
-    mushafType: 'LOCAL' as MushafType,
+    // Mushaf settings (always MEDINA_API)
+    mushafType: 'MEDINA_API' as MushafType,
     translationId: 45 as number | null,
     tafsirId: 170 as number | null,
     showTranslation: false,
@@ -883,15 +881,10 @@ export default function EditGroupPage() {
           <CollapsibleTrigger asChild>
             <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <CardTitle className="flex items-center gap-2">
-                    <BookOpen className="h-5 w-5" />
-                    Настройки мусхафа
-                  </CardTitle>
-                  <Badge variant={formData.mushafType === 'MEDINA_API' ? 'default' : 'secondary'}>
-                    {MUSHAF_TYPES.find(m => m.value === formData.mushafType)?.label}
-                  </Badge>
-                </div>
+                <CardTitle className="flex items-center gap-2">
+                  <BookOpen className="h-5 w-5" />
+                  Настройки мусхафа
+                </CardTitle>
                 {mushafSettingsOpen ? (
                   <ChevronUp className="h-5 w-5 text-muted-foreground" />
                 ) : (
@@ -902,40 +895,21 @@ export default function EditGroupPage() {
           </CollapsibleTrigger>
           <CollapsibleContent>
             <CardContent className="space-y-4">
-              {/* Mushaf Type Selection */}
-              <div className="space-y-2">
-                <Label>Источник контента</Label>
-                <div className="grid grid-cols-2 gap-3">
-                  {MUSHAF_TYPES.map((type) => {
-                    const Icon = type.icon
-                    const isSelected = formData.mushafType === type.value
-                    return (
-                      <div
-                        key={type.value}
-                        onClick={() => setFormData({ ...formData, mushafType: type.value as MushafType })}
-                        className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
-                          isSelected
-                            ? 'border-primary bg-primary/5'
-                            : 'border-muted hover:border-muted-foreground/50'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2 rounded-lg ${isSelected ? 'bg-primary/10' : 'bg-muted'}`}>
-                            <Icon className={`h-5 w-5 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
-                          </div>
-                          <div>
-                            <p className="font-medium">{type.label}</p>
-                            <p className="text-xs text-muted-foreground">{type.description}</p>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
+              {/* Mushaf Info */}
+              <div className="p-4 rounded-lg border-2 border-primary bg-primary/5">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-primary/10">
+                    <Cloud className="h-5 w-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="font-medium">{MUSHAF_TYPE_LABEL}</p>
+                    <p className="text-xs text-muted-foreground">Контент загружается через API</p>
+                  </div>
                 </div>
               </div>
 
               {/* Medina API Settings */}
-              {formData.mushafType === 'MEDINA_API' && (
+              {true && (
                 <div className="space-y-4 p-4 bg-muted/50 rounded-lg border">
                   <p className="text-sm font-medium flex items-center gap-2">
                     <Cloud className="h-4 w-4" />
@@ -1171,16 +1145,6 @@ export default function EditGroupPage() {
                 )}
               </div>
 
-              {formData.mushafType === 'LOCAL' && (
-                <div className="p-4 bg-muted/30 rounded-lg border border-dashed text-center">
-                  <Database className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">
-                    Контент берется из локальной базы данных.
-                    <br />
-                    Редактируйте на странице <strong>Коран → Наш Мусхаф</strong>
-                  </p>
-                </div>
-              )}
 
               {/* Save button */}
               <Button

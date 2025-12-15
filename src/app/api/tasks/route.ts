@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
       where.studentId = currentUser.id
     } else if (currentUser.role === UserRole.USTAZ) {
       where.student = {
-        studentGroup: { ustazId: currentUser.id }
+        studentGroups: { some: { group: { ustazId: currentUser.id } } }
       }
     } else if (currentUser.role === UserRole.PARENT) {
       where.student = {
@@ -120,13 +120,19 @@ export async function POST(req: NextRequest) {
     const student = await prisma.user.findUnique({
       where: { id: studentId },
       include: {
-        studentGroup: {
+        studentGroups: {
+          where: { isActive: true },
           include: {
-            lessons: {
-              where: { isActive: true },
-              take: 1
+            group: {
+              include: {
+                lessons: {
+                  where: { isActive: true },
+                  take: 1
+                }
+              }
             }
-          }
+          },
+          take: 1
         }
       }
     })
@@ -135,15 +141,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Student not found' }, { status: 404 })
     }
 
+    const primaryStudentGroup = student.studentGroups[0]
+    const primaryGroup = primaryStudentGroup?.group
+
     // Ustaz can only create tasks for their students
     if (currentUser.role === UserRole.USTAZ) {
-      if (!student.studentGroup || student.studentGroup.ustazId !== currentUser.id) {
+      if (!primaryGroup || primaryGroup.ustazId !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }
 
     // Get lesson settings
-    const lesson = student.studentGroup?.lessons[0]
+    const lesson = primaryGroup?.lessons[0]
     if (!lesson) {
       return NextResponse.json(
         { error: 'No active lesson for student group' },

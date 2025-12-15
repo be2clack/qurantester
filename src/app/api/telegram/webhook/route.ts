@@ -10,6 +10,7 @@ import {
   handleRejectedMessage
 } from '@/lib/telegram/handlers/submission'
 import { handleCallbackQuery } from '@/lib/telegram/handlers/menu'
+import { handleChildPhoneInput } from '@/lib/telegram/handlers/registration'
 
 // Register command handlers
 bot.command('start', handleStart)
@@ -41,6 +42,11 @@ bot.on('message:text', async (ctx) => {
 
   if (ctx.session.step === 'awaiting_birthdate') {
     await handleBirthDateInput(ctx)
+    return
+  }
+
+  if (ctx.session.step === 'awaiting_child_phone') {
+    await handleChildPhoneInput(ctx)
     return
   }
 

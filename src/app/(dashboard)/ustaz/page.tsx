@@ -26,7 +26,7 @@ export default async function UstazDashboard() {
     activeTasksCount
   ] = await Promise.all([
     prisma.user.count({
-      where: { groupId: { in: groupIds } }
+      where: { studentGroups: { some: { groupId: { in: groupIds } } } }
     }),
     prisma.submission.count({
       where: {

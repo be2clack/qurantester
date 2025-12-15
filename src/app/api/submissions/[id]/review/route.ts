@@ -40,7 +40,11 @@ export async function POST(
       include: {
         student: {
           include: {
-            studentGroup: true,
+            studentGroups: {
+              include: {
+                group: true
+              }
+            },
             statistics: true,
           }
         },
@@ -59,7 +63,8 @@ export async function POST(
 
     // Ustaz can only review their students' submissions
     if (currentUser.role === UserRole.USTAZ) {
-      if (submission.student.studentGroup?.ustazId !== currentUser.id) {
+      const studentGroup = submission.student.studentGroups[0]?.group
+      if (studentGroup?.ustazId !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }

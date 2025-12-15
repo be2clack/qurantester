@@ -61,28 +61,36 @@ export async function GET(
           }
         },
         students: {
-          where: { isActive: true },
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            phone: true,
-            telegramId: true,
-            currentPage: true,
-            currentLine: true,
-            currentStage: true,
-            tasks: {
-              where: { status: 'IN_PROGRESS' },
-              take: 1,
+          where: {
+            student: {
+              isActive: true
+            }
+          },
+          include: {
+            student: {
               select: {
-                passedCount: true,
-                requiredCount: true,
+                id: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+                telegramId: true,
+                currentPage: true,
+                currentLine: true,
+                currentStage: true,
+                tasks: {
+                  where: { status: 'IN_PROGRESS' },
+                  take: 1,
+                  select: {
+                    passedCount: true,
+                    requiredCount: true,
+                  }
+                }
               }
             }
           },
           orderBy: [
-            { currentPage: 'desc' },
-            { currentLine: 'desc' }
+            { student: { currentPage: 'desc' } },
+            { student: { currentLine: 'desc' } }
           ]
         },
         lessons: {
@@ -114,16 +122,26 @@ export async function GET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    if (currentUser.role === UserRole.STUDENT && currentUser.groupId !== id) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    if (currentUser.role === UserRole.STUDENT) {
+      const studentInGroup = await prisma.studentGroup.findUnique({
+        where: {
+          studentId_groupId: {
+            studentId: currentUser.id,
+            groupId: id
+          }
+        }
+      })
+      if (!studentInGroup) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
     }
 
     // Serialize BigInt fields to strings for JSON compatibility
     const serializedGroup = {
       ...group,
-      students: group.students.map(student => ({
-        ...student,
-        telegramId: student.telegramId?.toString() || null,
+      students: group.students.map(sg => ({
+        ...sg.student,
+        telegramId: sg.student.telegramId?.toString() || null,
       }))
     }
 

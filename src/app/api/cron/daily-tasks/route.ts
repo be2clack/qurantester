@@ -37,14 +37,18 @@ export async function POST(req: NextRequest) {
       where: {
         role: 'STUDENT',
         isActive: true,
-        groupId: { not: null }
+        studentGroups: { some: {} }
       },
       include: {
-        studentGroup: {
+        studentGroups: {
           include: {
-            lessons: {
-              where: { isActive: true },
-              take: 1
+            group: {
+              include: {
+                lessons: {
+                  where: { isActive: true },
+                  take: 1
+                }
+              }
             }
           }
         }
@@ -63,7 +67,7 @@ export async function POST(req: NextRequest) {
       if (activeTask) continue // Already has active task
 
       // Get lesson for student's group
-      const lesson = student.studentGroup?.lessons[0]
+      const lesson = student.studentGroups[0]?.group?.lessons[0]
       if (!lesson) continue
 
       // Get current page

@@ -5,6 +5,7 @@ import { getMainMenuKeyboard } from '../keyboards/main-menu'
 import { cleanupAllMessages, sendAndTrack } from '../utils/message-cleaner'
 import { UserRole } from '@prisma/client'
 import { getRoleLabel } from '@/lib/constants/roles'
+import { showRoleSelection } from './registration'
 
 /**
  * Handle contact message (phone number)
@@ -258,64 +259,8 @@ export async function handleBirthDateInput(ctx: BotContext): Promise<void> {
     return
   }
 
-  const telegramId = ctx.from?.id
-  if (!telegramId) return
-
-  // Parse name from session
-  const fullName = ctx.session.registrationName || ''
-  const parts = fullName.split(/\s+/)
-  const lastName = parts[0] || ''
-  const firstName = parts.slice(1).join(' ') || parts[0]
-
-  try {
-    // Update user with name and birth date
-    const user = await prisma.user.update({
-      where: { telegramId: BigInt(telegramId) },
-      data: {
-        firstName,
-        lastName,
-        birthDate,
-      }
-    })
-
-    // Clear registration data from session
-    ctx.session.registrationPhone = undefined
-    ctx.session.registrationName = undefined
-    ctx.session.step = 'idle'
-
-    await cleanupAllMessages(ctx)
-
-    const message = `<b>✅ Регистрация завершена!</b>
-
-<b>ФИО:</b> ${lastName} ${firstName}
-<b>Дата рождения:</b> ${birthDate.toLocaleDateString('ru-RU')}
-<b>Телефон:</b> ${user.phone}
-
-Ваша заявка отправлена на рассмотрение администратору.
-
-<b>⏳ Ожидайте подтверждения</b>
-
-Вы получите уведомление, когда ваш аккаунт будет активирован.
-
-<i>После активации нажмите /start для начала работы.</i>`
-
-    await sendAndTrack(
-      ctx,
-      message,
-      { parse_mode: 'HTML' },
-      user.id,
-      'registration_complete'
-    )
-  } catch (error) {
-    console.error('Error updating user birth date:', error)
-    await sendAndTrack(
-      ctx,
-      'Произошла ошибка при сохранении данных. Попробуйте снова или нажмите /start',
-      {},
-      undefined,
-      'error'
-    )
-  }
+  // Show role selection screen (date will be saved in session)
+  await showRoleSelection(ctx, text)
 }
 
 /**

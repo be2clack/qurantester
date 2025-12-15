@@ -17,15 +17,19 @@ export async function GET() {
     const fullUser = await prisma.user.findUnique({
       where: { id: user.id },
       include: {
-        studentGroup: {
-          select: {
-            id: true,
-            name: true,
-            ustaz: {
+        studentGroups: {
+          include: {
+            group: {
               select: {
                 id: true,
-                firstName: true,
-                lastName: true
+                name: true,
+                ustaz: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true
+                  }
+                }
               }
             }
           }

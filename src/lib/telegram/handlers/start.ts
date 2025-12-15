@@ -19,11 +19,17 @@ export async function handleStart(ctx: BotContext): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { telegramId: BigInt(telegramId) },
     include: {
-      studentGroup: {
+      studentGroups: {
+        where: { isActive: true },
         include: {
-          ustaz: true,
-          _count: { select: { students: true } }
-        }
+          group: {
+            include: {
+              ustaz: true,
+              _count: { select: { students: true } }
+            }
+          }
+        },
+        take: 1
       },
       statistics: true,
     }
@@ -49,30 +55,41 @@ export async function handleStart(ctx: BotContext): Promise<void> {
       let rankInGroup: number | undefined
       let totalInGroup: number | undefined
 
-      if (user.studentGroup) {
-        totalInGroup = user.studentGroup._count.students
+      const primaryStudentGroup = user.studentGroups[0]
+      if (primaryStudentGroup) {
+        totalInGroup = primaryStudentGroup.group._count.students
 
         // Get all students in group sorted by progress
-        const groupStudents = await prisma.user.findMany({
-          where: { groupId: user.studentGroup.id },
-          select: { id: true, currentPage: true, currentLine: true },
-          orderBy: [
-            { currentPage: 'desc' },
-            { currentLine: 'desc' }
-          ]
+        const groupStudents = await prisma.studentGroup.findMany({
+          where: {
+            groupId: primaryStudentGroup.group.id,
+            isActive: true
+          },
+          include: {
+            student: {
+              select: { id: true, currentPage: true, currentLine: true }
+            }
+          }
         })
 
-        rankInGroup = groupStudents.findIndex(s => s.id === user.id) + 1
+        const sortedStudents = groupStudents
+          .map(sg => sg.student)
+          .sort((a, b) => {
+            if (b.currentPage !== a.currentPage) return b.currentPage - a.currentPage
+            return b.currentLine - a.currentLine
+          })
+
+        rankInGroup = sortedStudents.findIndex(s => s.id === user.id) + 1
       }
 
       menuInfo = {
         hasActiveTask: !!activeTask,
         currentCount: activeTask?.currentCount,
         requiredCount: activeTask?.requiredCount,
-        groupName: user.studentGroup?.name,
-        ustazName: user.studentGroup?.ustaz?.firstName || undefined,
-        ustazUsername: user.studentGroup?.ustaz?.telegramUsername || undefined,
-        ustazTelegramId: user.studentGroup?.ustaz?.telegramId ? Number(user.studentGroup.ustaz.telegramId) : undefined,
+        groupName: primaryStudentGroup?.group?.name,
+        ustazName: primaryStudentGroup?.group?.ustaz?.firstName || undefined,
+        ustazUsername: primaryStudentGroup?.group?.ustaz?.telegramUsername || undefined,
+        ustazTelegramId: primaryStudentGroup?.group?.ustaz?.telegramId ? Number(primaryStudentGroup.group.ustaz.telegramId) : undefined,
         rankInGroup,
         totalInGroup,
         totalTasksCompleted: user.statistics?.totalTasksCompleted,

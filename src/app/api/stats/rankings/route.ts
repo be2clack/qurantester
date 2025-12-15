@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
 
     // Filter by group if specified
     if (groupId) {
-      where.groupId = groupId
+      where.studentGroups = { some: { groupId } }
 
       // Ustaz can only see their group's rankings
       if (currentUser.role === UserRole.USTAZ) {
@@ -45,8 +45,8 @@ export async function GET(req: NextRequest) {
         currentPage: true,
         currentLine: true,
         currentStage: true,
-        studentGroup: {
-          select: { id: true, name: true }
+        studentGroups: {
+          include: { group: true }
         },
         statistics: {
           select: {
@@ -81,7 +81,7 @@ export async function GET(req: NextRequest) {
         currentPage: student.currentPage,
         currentLine: student.currentLine,
         stage: student.currentStage,
-        group: student.studentGroup?.name || null,
+        group: student.studentGroups[0]?.group?.name || null,
         pagesCompleted: student.statistics?.totalPagesCompleted || 0,
         totalSubmissions: student.statistics?.totalSubmissions || 0,
         passRate: parseFloat(passRate),

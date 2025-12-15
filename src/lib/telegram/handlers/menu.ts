@@ -11,17 +11,26 @@ import {
   getPaginationKeyboard,
   getStartStageKeyboard,
   getActiveTaskKeyboard,
-  StudentMenuInfo
+  StudentMenuInfo,
+  LessonTypeInfo,
+  getLessonTypeName,
 } from '../keyboards/main-menu'
 import { generateWebAuthLink } from '@/lib/auth'
 import { STAGES, getLinesPerPage } from '@/lib/constants/quran'
-import { StageNumber, GroupLevel } from '@prisma/client'
+import { StageNumber, GroupLevel, LessonType } from '@prisma/client'
 import {
   getQuranPageContent,
   getGroupMushafSettings,
   getDefaultMushafSettings,
   formatQuranLinesForTelegram,
 } from '../utils/quran-content'
+import {
+  handleRoleSelection,
+  handleUstazSelection,
+  handleUstazConfirm,
+  handleBackToUstazList,
+  handleBackToRole,
+} from './registration'
 
 /**
  * Handle all callback queries (menu navigation)
@@ -72,6 +81,19 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         break
       case 'auth':
         await handleAuthCallback(ctx, user, action)
+        break
+      case 'reg':
+        // Registration callbacks - handle role/group selection
+        await handleRegistrationCallback(ctx, action, id)
+        callbackAnswered = true
+        break
+      case 'lesson_type':
+        // Lesson type selection for students with multi-group
+        await handleLessonTypeCallback(ctx, user, action, id)
+        break
+      case 'start_group_task':
+        // Start task for specific group
+        await startGroupTask(ctx, user, action)
         break
       case 'cancel':
         await handleCancel(ctx, user)
@@ -126,7 +148,8 @@ async function handleStudentCallback(
       await showProgress(ctx, user)
       break
     case 'group':
-      await showStudentGroup(ctx, user)
+    case 'groups':
+      await showStudentGroups(ctx, user)
       break
     case 'quran':
       await showQuranPage(ctx, user, user.currentPage)
@@ -137,14 +160,19 @@ async function handleStudentCallback(
 }
 
 async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
-  // Fetch full user data with group and statistics
+  // Fetch full user data with ALL groups and statistics
   const fullUser = await prisma.user.findUnique({
     where: { id: user.id },
     include: {
-      studentGroup: {
+      studentGroups: {
+        where: { isActive: true },
         include: {
-          ustaz: true,
-          _count: { select: { students: true } }
+          group: {
+            include: {
+              ustaz: true,
+              _count: { select: { students: true } }
+            }
+          }
         }
       },
       statistics: true,
@@ -153,7 +181,42 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
 
   if (!fullUser) return
 
-  // Get active task info
+  // Build lesson types info from student's groups
+  const lessonTypes: LessonTypeInfo[] = []
+  const primaryGroup = fullUser.studentGroups[0]?.group
+
+  for (const sg of fullUser.studentGroups) {
+    const group = sg.group
+
+    // Get active task for this group
+    const activeTask = await prisma.task.findFirst({
+      where: {
+        studentId: user.id,
+        groupId: group.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      select: {
+        currentCount: true,
+        requiredCount: true,
+      }
+    })
+
+    lessonTypes.push({
+      type: group.lessonType,
+      groupId: group.id,
+      groupName: group.name,
+      currentPage: sg.currentPage,
+      currentLine: sg.currentLine,
+      currentStage: sg.currentStage,
+      hasActiveTask: !!activeTask,
+      taskProgress: activeTask ? {
+        current: activeTask.currentCount,
+        required: activeTask.requiredCount
+      } : undefined
+    })
+  }
+
+  // Get any active task for legacy compatibility
   const activeTask = await prisma.task.findFirst({
     where: {
       studentId: user.id,
@@ -165,52 +228,70 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
     }
   })
 
-  // Calculate rank in group
+  // Calculate rank in primary group
   let rankInGroup: number | undefined
   let totalInGroup: number | undefined
 
-  if (fullUser.studentGroup) {
-    totalInGroup = fullUser.studentGroup._count.students
+  if (primaryGroup) {
+    totalInGroup = primaryGroup._count.students
 
-    const groupStudents = await prisma.user.findMany({
-      where: { groupId: fullUser.studentGroup.id },
-      select: { id: true, currentPage: true, currentLine: true },
-      orderBy: [
-        { currentPage: 'desc' },
-        { currentLine: 'desc' }
-      ]
+    const groupStudents = await prisma.studentGroup.findMany({
+      where: { groupId: primaryGroup.id, isActive: true },
+      select: {
+        studentId: true,
+        student: { select: { currentPage: true, currentLine: true } }
+      }
     })
 
-    rankInGroup = groupStudents.findIndex(s => s.id === user.id) + 1
+    const sorted = groupStudents.sort((a, b) => {
+      if (b.student.currentPage !== a.student.currentPage) return b.student.currentPage - a.student.currentPage
+      return b.student.currentLine - a.student.currentLine
+    })
+
+    rankInGroup = sorted.findIndex(s => s.studentId === user.id) + 1
   }
 
   const menuInfo: StudentMenuInfo = {
     hasActiveTask: !!activeTask,
     currentCount: activeTask?.currentCount,
     requiredCount: activeTask?.requiredCount,
-    groupName: fullUser.studentGroup?.name,
-    ustazName: fullUser.studentGroup?.ustaz?.firstName || undefined,
-    ustazUsername: fullUser.studentGroup?.ustaz?.telegramUsername || undefined,
-    ustazTelegramId: fullUser.studentGroup?.ustaz?.telegramId ? Number(fullUser.studentGroup.ustaz.telegramId) : undefined,
+    groupName: primaryGroup?.name,
+    ustazName: primaryGroup?.ustaz?.firstName || undefined,
+    ustazUsername: primaryGroup?.ustaz?.telegramUsername || undefined,
+    ustazTelegramId: primaryGroup?.ustaz?.telegramId ? Number(primaryGroup.ustaz.telegramId) : undefined,
     rankInGroup,
     totalInGroup,
     totalTasksCompleted: fullUser.statistics?.totalTasksCompleted,
+    lessonTypes: lessonTypes.length > 0 ? lessonTypes : undefined,
   }
 
   const stageName = STAGES[fullUser.currentStage as keyof typeof STAGES]?.nameRu || fullUser.currentStage
 
   let message = `<b>Ассаляму алейкум, ${fullUser.firstName || 'пользователь'}!</b>\n\n`
   message += `📖 <b>Главное меню</b>\n\n`
-  message += `📍 Текущий прогресс: <b>стр. ${fullUser.currentPage}, строка ${fullUser.currentLine}</b>\n`
-  message += `📊 Этап: <b>${stageName}</b>\n\n`
 
-  // Group and ustaz info
-  if (menuInfo.groupName) {
-    message += `━━━━━━━━━━━━━━━━━━\n`
-    message += `📚 Группа: <b>${menuInfo.groupName}</b>\n`
-    if (menuInfo.ustazName) {
-      message += `👨‍🏫 Устаз: <b>${menuInfo.ustazName}</b>\n`
+  // Show progress - either from groups or from user
+  if (lessonTypes.length > 0) {
+    message += `<b>📚 Мои уроки:</b>\n`
+    for (const lt of lessonTypes) {
+      const typeName = getLessonTypeName(lt.type)
+      const stageShort = lt.currentStage.replace('STAGE_', '').replace('_', '.')
+      if (lt.hasActiveTask && lt.taskProgress) {
+        message += `• ${typeName}: стр. ${lt.currentPage}, этап ${stageShort} [${lt.taskProgress.current}/${lt.taskProgress.required}]\n`
+      } else {
+        message += `• ${typeName}: стр. ${lt.currentPage}, этап ${stageShort}\n`
+      }
     }
+    message += `\n`
+  } else {
+    message += `📍 Текущий прогресс: <b>стр. ${fullUser.currentPage}, строка ${fullUser.currentLine}</b>\n`
+    message += `📊 Этап: <b>${stageName}</b>\n\n`
+  }
+
+  // Ustaz info
+  if (menuInfo.ustazName) {
+    message += `━━━━━━━━━━━━━━━━━━\n`
+    message += `👨‍🏫 Устаз: <b>${menuInfo.ustazName}</b>\n`
     if (menuInfo.rankInGroup && menuInfo.totalInGroup) {
       message += `🏆 Рейтинг: <b>${menuInfo.rankInGroup} из ${menuInfo.totalInGroup}</b>\n`
     }
@@ -253,11 +334,17 @@ async function showStudentMenu(ctx: BotContext, user: any): Promise<void> {
   const fullUser = await prisma.user.findUnique({
     where: { id: user.id },
     include: {
-      studentGroup: {
+      studentGroups: {
+        where: { isActive: true },
         include: {
-          ustaz: true,
-          _count: { select: { students: true } }
-        }
+          group: {
+            include: {
+              ustaz: true,
+              _count: { select: { students: true } }
+            }
+          }
+        },
+        take: 1
       },
       statistics: true,
     }
@@ -280,30 +367,35 @@ async function showStudentMenu(ctx: BotContext, user: any): Promise<void> {
   // Calculate rank in group
   let rankInGroup: number | undefined
   let totalInGroup: number | undefined
+  const primaryGroup = fullUser.studentGroups[0]?.group
 
-  if (fullUser.studentGroup) {
-    totalInGroup = fullUser.studentGroup._count.students
+  if (primaryGroup) {
+    totalInGroup = primaryGroup._count.students
 
-    const groupStudents = await prisma.user.findMany({
-      where: { groupId: fullUser.studentGroup.id },
-      select: { id: true, currentPage: true, currentLine: true },
-      orderBy: [
-        { currentPage: 'desc' },
-        { currentLine: 'desc' }
-      ]
+    const groupStudents = await prisma.studentGroup.findMany({
+      where: { groupId: primaryGroup.id, isActive: true },
+      select: {
+        studentId: true,
+        student: { select: { currentPage: true, currentLine: true } }
+      }
     })
 
-    rankInGroup = groupStudents.findIndex(s => s.id === user.id) + 1
+    const sorted = groupStudents.sort((a, b) => {
+      if (b.student.currentPage !== a.student.currentPage) return b.student.currentPage - a.student.currentPage
+      return b.student.currentLine - a.student.currentLine
+    })
+
+    rankInGroup = sorted.findIndex(s => s.studentId === user.id) + 1
   }
 
   const menuInfo: StudentMenuInfo = {
     hasActiveTask: !!activeTask,
     currentCount: activeTask?.currentCount,
     requiredCount: activeTask?.requiredCount,
-    groupName: fullUser.studentGroup?.name,
-    ustazName: fullUser.studentGroup?.ustaz?.firstName || undefined,
-    ustazUsername: fullUser.studentGroup?.ustaz?.telegramUsername || undefined,
-    ustazTelegramId: fullUser.studentGroup?.ustaz?.telegramId ? Number(fullUser.studentGroup.ustaz.telegramId) : undefined,
+    groupName: primaryGroup?.name,
+    ustazName: primaryGroup?.ustaz?.firstName || undefined,
+    ustazUsername: primaryGroup?.ustaz?.telegramUsername || undefined,
+    ustazTelegramId: primaryGroup?.ustaz?.telegramId ? Number(primaryGroup.ustaz.telegramId) : undefined,
     rankInGroup,
     totalInGroup,
     totalTasksCompleted: fullUser.statistics?.totalTasksCompleted,
@@ -473,18 +565,25 @@ async function startStage(ctx: BotContext, user: any): Promise<void> {
   const userWithGroup = await prisma.user.findUnique({
     where: { id: user.id },
     include: {
-      studentGroup: {
+      studentGroups: {
+        where: { isActive: true },
         include: {
-          lessons: {
-            where: { isActive: true },
-            take: 1
+          group: {
+            include: {
+              lessons: {
+                where: { isActive: true },
+                take: 1
+              }
+            }
           }
-        }
+        },
+        take: 1
       }
     }
   })
 
-  if (!userWithGroup?.studentGroup) {
+  const primaryStudentGroup = userWithGroup?.studentGroups[0]
+  if (!primaryStudentGroup) {
     await ctx.editMessageText(
       '❌ <b>Ошибка</b>\n\nВы не состоите в группе.\n\n<i>Обратитесь к администратору.</i>',
       { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
@@ -492,7 +591,7 @@ async function startStage(ctx: BotContext, user: any): Promise<void> {
     return
   }
 
-  const lesson = userWithGroup.studentGroup.lessons[0]
+  const lesson = primaryStudentGroup.group.lessons[0]
   if (!lesson) {
     await ctx.editMessageText(
       '❌ <b>Ошибка</b>\n\nВ вашей группе нет активного урока.\n\n<i>Обратитесь к устазу.</i>',
@@ -519,7 +618,7 @@ async function startStage(ctx: BotContext, user: any): Promise<void> {
   const { startLine, endLine } = getLineRangeForStage(
     user.currentStage as StageNumber,
     user.currentPage,
-    userWithGroup.studentGroup.level as GroupLevel
+    primaryStudentGroup.group.level as GroupLevel
   )
 
   // Calculate deadline based on stage and group level
@@ -705,79 +804,52 @@ async function showProgress(ctx: BotContext, user: any): Promise<void> {
   })
 }
 
-async function showStudentGroup(ctx: BotContext, user: any): Promise<void> {
-  // Get user with group and all group students
+async function showStudentGroups(ctx: BotContext, user: any): Promise<void> {
+  // Get user with ALL groups
   const fullUser = await prisma.user.findUnique({
     where: { id: user.id },
     include: {
-      studentGroup: {
+      studentGroups: {
+        where: { isActive: true },
         include: {
-          ustaz: true,
-          students: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              currentPage: true,
-              currentLine: true,
-            },
-            orderBy: [
-              { currentPage: 'desc' },
-              { currentLine: 'desc' }
-            ]
+          group: {
+            include: {
+              ustaz: true,
+              _count: { select: { students: true } }
+            }
           }
         }
       }
     }
   })
 
-  if (!fullUser?.studentGroup) {
+  const studentGroups = fullUser?.studentGroups || []
+  if (studentGroups.length === 0) {
     await ctx.editMessageText(
-      '📚 <b>Моя группа</b>\n\n<i>Вы не состоите в группе.</i>',
+      '📚 <b>Мои группы</b>\n\n<i>Вы не состоите ни в одной группе.</i>',
       { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
     )
     return
   }
 
-  const group = fullUser.studentGroup
-  const students = group.students
-  const myRank = students.findIndex(s => s.id === user.id) + 1
+  let message = `📚 <b>Мои группы</b>\n\n`
 
-  let message = `📚 <b>Моя группа: ${group.name}</b>\n\n`
-  message += `👨‍🏫 Устаз: <b>${group.ustaz?.firstName || 'Не назначен'}</b>\n`
-  message += `👥 Студентов: <b>${students.length}</b>\n`
-  message += `🏆 Ваш рейтинг: <b>${myRank} из ${students.length}</b>\n\n`
+  for (const sg of studentGroups) {
+    const group = sg.group
+    const typeName = getLessonTypeName(group.lessonType)
+    const stageShort = sg.currentStage.replace('STAGE_', '').replace('_', '.')
 
-  message += `━━━━━━━━━━━━━━━━━━\n`
-  message += `<b>Рейтинг группы:</b>\n\n`
-
-  // Show top 10 students
-  const topStudents = students.slice(0, 10)
-  for (let i = 0; i < topStudents.length; i++) {
-    const student = topStudents[i]
-    const rank = i + 1
-    const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `${rank}.`
-    const isMe = student.id === user.id
-    const name = student.firstName || 'Студент'
-    const progress = `стр. ${student.currentPage}:${student.currentLine}`
-
-    if (isMe) {
-      message += `${medal} <b>➤ ${name}</b> — ${progress}\n`
-    } else {
-      message += `${medal} ${name} — ${progress}\n`
-    }
+    message += `<b>${typeName}</b> — ${group.name}\n`
+    message += `   📍 Стр. ${sg.currentPage}, этап ${stageShort}\n`
+    message += `   👨‍🏫 ${group.ustaz?.firstName || 'Устаз не назначен'}\n`
+    message += `   👥 ${group._count.students} студентов\n\n`
   }
 
-  if (students.length > 10) {
-    message += `\n<i>...и ещё ${students.length - 10} студентов</i>`
-  }
-
-  // Add ustaz chat button if available
+  // Add ustaz chat button if available (from first group)
   const keyboard = new InlineKeyboard()
-  if (group.ustaz?.telegramUsername) {
-    keyboard.url(`💬 Написать устазу`, `https://t.me/${group.ustaz.telegramUsername}`).row()
-  } else if (group.ustaz?.telegramId) {
-    keyboard.url(`💬 Написать устазу`, `tg://user?id=${group.ustaz.telegramId}`).row()
+  const firstGroup = studentGroups[0]?.group
+  if (firstGroup?.ustaz?.telegramUsername) {
+    keyboard.url(`💬 Написать устазу`, `https://t.me/${firstGroup.ustaz.telegramUsername}`).row()
   }
   keyboard.text('◀️ В меню', 'student:menu')
 
@@ -787,10 +859,322 @@ async function showStudentGroup(ctx: BotContext, user: any): Promise<void> {
   })
 }
 
+/**
+ * Handle lesson type callback - show/start task for specific lesson type
+ */
+async function handleLessonTypeCallback(
+  ctx: BotContext,
+  user: any,
+  lessonType: string,
+  groupId?: string
+): Promise<void> {
+  if (!groupId) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена' })
+    return
+  }
+
+  // Check if user belongs to this group
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: {
+      group: {
+        include: {
+          ustaz: true
+        }
+      }
+    }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Вы не состоите в этой группе' })
+    return
+  }
+
+  // Check for active task in this group
+  const activeTask = await prisma.task.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      status: TaskStatus.IN_PROGRESS,
+    },
+    include: {
+      page: true,
+      group: true,
+    }
+  })
+
+  if (activeTask) {
+    // Show active task for this lesson type
+    await showTaskForGroup(ctx, user, activeTask, studentGroup)
+  } else {
+    // Show option to start new task
+    await showStartTaskForGroup(ctx, user, studentGroup)
+  }
+}
+
+/**
+ * Show active task for a specific group
+ */
+async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGroup: any): Promise<void> {
+  const group = studentGroup.group
+  const typeName = getLessonTypeName(group.lessonType)
+
+  const lineRange = task.startLine === task.endLine
+    ? `строка ${task.startLine}`
+    : `строки ${task.startLine}-${task.endLine}`
+
+  const progressPercent = ((task.currentCount / task.requiredCount) * 100).toFixed(0)
+  const progressBar = buildProgressBar(parseInt(progressPercent))
+  const remaining = task.requiredCount - task.currentCount
+
+  // Calculate deadline
+  const now = new Date()
+  const deadline = new Date(task.deadline)
+  const timeLeft = deadline.getTime() - now.getTime()
+  const hoursLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60)))
+  const minutesLeft = Math.max(0, Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60)))
+  const deadlineTimeStr = deadline.toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Bishkek'
+  })
+  const deadlineDateStr = deadline.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'Asia/Bishkek'
+  })
+  const deadlineStr = timeLeft > 0
+    ? `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
+    : `⚠️ <b>Срок истёк!</b>`
+
+  // Build format hint
+  let formatHint = ''
+  if (group.allowVoice && group.allowVideoNote) {
+    formatHint = '🎤 голос или 📹 кружок'
+  } else if (group.allowVoice) {
+    formatHint = '🎤 голосовое сообщение'
+  } else if (group.allowVideoNote) {
+    formatHint = '📹 видео-кружок'
+  } else if (group.allowText) {
+    formatHint = '📝 текст'
+  } else {
+    formatHint = '🎤 голос или 📹 кружок'
+  }
+
+  let message = `📝 <b>${typeName}</b>\n\n`
+  message += `📖 Страница ${task.page.pageNumber}, ${lineRange}\n`
+  message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRu || task.stage}\n\n`
+  message += `${progressBar}\n`
+  message += `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n`
+  message += `⏳ Осталось: <b>${remaining}</b>\n`
+
+  if (task.passedCount > 0 || task.failedCount > 0) {
+    message += `✅ Принято: <b>${task.passedCount}</b>\n`
+    message += `❌ На пересдачу: <b>${task.failedCount}</b>\n`
+  }
+
+  message += `\n${deadlineStr}\n\n`
+  message += `📤 Принимается: ${formatHint}\n\n`
+  message += `<i>Отправьте запись чтения.</i>`
+
+  // Check if there's a pending submission for cancel button
+  const hasPending = await prisma.submission.findFirst({
+    where: {
+      taskId: task.id,
+      studentId: user.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'HTML',
+    reply_markup: getActiveTaskKeyboard(task.id, !!hasPending)
+  })
+}
+
+/**
+ * Show start task option for a specific group
+ */
+async function showStartTaskForGroup(ctx: BotContext, user: any, studentGroup: any): Promise<void> {
+  const group = studentGroup.group
+  const typeName = getLessonTypeName(group.lessonType)
+  const stageName = STAGES[studentGroup.currentStage as keyof typeof STAGES]?.nameRu || studentGroup.currentStage
+
+  const message = `▶️ <b>Начать ${typeName}</b>\n\n` +
+    `📍 Текущий прогресс: <b>стр. ${studentGroup.currentPage}, строка ${studentGroup.currentLine}</b>\n` +
+    `📊 Этап: <b>${stageName}</b>\n\n` +
+    `Нажмите кнопку ниже, чтобы начать изучение.`
+
+  const keyboard = new InlineKeyboard()
+    .text('▶️ Начать изучать этап', `start_group_task:${group.id}`).row()
+    .text('◀️ В меню', 'student:menu')
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'HTML',
+    reply_markup: keyboard
+  })
+}
+
+/**
+ * Start task for a specific group
+ */
+async function startGroupTask(ctx: BotContext, user: any, groupId: string): Promise<void> {
+  // Get student's membership in this group
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: {
+      group: true
+    }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Вы не состоите в этой группе', show_alert: true })
+    return
+  }
+
+  // Check if user already has an active task in this group
+  const existingTask = await prisma.task.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      status: TaskStatus.IN_PROGRESS,
+    }
+  })
+
+  if (existingTask) {
+    await ctx.answerCallbackQuery({ text: 'У вас уже есть активное задание!' })
+    return
+  }
+
+  const group = studentGroup.group
+
+  // Find or create the QuranPage
+  let page = await prisma.quranPage.findUnique({
+    where: { pageNumber: studentGroup.currentPage }
+  })
+
+  if (!page) {
+    page = await prisma.quranPage.create({
+      data: {
+        pageNumber: studentGroup.currentPage,
+        totalLines: getLinesPerPage(studentGroup.currentPage)
+      }
+    })
+  }
+
+  // Calculate line range based on stage
+  const { startLine, endLine } = getLineRangeForStage(
+    studentGroup.currentStage as StageNumber,
+    studentGroup.currentPage,
+    group.level as GroupLevel
+  )
+
+  // Calculate deadline based on stage and group settings
+  const stageDays = getStageDaysFromGroup(studentGroup.currentStage as StageNumber, group)
+  const deadline = new Date()
+  deadline.setDate(deadline.getDate() + stageDays)
+
+  // Create the task
+  const task = await prisma.task.create({
+    data: {
+      groupId: group.id,
+      studentId: user.id,
+      pageId: page.id,
+      startLine,
+      endLine,
+      stage: studentGroup.currentStage,
+      status: TaskStatus.IN_PROGRESS,
+      requiredCount: group.repetitionCount,
+      deadline,
+    },
+    include: {
+      page: true,
+      group: true,
+    }
+  })
+
+  // Create statistics record if not exists
+  await prisma.userStatistics.upsert({
+    where: { userId: user.id },
+    create: { userId: user.id },
+    update: {}
+  })
+
+  const typeName = getLessonTypeName(group.lessonType)
+  const stageName = STAGES[studentGroup.currentStage as keyof typeof STAGES]?.nameRu || studentGroup.currentStage
+  const lineRange = startLine === endLine
+    ? `строку ${startLine}`
+    : `строки ${startLine}-${endLine}`
+
+  // Build format hint
+  let formatHint = ''
+  if (group.allowVoice && group.allowVideoNote) {
+    formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
+  } else if (group.allowVoice) {
+    formatHint = '🎤 голосовое сообщение'
+  } else if (group.allowVideoNote) {
+    formatHint = '📹 видео-кружок'
+  } else if (group.allowText) {
+    formatHint = '📝 текстовое сообщение'
+  } else {
+    formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
+  }
+
+  let message = `✅ <b>Задание создано!</b>\n\n`
+  message += `📖 <b>${typeName}</b>\n\n`
+  message += `📄 Страница ${page.pageNumber}, ${lineRange}\n`
+  message += `📚 ${stageName}\n\n`
+  message += `📊 Нужно сдать: <b>${group.repetitionCount} раз</b>\n`
+  message += `⏰ Срок: <b>${stageDays} дней</b>\n\n`
+  message += `📤 Отправьте ${formatHint}.`
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'HTML',
+    reply_markup: getActiveTaskKeyboard(task.id, false)
+  })
+}
+
+/**
+ * Get days for a stage from group settings
+ */
+function getStageDaysFromGroup(stage: StageNumber, group: any): number {
+  switch (stage) {
+    case StageNumber.STAGE_1_1:
+    case StageNumber.STAGE_1_2:
+      return group.stage1Days || 1
+
+    case StageNumber.STAGE_2_1:
+    case StageNumber.STAGE_2_2:
+      return group.stage2Days || 2
+
+    case StageNumber.STAGE_3:
+      return group.stage3Days || 2
+
+    default:
+      return 1
+  }
+}
+
 async function showQuranPage(ctx: BotContext, user: any, pageNumber: number): Promise<void> {
-  // Get mushaf settings based on user's group
-  const settings = user.groupId
-    ? await getGroupMushafSettings(user.groupId)
+  // Get mushaf settings based on user's first active group
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true
+    },
+    select: { groupId: true }
+  })
+
+  const settings = studentGroup?.groupId
+    ? await getGroupMushafSettings(studentGroup.groupId)
     : getDefaultMushafSettings()
 
   // Fetch page content (from local DB or Medina API based on settings)
@@ -977,8 +1361,14 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
     include: {
       student: {
         include: {
-          studentGroup: {
-            select: { name: true }
+          studentGroups: {
+            where: { isActive: true },
+            include: {
+              group: {
+                select: { name: true }
+              }
+            },
+            take: 1
           }
         }
       },
@@ -1007,7 +1397,7 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   // Show first submission with file and buttons together
   const first = submissions[0]
   const studentName = first.student.firstName || 'Студент'
-  const groupName = first.student.studentGroup?.name || first.task.group?.name || ''
+  const groupName = first.student.studentGroups[0]?.group?.name || first.task.group?.name || ''
 
   const lineRange = first.task.startLine === first.task.endLine
     ? `строка ${first.task.startLine}`
@@ -1140,7 +1530,13 @@ async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any):
     include: {
       student: {
         include: {
-          studentGroup: { select: { name: true } }
+          studentGroups: {
+            where: { isActive: true },
+            include: {
+              group: { select: { name: true } }
+            },
+            take: 1
+          }
         }
       },
       task: {
@@ -1166,7 +1562,7 @@ async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any):
   // Show next submission
   const first = submissions[0]
   const studentName = first.student.firstName || 'Студент'
-  const groupName = first.student.studentGroup?.name || first.task.group?.name || ''
+  const groupName = first.student.studentGroups[0]?.group?.name || first.task.group?.name || ''
 
   const lineRange = first.task.startLine === first.task.endLine
     ? `строка ${first.task.startLine}`
@@ -1283,12 +1679,22 @@ async function showUstazStudents(ctx: BotContext, user: any): Promise<void> {
   const students = await prisma.user.findMany({
     where: {
       role: 'STUDENT',
-      studentGroup: {
-        ustazId: user.id
+      studentGroups: {
+        some: {
+          isActive: true,
+          group: {
+            ustazId: user.id
+          }
+        }
       }
     },
     include: {
-      studentGroup: true
+      studentGroups: {
+        where: { isActive: true },
+        include: {
+          group: true
+        }
+      }
     },
     orderBy: { firstName: 'asc' }
   })
@@ -1328,8 +1734,11 @@ async function showUstazStats(ctx: BotContext, user: any): Promise<void> {
   const groupIds = groups.map(g => g.id)
 
   const [totalStudents, completedTasks, pendingSubmissions] = await Promise.all([
-    prisma.user.count({
-      where: { groupId: { in: groupIds } }
+    prisma.studentGroup.count({
+      where: {
+        groupId: { in: groupIds },
+        isActive: true
+      }
     }),
     prisma.task.count({
       where: {
@@ -1889,6 +2298,48 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
     parse_mode: 'HTML',
     reply_markup: getActiveTaskKeyboard(taskId, !!hasPending)
   })
+}
+
+// ============== REGISTRATION CALLBACK HANDLER ==============
+
+async function handleRegistrationCallback(
+  ctx: BotContext,
+  action: string,
+  id?: string
+): Promise<void> {
+  const fullData = ctx.callbackQuery?.data || ''
+
+  // Handle role selection: reg:role:STUDENT, reg:role:USTAZ, reg:role:PARENT
+  if (fullData.startsWith('reg:role:')) {
+    await handleRoleSelection(ctx)
+    return
+  }
+
+  // Handle ustaz selection: reg:ustaz:{ustazId}
+  if (fullData.startsWith('reg:ustaz:')) {
+    await handleUstazSelection(ctx)
+    return
+  }
+
+  // Handle ustaz confirmation: reg:confirm_ustaz:{ustazId}
+  if (fullData.startsWith('reg:confirm_ustaz:')) {
+    await handleUstazConfirm(ctx)
+    return
+  }
+
+  // Handle back to ustaz list
+  if (fullData === 'reg:back_to_ustaz_list') {
+    await handleBackToUstazList(ctx)
+    return
+  }
+
+  // Handle back to role selection
+  if (fullData === 'reg:back_to_role') {
+    await handleBackToRole(ctx)
+    return
+  }
+
+  await ctx.answerCallbackQuery({ text: 'Неизвестное действие регистрации' })
 }
 
 // ============== CANCEL HANDLER ==============

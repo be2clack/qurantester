@@ -29,7 +29,7 @@ export async function GET() {
     const students = await prisma.user.findMany({
       where: {
         role: UserRole.STUDENT,
-        groupId: { in: groupIds },
+        studentGroups: { some: { groupId: { in: groupIds }, isActive: true } },
         isActive: true
       },
       select: {
@@ -42,11 +42,16 @@ export async function GET() {
         currentLine: true,
         currentStage: true,
         isActive: true,
-        studentGroup: {
+        studentGroups: {
           select: {
-            id: true,
-            name: true
-          }
+            group: {
+              select: {
+                id: true,
+                name: true
+              }
+            }
+          },
+          take: 1
         },
         tasks: {
           where: { status: 'IN_PROGRESS' },
@@ -72,7 +77,8 @@ export async function GET() {
     // Transform to match expected format
     const result = students.map(s => ({
       ...s,
-      group: s.studentGroup
+      studentGroup: s.studentGroups[0]?.group || null,
+      group: s.studentGroups[0]?.group || null
     }))
 
     return NextResponse.json(result)

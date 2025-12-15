@@ -29,32 +29,33 @@ export async function GET(
         students: {
           where: { isActive: true },
           select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            phone: true,
-            currentPage: true,
-            currentLine: true,
-            currentStage: true,
-            _count: {
-              select: { tasks: true }
-            },
-            tasks: {
-              where: { status: 'IN_PROGRESS' },
-              take: 1,
+            student: {
               select: {
                 id: true,
-                status: true,
-                passedCount: true,
-                requiredCount: true,
-                createdAt: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+                currentPage: true,
+                currentLine: true,
+                currentStage: true,
+                isActive: true,
+                _count: {
+                  select: { tasks: true }
+                },
+                tasks: {
+                  where: { status: 'IN_PROGRESS' },
+                  take: 1,
+                  select: {
+                    id: true,
+                    status: true,
+                    passedCount: true,
+                    requiredCount: true,
+                    createdAt: true,
+                  }
+                }
               }
             }
-          },
-          orderBy: [
-            { currentPage: 'desc' },
-            { currentLine: 'desc' }
-          ]
+          }
         },
         _count: {
           select: { students: true }
@@ -66,7 +67,20 @@ export async function GET(
       return NextResponse.json({ error: 'Group not found' }, { status: 404 })
     }
 
-    return NextResponse.json(group)
+    // Transform to expected format: extract students from students join table
+    const studentList = group.students
+      .map(sg => sg.student)
+      .filter(s => s.isActive)
+      .sort((a, b) => {
+        if (b.currentPage !== a.currentPage) return b.currentPage - a.currentPage
+        return b.currentLine - a.currentLine
+      })
+
+    return NextResponse.json({
+      ...group,
+      students: studentList,
+      _count: group._count
+    })
   } catch (error) {
     console.error('Get ustaz group error:', error)
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 })

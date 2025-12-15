@@ -30,10 +30,16 @@ export async function GET(req: NextRequest) {
     const role = searchParams.get('role') as UserRole | null
     const search = searchParams.get('search')
     const noGroup = searchParams.get('noGroup') === 'true'
+    const ustazId = searchParams.get('ustazId')
 
     const where: any = {}
     if (role) where.role = role
-    if (noGroup) where.groupId = null
+    if (noGroup) where.studentGroups = { none: {} }
+    if (ustazId === 'none') {
+      where.ustazId = null
+    } else if (ustazId) {
+      where.ustazId = ustazId
+    }
     if (search) {
       where.OR = [
         { firstName: { contains: search, mode: 'insensitive' } },
@@ -49,7 +55,23 @@ export async function GET(req: NextRequest) {
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
-          studentGroup: { select: { id: true, name: true } },
+          studentGroups: {
+            select: {
+              group: { select: { id: true, name: true, lessonType: true } },
+              currentPage: true,
+              currentLine: true,
+              currentStage: true,
+            },
+          },
+          ustaz: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              phone: true,
+              _count: { select: { ustazGroups: true } }
+            }
+          },
           childOf: { select: { id: true, firstName: true, lastName: true, phone: true } },
           parentOf: { select: { id: true, firstName: true, lastName: true, phone: true } },
           tasks: {
@@ -61,7 +83,7 @@ export async function GET(req: NextRequest) {
             take: 1,
             orderBy: { createdAt: 'desc' }
           },
-          _count: { select: { tasks: true, submissions: true } }
+          _count: { select: { tasks: true, submissions: true, ustazGroups: true } }
         }
       }),
       prisma.user.count({ where })
@@ -81,6 +103,7 @@ export async function GET(req: NextRequest) {
         taskPassedCount: activeTask?.passedCount || 0,
         taskRequiredCount: activeTask?.requiredCount || 0,
         tasks: undefined, // Remove raw tasks data
+        studentGroup: user.studentGroups[0]?.group || null, // For backward compatibility
       }
     })
 
@@ -144,12 +167,21 @@ export async function POST(req: NextRequest) {
         firstName: firstName?.trim() || null,
         lastName: lastName?.trim() || null,
         role,
-        groupId: validGroupId,
         currentPage: 1,
         currentLine: 1,
         currentStage: StageNumber.STAGE_1_1,
       }
     })
+
+    // Create StudentGroup if groupId provided
+    if (validGroupId) {
+      await prisma.studentGroup.create({
+        data: {
+          studentId: user.id,
+          groupId: validGroupId,
+        }
+      })
+    }
 
     // Create statistics for students
     if (role === UserRole.STUDENT) {

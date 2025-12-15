@@ -23,25 +23,26 @@ export async function GET() {
         students: {
           where: { isActive: true },
           select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            currentPage: true,
-            currentStage: true,
-            tasks: {
-              where: { status: 'IN_PROGRESS' },
-              take: 1,
+            student: {
               select: {
-                passedCount: true,
-                requiredCount: true,
+                id: true,
+                firstName: true,
+                lastName: true,
+                currentPage: true,
+                currentLine: true,
+                currentStage: true,
+                isActive: true,
+                tasks: {
+                  where: { status: 'IN_PROGRESS' },
+                  take: 1,
+                  select: {
+                    passedCount: true,
+                    requiredCount: true,
+                  }
+                }
               }
             }
-          },
-          orderBy: [
-            { currentPage: 'desc' },
-            { currentLine: 'desc' }
-          ],
-          take: 5
+          }
         },
         _count: {
           select: { students: true }
@@ -50,7 +51,25 @@ export async function GET() {
       orderBy: { createdAt: 'desc' }
     })
 
-    return NextResponse.json(groups)
+    // Transform: extract students and sort
+    const transformed = groups.map(group => {
+      const studentList = group.students
+        .map(sg => sg.student)
+        .filter(s => s.isActive)
+        .sort((a, b) => {
+          if (b.currentPage !== a.currentPage) return b.currentPage - a.currentPage
+          return b.currentLine - a.currentLine
+        })
+        .slice(0, 5)
+
+      return {
+        ...group,
+        students: studentList,
+        _count: group._count
+      }
+    })
+
+    return NextResponse.json(transformed)
   } catch (error) {
     console.error('Get ustaz groups error:', error)
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 })

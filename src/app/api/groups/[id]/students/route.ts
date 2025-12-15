@@ -38,36 +38,44 @@ export async function GET(
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const students = await prisma.user.findMany({
+    const studentGroups = await prisma.studentGroup.findMany({
       where: {
         groupId: id,
-        role: UserRole.STUDENT,
-        isActive: true,
+        student: {
+          role: UserRole.STUDENT,
+          isActive: true,
+        }
       },
       select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        phone: true,
-        currentPage: true,
-        currentLine: true,
-        currentStage: true,
-        statistics: {
+        student: {
           select: {
-            totalPagesCompleted: true,
-            currentStreak: true,
-            globalRank: true,
+            id: true,
+            firstName: true,
+            lastName: true,
+            phone: true,
+            currentPage: true,
+            currentLine: true,
+            currentStage: true,
+            statistics: {
+              select: {
+                totalPagesCompleted: true,
+                currentStreak: true,
+                globalRank: true,
+              }
+            },
+            _count: {
+              select: { tasks: true, submissions: true }
+            }
           }
-        },
-        _count: {
-          select: { tasks: true, submissions: true }
         }
       },
       orderBy: [
-        { currentPage: 'desc' },
-        { currentLine: 'desc' }
+        { student: { currentPage: 'desc' } },
+        { student: { currentLine: 'desc' } }
       ]
     })
+
+    const students = studentGroups.map(sg => sg.student)
 
     return NextResponse.json(students)
   } catch (error) {
@@ -120,9 +128,15 @@ export async function POST(
     }
 
     // Add student to group
-    const updated = await prisma.user.update({
+    await prisma.studentGroup.create({
+      data: {
+        studentId: validation.data.studentId,
+        groupId: id
+      }
+    })
+
+    const updated = await prisma.user.findUnique({
       where: { id: student.id },
-      data: { groupId: id },
       select: {
         id: true,
         firstName: true,
@@ -162,9 +176,13 @@ export async function DELETE(
     }
 
     // Remove student from group
-    await prisma.user.update({
-      where: { id: studentId },
-      data: { groupId: null }
+    await prisma.studentGroup.delete({
+      where: {
+        studentId_groupId: {
+          studentId,
+          groupId: id
+        }
+      }
     })
 
     return NextResponse.json({ success: true })

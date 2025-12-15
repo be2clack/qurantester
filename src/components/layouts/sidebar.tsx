@@ -97,6 +97,7 @@ export function Sidebar({ items, title, subtitle }: SidebarProps) {
 export const adminNavItems: NavItem[] = [
   { title: 'Главная', href: '/admin', icon: LayoutDashboard },
   { title: 'Пользователи', href: '/admin/users', icon: Users },
+  { title: 'Студенты', href: '/admin/students', icon: UserCheck },
   { title: 'Группы', href: '/admin/groups', icon: GraduationCap },
   { title: 'Уроки', href: '/admin/lessons', icon: BookOpen },
   { title: 'Коран', href: '/admin/quran', icon: BookOpenCheck },

@@ -32,8 +32,8 @@ export async function GET(
         currentStage: true,
         childOf: { select: { id: true } },
         statistics: true,
-        studentGroup: {
-          select: { id: true, name: true, ustazId: true }
+        studentGroups: {
+          include: { group: true }
         }
       }
     })
@@ -44,7 +44,7 @@ export async function GET(
 
     // Ustaz can only see their students
     if (currentUser.role === UserRole.USTAZ) {
-      if (user.studentGroup?.ustazId !== currentUser.id) {
+      if (user.studentGroups[0]?.group?.ustazId !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
       }
     }
