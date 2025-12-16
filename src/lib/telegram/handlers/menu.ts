@@ -31,6 +31,12 @@ import {
   handleBackToUstazList,
   handleBackToRole,
 } from './registration'
+import {
+  startMufradatGame,
+  handleMufradatAnswer,
+  handleMufradatQuit,
+  showMufradatGameMenu,
+} from './mufradat-game'
 
 /**
  * Handle all callback queries (menu navigation)
@@ -97,6 +103,10 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         break
       case 'cancel':
         await handleCancel(ctx, user)
+        break
+      case 'mufradat':
+        // Mufradat game callbacks
+        await handleMufradatCallback(ctx, user, action, id)
         break
       case 'noop':
         // Do nothing, just answer callback
@@ -891,6 +901,12 @@ async function handleLessonTypeCallback(
 
   if (!studentGroup) {
     await ctx.answerCallbackQuery({ text: 'Вы не состоите в этой группе' })
+    return
+  }
+
+  // For TRANSLATION lesson type, show mufradat game instead of regular task flow
+  if (studentGroup.group.lessonType === LessonType.TRANSLATION) {
+    await showMufradatGameMenu(ctx, user, studentGroup)
     return
   }
 
@@ -2361,6 +2377,35 @@ async function handleRegistrationCallback(
   }
 
   await ctx.answerCallbackQuery({ text: 'Неизвестное действие регистрации' })
+}
+
+// ============== MUFRADAT GAME HANDLER ==============
+
+async function handleMufradatCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  id?: string
+): Promise<void> {
+  switch (action) {
+    case 'start':
+      // id is groupId
+      if (id) {
+        await startMufradatGame(ctx, user, id)
+      }
+      break
+    case 'answer':
+      // id is answer index
+      if (id !== undefined) {
+        await handleMufradatAnswer(ctx, user, parseInt(id))
+      }
+      break
+    case 'quit':
+      await handleMufradatQuit(ctx, user)
+      break
+    default:
+      await ctx.answerCallbackQuery({ text: 'Неизвестное действие игры' })
+  }
 }
 
 // ============== CANCEL HANDLER ==============
