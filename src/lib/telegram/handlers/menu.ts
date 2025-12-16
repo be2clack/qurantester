@@ -783,8 +783,37 @@ async function showTaskHistory(ctx: BotContext, user: any): Promise<void> {
 }
 
 async function showProgress(ctx: BotContext, user: any): Promise<void> {
+  // Get user statistics
   const stats = await prisma.userStatistics.findUnique({
     where: { userId: user.id }
+  })
+
+  // Get all student groups with progress
+  const studentGroups = await prisma.studentGroup.findMany({
+    where: { studentId: user.id, isActive: true },
+    include: {
+      group: {
+        include: { ustaz: true }
+      }
+    }
+  })
+
+  // Get mufradat game statistics
+  const mufradatStats = await prisma.submission.aggregate({
+    where: {
+      studentId: user.id,
+      submissionType: 'MUFRADAT_GAME'
+    },
+    _count: true,
+    _avg: { gameScore: true }
+  })
+
+  const mufradatPassed = await prisma.submission.count({
+    where: {
+      studentId: user.id,
+      submissionType: 'MUFRADAT_GAME',
+      status: 'PASSED'
+    }
   })
 
   const totalPages = 602
@@ -792,12 +821,43 @@ async function showProgress(ctx: BotContext, user: any): Promise<void> {
   const progressPercent = ((completedPages / totalPages) * 100).toFixed(2)
 
   let message = `<b>📈 Мой прогресс</b>\n\n`
-  message += `📖 Текущая позиция: <b>стр. ${user.currentPage}, строка ${user.currentLine}</b>\n`
-  message += `📊 Пройдено страниц: ${completedPages} из ${totalPages} (${progressPercent}%)\n\n`
 
+  // Overall progress
+  message += `📖 <b>Общий прогресс</b>\n`
+  message += `   Позиция: стр. ${user.currentPage}, строка ${user.currentLine}\n`
+  message += `   Пройдено: ${completedPages}/${totalPages} стр. (${progressPercent}%)\n\n`
+
+  // Progress by lesson type
+  if (studentGroups.length > 0) {
+    message += `📚 <b>По типам уроков:</b>\n`
+    for (const sg of studentGroups) {
+      const typeName = getLessonTypeName(sg.group.lessonType)
+      const stageShort = sg.currentStage.replace('STAGE_', '').replace('_', '.')
+
+      if (sg.group.lessonType === LessonType.TRANSLATION) {
+        // Special info for mufradat
+        const avgScore = mufradatStats._avg.gameScore
+          ? Math.round(mufradatStats._avg.gameScore)
+          : 0
+        message += `\n🎮 <b>${typeName}</b>\n`
+        message += `   📍 Стр. ${sg.currentPage}, этап ${stageShort}\n`
+        message += `   🎯 Игр сыграно: ${mufradatStats._count}\n`
+        message += `   ✅ Пройдено: ${mufradatPassed}\n`
+        message += `   📊 Средний балл: ${avgScore}%\n`
+      } else {
+        message += `\n📖 <b>${typeName}</b>\n`
+        message += `   📍 Стр. ${sg.currentPage}, строка ${sg.currentLine}\n`
+        message += `   📊 Этап ${stageShort}\n`
+      }
+    }
+    message += `\n`
+  }
+
+  // General statistics
   if (stats) {
+    message += `━━━━━━━━━━━━━━━━━━\n`
     message += `✅ Заданий выполнено: ${stats.totalTasksCompleted}\n`
-    message += `❌ Заданий не сдано: ${stats.totalTasksFailed}\n\n`
+    message += `❌ Заданий не сдано: ${stats.totalTasksFailed}\n`
 
     const weekTrend = stats.thisWeekProgress - stats.lastWeekProgress
     const trendEmoji = weekTrend > 0 ? '📈' : weekTrend < 0 ? '📉' : '➡️'
@@ -808,9 +868,20 @@ async function showProgress(ctx: BotContext, user: any): Promise<void> {
     }
   }
 
+  // Add ustaz chat buttons
+  const keyboard = new InlineKeyboard()
+  const ustazWithUsername = studentGroups.find(sg => sg.group.ustaz?.telegramUsername)
+  if (ustazWithUsername) {
+    keyboard.url(
+      `💬 Написать устазу`,
+      `https://t.me/${ustazWithUsername.group.ustaz!.telegramUsername}`
+    ).row()
+  }
+  keyboard.text('◀️ В меню', 'student:menu')
+
   await ctx.editMessageText(message, {
     parse_mode: 'HTML',
-    reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+    reply_markup: keyboard
   })
 }
 

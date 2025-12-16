@@ -43,6 +43,11 @@ export interface StudentMenuInfo {
   lessonTypes?: LessonTypeInfo[]
 }
 
+// Web App URL for Telegram Mini App
+const WEB_APP_URL = process.env.NEXT_PUBLIC_APP_URL
+  ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram`
+  : 'https://qurantester.vercel.app/telegram'
+
 /**
  * Main menu keyboard based on user role
  * For students, optionally pass menu info to show dynamic task button and ustaz chat
@@ -58,7 +63,7 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📖 Уроки', 'admin:lessons').row()
         .text('📊 Статистика', 'admin:stats').row()
         .text('⚙️ Настройки', 'admin:settings').row()
-        .text('🌐 Войти в веб', 'auth:web')
+        .webApp('🌐 Веб-панель', WEB_APP_URL)
       break
 
     case UserRole.USTAZ:
@@ -67,7 +72,7 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📝 Проверить работы', 'ustaz:submissions').row()
         .text('👥 Мои студенты', 'ustaz:students').row()
         .text('📊 Статистика', 'ustaz:stats').row()
-        .text('🌐 Войти в веб', 'auth:web')
+        .webApp('🌐 Веб-панель', WEB_APP_URL)
       break
 
     case UserRole.STUDENT:
@@ -111,14 +116,14 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📈 Мой прогресс', 'student:progress')
         .text('📋 История', 'student:tasks').row()
         .text('📖 Коран', 'student:quran')
-        .text('🌐 Веб', 'auth:web')
+        .webApp('🌐 Веб', WEB_APP_URL)
       break
 
     case UserRole.PARENT:
       keyboard
         .text('👨‍👩‍👧‍👦 Успеваемость детей', 'parent:children').row()
         .text('📊 Статистика', 'parent:stats').row()
-        .text('🌐 Войти в веб', 'auth:web')
+        .webApp('🌐 Веб-панель', WEB_APP_URL)
       break
 
     case UserRole.PENDING:
