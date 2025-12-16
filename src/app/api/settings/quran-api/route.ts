@@ -7,6 +7,8 @@ import { z } from 'zod'
 const API_KEYS = {
   QURANI_AI_QRC_KEY: 'Qurani.ai QRC API Key (AI проверка чтения)',
   QURANI_AI_SEMANTIC_KEY: 'Qurani.ai Semantic Search API Key',
+  OPENAI_API_KEY: 'OpenAI API Key (для перевода муфрадата)',
+  OPENAI_MODEL: 'OpenAI Model (модель для перевода)',
 } as const
 
 type ApiKeyType = keyof typeof API_KEYS
@@ -50,7 +52,7 @@ export async function GET() {
 }
 
 const updateSchema = z.object({
-  key: z.enum(['QURANI_AI_QRC_KEY', 'QURANI_AI_SEMANTIC_KEY'] as const),
+  key: z.enum(['QURANI_AI_QRC_KEY', 'QURANI_AI_SEMANTIC_KEY', 'OPENAI_API_KEY', 'OPENAI_MODEL'] as const),
   value: z.string().min(1),
 })
 

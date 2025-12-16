@@ -8,6 +8,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   ArrowLeft,
   Key,
   Save,
@@ -20,6 +27,7 @@ import {
   Search,
   ExternalLink,
   Trash2,
+  Bot,
 } from 'lucide-react'
 
 interface ApiKey {
@@ -31,24 +39,16 @@ interface ApiKey {
 interface ApiKeysData {
   QURANI_AI_QRC_KEY: ApiKey
   QURANI_AI_SEMANTIC_KEY: ApiKey
+  OPENAI_API_KEY: ApiKey
+  OPENAI_MODEL: ApiKey
 }
 
-const API_KEY_INFO = {
-  QURANI_AI_QRC_KEY: {
-    name: 'QRC API Key',
-    description: 'AI проверка чтения Корана (Quran Recitation Checking)',
-    icon: Sparkles,
-    color: 'bg-amber-100 text-amber-600',
-    docsUrl: 'https://qurani.ai/en/docs/qrc',
-  },
-  QURANI_AI_SEMANTIC_KEY: {
-    name: 'Semantic Search API Key',
-    description: 'Семантический поиск по Корану',
-    icon: Search,
-    color: 'bg-blue-100 text-blue-600',
-    docsUrl: 'https://qurani.ai/en/docs/semantic-search',
-  },
-}
+const OPENAI_MODELS = [
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Быстрый и недорогой' },
+  { id: 'gpt-4o', name: 'GPT-4o', description: 'Продвинутый мультимодальный' },
+  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', description: 'Быстрый GPT-4' },
+  { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', description: 'Экономичный' },
+]
 
 export default function ApiSettingsPage() {
   const [keys, setKeys] = useState<ApiKeysData | null>(null)
@@ -56,13 +56,16 @@ export default function ApiSettingsPage() {
   const [saving, setSaving] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
 
-  // Input states for each key
+  // Input states
   const [qrcKeyInput, setQrcKeyInput] = useState('')
   const [semanticKeyInput, setSemanticKeyInput] = useState('')
+  const [openaiKeyInput, setOpenaiKeyInput] = useState('')
+  const [openaiModel, setOpenaiModel] = useState('gpt-4o-mini')
 
   // Show/hide states
   const [showQrcKey, setShowQrcKey] = useState(false)
   const [showSemanticKey, setShowSemanticKey] = useState(false)
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false)
 
   useEffect(() => {
     fetchKeys()
@@ -74,6 +77,10 @@ export default function ApiSettingsPage() {
       if (res.ok) {
         const data = await res.json()
         setKeys(data)
+        // Set current model if configured
+        if (data.OPENAI_MODEL?.maskedValue) {
+          setOpenaiModel(data.OPENAI_MODEL.maskedValue)
+        }
       }
     } catch (error) {
       console.error('Failed to fetch API keys:', error)
@@ -98,6 +105,7 @@ export default function ApiSettingsPage() {
         // Clear input
         if (keyName === 'QURANI_AI_QRC_KEY') setQrcKeyInput('')
         if (keyName === 'QURANI_AI_SEMANTIC_KEY') setSemanticKeyInput('')
+        if (keyName === 'OPENAI_API_KEY') setOpenaiKeyInput('')
       }
     } catch (error) {
       console.error('Failed to save API key:', error)
@@ -133,6 +141,8 @@ export default function ApiSettingsPage() {
     )
   }
 
+  const openaiConfigured = keys?.OPENAI_API_KEY?.status === 'configured'
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -153,7 +163,147 @@ export default function ApiSettingsPage() {
         </div>
       </div>
 
-      {/* Info Card */}
+      {/* OpenAI Section */}
+      <Card className="border-emerald-200 bg-emerald-50/50 dark:bg-emerald-950/20 dark:border-emerald-800">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-emerald-100 dark:bg-emerald-900 text-emerald-600 dark:text-emerald-400">
+                <Bot className="h-5 w-5" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">OpenAI API</CardTitle>
+                <CardDescription>
+                  Перевод муфрадата (пословный перевод) с помощью ChatGPT
+                </CardDescription>
+              </div>
+            </div>
+            <Badge variant={openaiConfigured ? 'default' : 'secondary'} className="gap-1">
+              {openaiConfigured ? (
+                <>
+                  <Check className="h-3 w-3" />
+                  Настроен
+                </>
+              ) : (
+                <>
+                  <X className="h-3 w-3" />
+                  Не настроен
+                </>
+              )}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Current key display */}
+          {openaiConfigured && (
+            <div className="flex items-center justify-between p-3 bg-white/50 dark:bg-black/20 rounded-lg border">
+              <div>
+                <p className="text-sm font-medium">Текущий ключ</p>
+                <p className="text-sm text-muted-foreground font-mono">
+                  {showOpenaiKey ? keys?.OPENAI_API_KEY?.maskedValue : '••••••••••••••••'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                >
+                  {showOpenaiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => handleDeleteKey('OPENAI_API_KEY')}
+                  disabled={deleting === 'OPENAI_API_KEY'}
+                >
+                  {deleting === 'OPENAI_API_KEY' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* API Key input */}
+          <div className="space-y-2">
+            <Label htmlFor="openai-key">
+              {openaiConfigured ? 'Обновить API ключ' : 'API ключ'}
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                id="openai-key"
+                type="password"
+                placeholder="sk-..."
+                value={openaiKeyInput}
+                onChange={(e) => setOpenaiKeyInput(e.target.value)}
+              />
+              <Button
+                onClick={() => handleSaveKey('OPENAI_API_KEY', openaiKeyInput)}
+                disabled={!openaiKeyInput.trim() || saving === 'OPENAI_API_KEY'}
+              >
+                {saving === 'OPENAI_API_KEY' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {/* Model selection */}
+          <div className="space-y-2">
+            <Label>Модель</Label>
+            <div className="flex gap-2">
+              <Select value={openaiModel} onValueChange={setOpenaiModel}>
+                <SelectTrigger className="flex-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {OPENAI_MODELS.map((model) => (
+                    <SelectItem key={model.id} value={model.id}>
+                      <div className="flex flex-col">
+                        <span>{model.name}</span>
+                        <span className="text-xs text-muted-foreground">{model.description}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={() => handleSaveKey('OPENAI_MODEL', openaiModel)}
+                disabled={saving === 'OPENAI_MODEL'}
+                variant="outline"
+              >
+                {saving === 'OPENAI_MODEL' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            {keys?.OPENAI_MODEL?.status === 'configured' && (
+              <p className="text-xs text-muted-foreground">
+                Текущая модель: <span className="font-mono">{keys.OPENAI_MODEL.maskedValue}</span>
+              </p>
+            )}
+          </div>
+
+          <a
+            href="https://platform.openai.com/api-keys"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-emerald-600 hover:underline"
+          >
+            Получить API ключ на OpenAI
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </CardContent>
+      </Card>
+
+      {/* Qurani.ai Info Card */}
       <Card className="border-blue-200 bg-blue-50/50 dark:bg-blue-950/20 dark:border-blue-800">
         <CardContent className="pt-6">
           <div className="flex items-start gap-4">
@@ -164,7 +314,7 @@ export default function ApiSettingsPage() {
               <h3 className="font-medium text-blue-900 dark:text-blue-100">О Qurani.ai API</h3>
               <p className="text-sm text-blue-700 dark:text-blue-300 mt-1">
                 Qurani.ai предоставляет AI-сервисы для работы с Кораном: проверка чтения,
-                семантический поиск и многое другое. Для базовых функций Quran.com API ключ не требуется.
+                семантический поиск и многое другое.
               </p>
               <a
                 href="https://qurani.ai"
@@ -180,116 +330,195 @@ export default function ApiSettingsPage() {
         </CardContent>
       </Card>
 
-      {/* API Keys */}
+      {/* Qurani.ai Keys */}
       <div className="grid gap-6">
-        {Object.entries(API_KEY_INFO).map(([keyName, info]) => {
-          const keyData = keys?.[keyName as keyof ApiKeysData]
-          const isConfigured = keyData?.status === 'configured'
-          const Icon = info.icon
-          const inputValue = keyName === 'QURANI_AI_QRC_KEY' ? qrcKeyInput : semanticKeyInput
-          const setInputValue = keyName === 'QURANI_AI_QRC_KEY' ? setQrcKeyInput : setSemanticKeyInput
-          const showKey = keyName === 'QURANI_AI_QRC_KEY' ? showQrcKey : showSemanticKey
-          const setShowKey = keyName === 'QURANI_AI_QRC_KEY' ? setShowQrcKey : setShowSemanticKey
-
-          return (
-            <Card key={keyName}>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg ${info.color}`}>
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-lg">{info.name}</CardTitle>
-                      <CardDescription>{info.description}</CardDescription>
-                    </div>
-                  </div>
-                  <Badge variant={isConfigured ? 'default' : 'secondary'} className="gap-1">
-                    {isConfigured ? (
-                      <>
-                        <Check className="h-3 w-3" />
-                        Настроен
-                      </>
-                    ) : (
-                      <>
-                        <X className="h-3 w-3" />
-                        Не настроен
-                      </>
-                    )}
-                  </Badge>
+        {/* QRC Key */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-amber-100 text-amber-600">
+                  <Sparkles className="h-5 w-5" />
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {isConfigured && (
-                  <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
-                    <div>
-                      <p className="text-sm font-medium">Текущий ключ</p>
-                      <p className="text-sm text-muted-foreground font-mono">
-                        {showKey ? keyData?.maskedValue : '••••••••••••••••'}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setShowKey(!showKey)}
-                      >
-                        {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDeleteKey(keyName)}
-                        disabled={deleting === keyName}
-                      >
-                        {deleting === keyName ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
+                <div>
+                  <CardTitle className="text-lg">QRC API Key</CardTitle>
+                  <CardDescription>AI проверка чтения Корана</CardDescription>
+                </div>
+              </div>
+              <Badge variant={keys?.QURANI_AI_QRC_KEY?.status === 'configured' ? 'default' : 'secondary'} className="gap-1">
+                {keys?.QURANI_AI_QRC_KEY?.status === 'configured' ? (
+                  <>
+                    <Check className="h-3 w-3" />
+                    Настроен
+                  </>
+                ) : (
+                  <>
+                    <X className="h-3 w-3" />
+                    Не настроен
+                  </>
                 )}
-
-                <div className="space-y-2">
-                  <Label htmlFor={keyName}>
-                    {isConfigured ? 'Обновить ключ' : 'Добавить ключ'}
-                  </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id={keyName}
-                      type="password"
-                      placeholder="sk-..."
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                    />
-                    <Button
-                      onClick={() => handleSaveKey(keyName, inputValue)}
-                      disabled={!inputValue.trim() || saving === keyName}
-                    >
-                      {saving === keyName ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Save className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </div>
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {keys?.QURANI_AI_QRC_KEY?.status === 'configured' && (
+              <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                <div>
+                  <p className="text-sm font-medium">Текущий ключ</p>
+                  <p className="text-sm text-muted-foreground font-mono">
+                    {showQrcKey ? keys?.QURANI_AI_QRC_KEY?.maskedValue : '••••••••••••••••'}
+                  </p>
                 </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="icon" onClick={() => setShowQrcKey(!showQrcKey)}>
+                    {showQrcKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDeleteKey('QURANI_AI_QRC_KEY')}
+                    disabled={deleting === 'QURANI_AI_QRC_KEY'}
+                  >
+                    {deleting === 'QURANI_AI_QRC_KEY' ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
 
-                <a
-                  href={info.docsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            <div className="space-y-2">
+              <Label htmlFor="qrc-key">
+                {keys?.QURANI_AI_QRC_KEY?.status === 'configured' ? 'Обновить ключ' : 'Добавить ключ'}
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="qrc-key"
+                  type="password"
+                  placeholder="sk-..."
+                  value={qrcKeyInput}
+                  onChange={(e) => setQrcKeyInput(e.target.value)}
+                />
+                <Button
+                  onClick={() => handleSaveKey('QURANI_AI_QRC_KEY', qrcKeyInput)}
+                  disabled={!qrcKeyInput.trim() || saving === 'QURANI_AI_QRC_KEY'}
                 >
-                  Документация
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </CardContent>
-            </Card>
-          )
-        })}
+                  {saving === 'QURANI_AI_QRC_KEY' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <a
+              href="https://qurani.ai/en/docs/qrc"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Документация
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </CardContent>
+        </Card>
+
+        {/* Semantic Search Key */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
+                  <Search className="h-5 w-5" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Semantic Search API Key</CardTitle>
+                  <CardDescription>Семантический поиск по Корану</CardDescription>
+                </div>
+              </div>
+              <Badge variant={keys?.QURANI_AI_SEMANTIC_KEY?.status === 'configured' ? 'default' : 'secondary'} className="gap-1">
+                {keys?.QURANI_AI_SEMANTIC_KEY?.status === 'configured' ? (
+                  <>
+                    <Check className="h-3 w-3" />
+                    Настроен
+                  </>
+                ) : (
+                  <>
+                    <X className="h-3 w-3" />
+                    Не настроен
+                  </>
+                )}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {keys?.QURANI_AI_SEMANTIC_KEY?.status === 'configured' && (
+              <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                <div>
+                  <p className="text-sm font-medium">Текущий ключ</p>
+                  <p className="text-sm text-muted-foreground font-mono">
+                    {showSemanticKey ? keys?.QURANI_AI_SEMANTIC_KEY?.maskedValue : '••••••••••••••••'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="icon" onClick={() => setShowSemanticKey(!showSemanticKey)}>
+                    {showSemanticKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDeleteKey('QURANI_AI_SEMANTIC_KEY')}
+                    disabled={deleting === 'QURANI_AI_SEMANTIC_KEY'}
+                  >
+                    {deleting === 'QURANI_AI_SEMANTIC_KEY' ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="semantic-key">
+                {keys?.QURANI_AI_SEMANTIC_KEY?.status === 'configured' ? 'Обновить ключ' : 'Добавить ключ'}
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="semantic-key"
+                  type="password"
+                  placeholder="sk-..."
+                  value={semanticKeyInput}
+                  onChange={(e) => setSemanticKeyInput(e.target.value)}
+                />
+                <Button
+                  onClick={() => handleSaveKey('QURANI_AI_SEMANTIC_KEY', semanticKeyInput)}
+                  disabled={!semanticKeyInput.trim() || saving === 'QURANI_AI_SEMANTIC_KEY'}
+                >
+                  {saving === 'QURANI_AI_SEMANTIC_KEY' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <a
+              href="https://qurani.ai/en/docs/semantic-search"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Документация
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Quran.com Info */}

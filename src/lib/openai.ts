@@ -1,18 +1,69 @@
 import OpenAI from 'openai'
+import { prisma } from './prisma'
 
-// Lazy initialization of OpenAI client
-let openai: OpenAI | null = null
+// Cache for settings to avoid DB calls on every request
+let cachedApiKey: string | null = null
+let cachedModel: string = 'gpt-4o-mini'
+let cacheExpiry: number = 0
+const CACHE_TTL = 60000 // 1 minute cache
 
-function getOpenAI(): OpenAI {
-  if (!openai) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY not configured')
-    }
-    openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    })
+/**
+ * Get OpenAI settings from DB or env vars
+ */
+async function getOpenAISettings(): Promise<{ apiKey: string; model: string }> {
+  // Return cached if valid
+  if (cachedApiKey && Date.now() < cacheExpiry) {
+    return { apiKey: cachedApiKey, model: cachedModel }
   }
-  return openai
+
+  // Try to get from DB first
+  try {
+    const settings = await prisma.systemSettings.findMany({
+      where: {
+        key: { in: ['OPENAI_API_KEY', 'OPENAI_MODEL'] }
+      }
+    })
+
+    const dbApiKey = settings.find(s => s.key === 'OPENAI_API_KEY')?.value
+    const dbModel = settings.find(s => s.key === 'OPENAI_MODEL')?.value
+
+    // Use DB values if available, otherwise fall back to env vars
+    const apiKey = dbApiKey || process.env.OPENAI_API_KEY
+    const model = dbModel || 'gpt-4o-mini'
+
+    if (apiKey) {
+      cachedApiKey = apiKey
+      cachedModel = model
+      cacheExpiry = Date.now() + CACHE_TTL
+      return { apiKey, model }
+    }
+  } catch (error) {
+    // If DB lookup fails (e.g., table doesn't exist), fall back to env vars
+    console.error('Failed to get OpenAI settings from DB:', error)
+  }
+
+  // Fallback to env vars only
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) {
+    throw new Error('OPENAI_API_KEY not configured')
+  }
+
+  cachedApiKey = apiKey
+  cachedModel = 'gpt-4o-mini'
+  cacheExpiry = Date.now() + CACHE_TTL
+
+  return { apiKey, model: cachedModel }
+}
+
+/**
+ * Create OpenAI client with current settings
+ */
+async function createOpenAIClient(): Promise<{ client: OpenAI; model: string }> {
+  const { apiKey, model } = await getOpenAISettings()
+  return {
+    client: new OpenAI({ apiKey }),
+    model
+  }
 }
 
 interface WordToTranslate {
@@ -33,11 +84,9 @@ interface TranslatedWord {
 export async function translateWordsToRussian(
   words: WordToTranslate[]
 ): Promise<TranslatedWord[]> {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error('OPENAI_API_KEY not configured')
-  }
-
   if (words.length === 0) return []
+
+  const { client, model } = await createOpenAIClient()
 
   // Build prompt with words to translate
   const wordsText = words
@@ -55,8 +104,8 @@ ${wordsText}
 [{"index": 1, "ru": "перевод"}, {"index": 2, "ru": "перевод"}, ...]`
 
   try {
-    const response = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini', // Cheaper and faster for translation
+    const response = await client.chat.completions.create({
+      model,
       messages: [
         {
           role: 'system',
@@ -107,8 +156,10 @@ export async function translateSingleWord(
   textArabic: string,
   translationEn?: string
 ): Promise<string> {
-  const response = await getOpenAI().chat.completions.create({
-    model: 'gpt-4o-mini',
+  const { client, model } = await createOpenAIClient()
+
+  const response = await client.chat.completions.create({
+    model,
     messages: [
       {
         role: 'system',
@@ -124,4 +175,16 @@ export async function translateSingleWord(
   })
 
   return response.choices[0]?.message?.content?.trim() || ''
+}
+
+/**
+ * Check if OpenAI is configured
+ */
+export async function isOpenAIConfigured(): Promise<boolean> {
+  try {
+    await getOpenAISettings()
+    return true
+  } catch {
+    return false
+  }
 }
