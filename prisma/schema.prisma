@@ -332,17 +332,26 @@ model Task {
 
 model Submission {
   id              String           @id @default(cuid())
-  
+
   taskId          String
   task            Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
   studentId       String
   student         User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  
-  // Content (Telegram file_id)
-  fileId          String
-  fileType        String           // "voice" or "video_note"
+
+  // Content type
+  submissionType  String           @default("AUDIO") // "AUDIO" or "MUFRADAT_GAME"
+
+  // Audio/Video content (for AUDIO type)
+  fileId          String?          // Telegram file_id (optional for game)
+  fileType        String?          // "voice" or "video_note"
   duration        Int?             // Duration in seconds
-  
+
+  // Mufradat game data (for MUFRADAT_GAME type)
+  gameScore       Int?             // Score 0-100%
+  gameCorrect     Int?             // Number of correct answers
+  gameTotal       Int?             // Total questions
+  gameData        String?   @db.Text  // JSON with detailed results
+
   // Review
   status          SubmissionStatus @default(PENDING)
   reviewerId      String?

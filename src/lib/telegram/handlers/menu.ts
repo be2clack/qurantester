@@ -1465,7 +1465,16 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
 
   // Send file with caption and buttons
   try {
-    if (first.fileType === 'voice') {
+    // Handle mufradat game submissions (no file)
+    if (first.submissionType === 'MUFRADAT_GAME' || !first.fileId) {
+      const gameInfo = first.gameScore !== null
+        ? `\n\n🎮 <b>Муфрадат:</b> ${first.gameCorrect}/${first.gameTotal} (${first.gameScore}%)`
+        : ''
+      await ctx.reply(caption + gameInfo, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+    } else if (first.fileType === 'voice') {
       await ctx.replyWithVoice(first.fileId, {
         caption,
         parse_mode: 'HTML',
@@ -1617,7 +1626,19 @@ async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any):
 
   // Send file with caption and buttons (using reply, not edit)
   try {
-    if (first.fileType === 'voice') {
+    // Handle MUFRADAT_GAME submissions (no file, just game results)
+    if (first.submissionType === 'MUFRADAT_GAME' || !first.fileId) {
+      let gameCaption = caption
+      if (first.gameScore !== null) {
+        const scoreEmoji = first.gameScore >= 80 ? '🟢' : first.gameScore >= 50 ? '🟡' : '🔴'
+        gameCaption += `\n\n🎮 <b>Муфрадат игра:</b>\n`
+        gameCaption += `${scoreEmoji} <b>${first.gameCorrect}/${first.gameTotal}</b> (${first.gameScore}%)`
+      }
+      await ctx.reply(gameCaption, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+    } else if (first.fileType === 'voice') {
       await ctx.replyWithVoice(first.fileId, {
         caption,
         parse_mode: 'HTML',
