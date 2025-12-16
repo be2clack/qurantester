@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
+import { prisma } from '@/lib/prisma'
+import { translateWordsToRussian } from '@/lib/openai'
 import {
   getPageVerses,
   getTajweedText,
@@ -38,7 +40,7 @@ export async function GET(
     const [versesData, tajweedData, chapters] = await Promise.all([
       getPageVerses(pageNumber, {
         translationId: translationId ? parseInt(translationId) : undefined,
-        wordTranslationLanguage: includeWords ? 'ru' : undefined,
+        wordTranslationLanguage: includeWords ? 'en' : undefined, // Get English from API
       }),
       includeTajweed ? getTajweedText(pageNumber) : null,
       includeChapters ? getChaptersForPage(pageNumber) : null,
@@ -46,6 +48,116 @@ export async function GET(
 
     // Organize verses by line number
     const lines = getMedinaLines(versesData.verses)
+
+    // Get Russian translations from our DB if words are included
+    if (includeWords) {
+      // Collect all word keys from verses
+      const allWords: Array<{
+        wordKey: string
+        surahNumber: number
+        ayahNumber: number
+        position: number
+        textArabic: string
+        translationEn?: string
+      }> = []
+
+      for (const verse of versesData.verses) {
+        if (verse.words) {
+          const [surah, ayah] = verse.verse_key.split(':').map(Number)
+          for (const word of verse.words) {
+            if (word.char_type_name === 'word') {
+              const wordKey = `${surah}:${ayah}:${word.position}`
+              allWords.push({
+                wordKey,
+                surahNumber: surah,
+                ayahNumber: ayah,
+                position: word.position,
+                textArabic: word.text_uthmani,
+                translationEn: word.translation?.text,
+              })
+            }
+          }
+        }
+      }
+
+      // Get existing translations from DB
+      const wordKeys = allWords.map(w => w.wordKey)
+      const existingTranslations = await prisma.wordTranslation.findMany({
+        where: { wordKey: { in: wordKeys } },
+        select: { wordKey: true, translationRu: true }
+      })
+      const translationMap = new Map(existingTranslations.map(t => [t.wordKey, t.translationRu]))
+
+      // Find words without Russian translations
+      const needTranslation = allWords.filter(w => !translationMap.get(w.wordKey))
+
+      // Auto-generate translations if OpenAI is configured
+      if (needTranslation.length > 0 && process.env.OPENAI_API_KEY) {
+        try {
+          // Save words to DB first
+          for (const word of needTranslation) {
+            await prisma.wordTranslation.upsert({
+              where: { wordKey: word.wordKey },
+              update: { translationEn: word.translationEn },
+              create: {
+                wordKey: word.wordKey,
+                surahNumber: word.surahNumber,
+                ayahNumber: word.ayahNumber,
+                position: word.position,
+                textArabic: word.textArabic,
+                translationEn: word.translationEn,
+              }
+            })
+          }
+
+          // Generate Russian translations (batch by 20)
+          const batchSize = 20
+          for (let i = 0; i < needTranslation.length; i += batchSize) {
+            const batch = needTranslation.slice(i, i + batchSize)
+            const translations = await translateWordsToRussian(
+              batch.map(w => ({
+                wordKey: w.wordKey,
+                textArabic: w.textArabic,
+                translationEn: w.translationEn,
+              }))
+            )
+
+            // Save to DB and update map
+            for (const t of translations) {
+              await prisma.wordTranslation.update({
+                where: { wordKey: t.wordKey },
+                data: { translationRu: t.translationRu, aiGenerated: true, aiModel: 'gpt-4o-mini' }
+              })
+              translationMap.set(t.wordKey, t.translationRu)
+            }
+          }
+        } catch (aiError) {
+          console.error('Auto-translation error:', aiError)
+        }
+      }
+
+      // Apply Russian translations to lines
+      for (const line of lines) {
+        for (const word of line.words) {
+          // Find the word key based on verse_key and position
+          // word has: text_uthmani, position, line_number
+          // We need to match it with the correct verse
+          for (const verseKey of line.verseKeys) {
+            const [surah, ayah] = verseKey.split(':').map(Number)
+            const wordKey = `${surah}:${ayah}:${word.position}`
+            const ruTranslation = translationMap.get(wordKey)
+            if (ruTranslation) {
+              // Replace or add Russian translation
+              word.translation = {
+                text: ruTranslation,
+                language_name: 'russian'
+              }
+              break
+            }
+          }
+        }
+      }
+    }
 
     // Build tajweed map if requested
     const tajweedMap: Record<string, string> = {}

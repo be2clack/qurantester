@@ -15,6 +15,7 @@ export interface QuranWord {
   text_imlaei?: string
   line_number: number
   page_number: number
+  char_type_name: string // "word" or "end" (verse ending symbol)
   translation?: {
     text: string
     language_name: string
