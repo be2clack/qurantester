@@ -13,7 +13,9 @@ import {
   ClipboardList,
   UserCheck,
   LogOut,
-  BookOpenCheck
+  BookOpenCheck,
+  FolderKanban,
+  Clock
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -96,13 +98,14 @@ export function Sidebar({ items, title, subtitle }: SidebarProps) {
 // Admin navigation
 export const adminNavItems: NavItem[] = [
   { title: 'Главная', href: '/admin', icon: LayoutDashboard },
-  { title: 'Пользователи', href: '/admin/users', icon: Users },
-  { title: 'Студенты', href: '/admin/students', icon: UserCheck },
-  { title: 'Группы', href: '/admin/groups', icon: GraduationCap },
-  { title: 'Уроки', href: '/admin/lessons', icon: BookOpen },
-  { title: 'Коран', href: '/admin/quran', icon: BookOpenCheck },
   { title: 'Аналитика', href: '/admin/analytics', icon: BarChart3 },
+  { title: 'Группы', href: '/admin/groups', icon: FolderKanban },
+  { title: 'Студенты', href: '/admin/students', icon: GraduationCap },
+  { title: 'Коран', href: '/admin/quran', icon: BookOpenCheck },
+  { title: 'Уроки', href: '/admin/lessons', icon: BookOpen },
+  { title: 'Пользователи', href: '/admin/users', icon: Users },
   { title: 'Настройки', href: '/admin/settings', icon: Settings },
+  { title: 'Cron Задачи', href: '/admin/cron', icon: Clock },
 ]
 
 // Ustaz navigation

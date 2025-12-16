@@ -3,9 +3,23 @@ import { getCurrentUser } from '@/lib/auth'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
-import { BookOpen, Target, TrendingUp, Clock, CheckCircle } from 'lucide-react'
+import { BookOpen, Target, TrendingUp, Clock, CheckCircle, User, Users, GraduationCap } from 'lucide-react'
 import { redirect } from 'next/navigation'
 import { STAGES, QURAN_TOTAL_PAGES } from '@/lib/constants/quran'
+import { LessonType } from '@prisma/client'
+import Link from 'next/link'
+
+const LESSON_TYPE_LABELS: Record<LessonType, string> = {
+  MEMORIZATION: 'Заучивание',
+  REVISION: 'Повторение',
+  TRANSLATION: 'Перевод',
+}
+
+const LESSON_TYPE_COLORS: Record<LessonType, string> = {
+  MEMORIZATION: 'bg-emerald-100 text-emerald-800',
+  REVISION: 'bg-blue-100 text-blue-800',
+  TRANSLATION: 'bg-purple-100 text-purple-800',
+}
 
 export default async function StudentDashboard() {
   const user = await getCurrentUser()
@@ -14,18 +28,39 @@ export default async function StudentDashboard() {
     redirect('/login')
   }
 
-  // Get current task
-  const currentTask = await prisma.task.findFirst({
+  // Get student groups with progress
+  const studentGroups = await prisma.studentGroup.findMany({
+    where: { studentId: user.id },
+    include: {
+      group: {
+        include: {
+          ustaz: {
+            select: { id: true, firstName: true, lastName: true, phone: true }
+          },
+          _count: { select: { students: true } }
+        }
+      }
+    }
+  })
+
+  // Get ustaz info
+  const ustaz = user.ustazId ? await prisma.user.findUnique({
+    where: { id: user.ustazId },
+    select: { id: true, firstName: true, lastName: true, phone: true }
+  }) : null
+
+  // Get all active tasks
+  const activeTasks = await prisma.task.findMany({
     where: {
       studentId: user.id,
       status: 'IN_PROGRESS',
     },
     include: {
       page: true,
-      lesson: true,
       group: true,
       _count: { select: { submissions: true } }
-    }
+    },
+    orderBy: { createdAt: 'desc' }
   })
 
   // Get statistics
@@ -39,13 +74,17 @@ export default async function StudentDashboard() {
       studentId: user.id,
       status: 'PASSED'
     },
-    include: { page: true },
+    include: { page: true, group: true },
     orderBy: { completedAt: 'desc' },
     take: 5
   })
 
-  const progressPercent = ((user.currentPage - 1) / QURAN_TOTAL_PAGES) * 100
-  const stageInfo = STAGES[user.currentStage as keyof typeof STAGES]
+  // Calculate overall progress (average across groups)
+  const hasGroups = studentGroups.length > 0
+  const avgPage = hasGroups
+    ? Math.round(studentGroups.reduce((acc, sg) => acc + sg.currentPage, 0) / studentGroups.length)
+    : user.currentPage
+  const progressPercent = ((avgPage - 1) / QURAN_TOTAL_PAGES) * 100
 
   return (
     <div className="space-y-6">
@@ -58,75 +97,125 @@ export default async function StudentDashboard() {
         </p>
       </div>
 
-      {/* Current Position Card */}
-      <Card className="bg-gradient-to-br from-primary/10 to-primary/5">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BookOpen className="h-5 w-5" />
-            Текущая позиция
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-6">
-            <div className="text-center">
-              <div className="text-4xl font-bold text-primary">
-                {user.currentPage}
+      {/* Ustaz Info Card */}
+      {ustaz && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                <User className="h-6 w-6 text-primary" />
               </div>
-              <div className="text-sm text-muted-foreground">страница</div>
-            </div>
-            <div className="text-3xl text-muted-foreground">:</div>
-            <div className="text-center">
-              <div className="text-4xl font-bold text-primary">
-                {user.currentLine}
+              <div className="flex-1">
+                <p className="text-sm text-muted-foreground">Ваш устаз</p>
+                <p className="font-semibold">
+                  {ustaz.firstName} {ustaz.lastName}
+                </p>
+                <p className="text-sm text-muted-foreground">{ustaz.phone}</p>
               </div>
-              <div className="text-sm text-muted-foreground">строка</div>
-            </div>
-            <div className="ml-auto">
-              <Badge variant="secondary" className="text-sm">
-                {stageInfo.name}
+              <Badge variant="outline" className="hidden sm:inline-flex">
+                <Users className="mr-1 h-3 w-3" />
+                {studentGroups.length} групп
               </Badge>
             </div>
-          </div>
-          <div className="mt-4 space-y-2">
-            <div className="flex justify-between text-sm">
-              <span>Общий прогресс</span>
-              <span>{progressPercent.toFixed(1)}%</span>
-            </div>
-            <Progress value={progressPercent} className="h-2" />
-            <p className="text-xs text-muted-foreground">
-              {user.currentPage - 1} из {QURAN_TOTAL_PAGES} страниц пройдено
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
 
+      {/* Groups Progress */}
+      {hasGroups && (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {studentGroups.map((sg) => {
+            const stageInfo = STAGES[sg.currentStage as keyof typeof STAGES]
+            const groupProgress = ((sg.currentPage - 1) / QURAN_TOTAL_PAGES) * 100
+            const activeTask = activeTasks.find(t => t.groupId === sg.groupId)
+
+            return (
+              <Card key={sg.id} className="relative overflow-hidden">
+                <div className={`absolute top-0 left-0 right-0 h-1 ${LESSON_TYPE_COLORS[sg.group.lessonType]?.replace('text-', 'bg-').split(' ')[0] || 'bg-primary'}`} />
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base">{sg.group.name}</CardTitle>
+                    <Badge className={LESSON_TYPE_COLORS[sg.group.lessonType]}>
+                      {LESSON_TYPE_LABELS[sg.group.lessonType]}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-center gap-4 text-sm">
+                    <div>
+                      <span className="text-2xl font-bold text-primary">{sg.currentPage}</span>
+                      <span className="text-muted-foreground"> стр.</span>
+                    </div>
+                    <div className="text-muted-foreground">:</div>
+                    <div>
+                      <span className="text-2xl font-bold text-primary">{sg.currentLine}</span>
+                      <span className="text-muted-foreground"> строка</span>
+                    </div>
+                    <Badge variant="secondary" className="ml-auto">
+                      {stageInfo?.name || sg.currentStage}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Прогресс</span>
+                      <span>{groupProgress.toFixed(1)}%</span>
+                    </div>
+                    <Progress value={groupProgress} className="h-1.5" />
+                  </div>
+
+                  {activeTask && (
+                    <div className="rounded-md bg-muted/50 p-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium">Активное задание</span>
+                        <span>{activeTask.passedCount}/{activeTask.requiredCount}</span>
+                      </div>
+                      <Progress
+                        value={(activeTask.passedCount / activeTask.requiredCount) * 100}
+                        className="mt-1 h-1"
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {/* No Groups Message */}
+      {!hasGroups && (
+        <Card>
+          <CardContent className="py-8 text-center">
+            <GraduationCap className="mx-auto h-12 w-12 text-muted-foreground/50" />
+            <h3 className="mt-4 font-semibold">Нет групп</h3>
+            <p className="text-sm text-muted-foreground">
+              Вы пока не добавлены ни в одну группу. Обратитесь к устазу.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Выполнено
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Выполнено</CardTitle>
             <CheckCircle className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {stats?.totalTasksCompleted || 0}
-            </div>
+            <div className="text-2xl font-bold">{stats?.totalTasksCompleted || 0}</div>
             <p className="text-xs text-muted-foreground">заданий</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Эта неделя
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Эта неделя</CardTitle>
             <TrendingUp className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {stats?.thisWeekProgress || 0}
-            </div>
+            <div className="text-2xl font-bold">{stats?.thisWeekProgress || 0}</div>
             <p className="text-xs text-muted-foreground">
               {stats?.lastWeekProgress !== undefined && (
                 <>
@@ -140,24 +229,18 @@ export default async function StudentDashboard() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Рейтинг
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Рейтинг</CardTitle>
             <Target className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              #{stats?.globalRank || '-'}
-            </div>
+            <div className="text-2xl font-bold">#{stats?.globalRank || '-'}</div>
             <p className="text-xs text-muted-foreground">общий</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">
-              Среднее время
-            </CardTitle>
+            <CardTitle className="text-sm font-medium">Среднее время</CardTitle>
             <Clock className="h-4 w-4 text-orange-500" />
           </CardHeader>
           <CardContent>
@@ -166,59 +249,66 @@ export default async function StudentDashboard() {
                 ? `${stats.averageCompletionTime.toFixed(1)}ч`
                 : '-'}
             </div>
-            <p className="text-xs text-muted-foreground">на страницу</p>
+            <p className="text-xs text-muted-foreground">на задание</p>
           </CardContent>
         </Card>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {/* Current Task */}
+        {/* Active Tasks */}
         <Card>
           <CardHeader>
-            <CardTitle>Текущее задание</CardTitle>
-            <CardDescription>Ваше активное задание</CardDescription>
+            <CardTitle>Активные задания</CardTitle>
+            <CardDescription>Задания в процессе выполнения</CardDescription>
           </CardHeader>
           <CardContent>
-            {currentTask ? (
+            {activeTasks.length === 0 ? (
+              <p className="text-muted-foreground">
+                Нет активных заданий
+              </p>
+            ) : (
               <div className="space-y-4">
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-medium">
-                      Страница {currentTask.page.pageNumber}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {currentTask.startLine === currentTask.endLine
-                        ? `Строка ${currentTask.startLine}`
-                        : `Строки ${currentTask.startLine}-${currentTask.endLine}`}
-                    </p>
+                {activeTasks.map((task) => (
+                  <div key={task.id} className="rounded-lg border p-3 space-y-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-medium">
+                          Страница {task.page.pageNumber}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          {task.startLine === task.endLine
+                            ? `Строка ${task.startLine}`
+                            : `Строки ${task.startLine}-${task.endLine}`}
+                        </p>
+                      </div>
+                      {task.group && (
+                        <Badge className={LESSON_TYPE_COLORS[task.group.lessonType]}>
+                          {LESSON_TYPE_LABELS[task.group.lessonType]}
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span>Прогресс</span>
+                        <span>{task.passedCount}/{task.requiredCount}</span>
+                      </div>
+                      <Progress
+                        value={(task.passedCount / task.requiredCount) * 100}
+                        className="h-2"
+                      />
+                    </div>
+
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Принято: {task.passedCount}</span>
+                      <span>Отклонено: {task.failedCount}</span>
+                    </div>
                   </div>
-                  <Badge>{currentTask.lesson?.name || currentTask.group?.name || 'Задание'}</Badge>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Прогресс</span>
-                    <span>{currentTask.currentCount}/{currentTask.requiredCount}</span>
-                  </div>
-                  <Progress
-                    value={(currentTask.currentCount / currentTask.requiredCount) * 100}
-                    className="h-2"
-                  />
-                </div>
-
-                <div className="flex justify-between text-sm text-muted-foreground">
-                  <span>Принято: {currentTask.passedCount}</span>
-                  <span>Отклонено: {currentTask.failedCount}</span>
-                </div>
-
-                <p className="text-sm text-muted-foreground">
-                  Отправьте голосовое сообщение или кружок через бота @QuranTesterBot
+                ))}
+                <p className="text-sm text-muted-foreground text-center pt-2">
+                  Отправьте через бота @QuranTesterBot
                 </p>
               </div>
-            ) : (
-              <p className="text-muted-foreground">
-                Нет активных заданий. Обратитесь к устазу.
-              </p>
             )}
           </CardContent>
         </Card>
@@ -244,6 +334,11 @@ export default async function StudentDashboard() {
                     <div className="flex items-center gap-2">
                       <CheckCircle className="h-4 w-4 text-green-500" />
                       <span>Страница {task.page.pageNumber}</span>
+                      {task.group && (
+                        <Badge variant="outline" className="text-xs">
+                          {LESSON_TYPE_LABELS[task.group.lessonType]}
+                        </Badge>
+                      )}
                     </div>
                     <span className="text-sm text-muted-foreground">
                       {task.passedCount}/{task.requiredCount}

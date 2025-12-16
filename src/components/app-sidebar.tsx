@@ -16,6 +16,7 @@ import {
   ChevronUp,
   User2,
   Clock,
+  FolderKanban,
 } from 'lucide-react'
 
 import {
@@ -58,13 +59,14 @@ interface AppSidebarProps {
 const navItemsByRole: Record<UserRole, NavItem[]> = {
   ADMIN: [
     { title: 'Главная', href: '/admin', icon: LayoutDashboard },
-    { title: 'Пользователи', href: '/admin/users', icon: Users },
-    { title: 'Группы', href: '/admin/groups', icon: GraduationCap },
-    { title: 'Уроки', href: '/admin/lessons', icon: BookOpen },
-    { title: 'Коран', href: '/admin/quran', icon: BookOpenCheck },
     { title: 'Аналитика', href: '/admin/analytics', icon: BarChart3 },
-    { title: 'Cron задачи', href: '/admin/cron', icon: Clock },
+    { title: 'Группы', href: '/admin/groups', icon: FolderKanban },
+    { title: 'Студенты', href: '/admin/students', icon: GraduationCap },
+    { title: 'Коран', href: '/admin/quran', icon: BookOpenCheck },
+    { title: 'Уроки', href: '/admin/lessons', icon: BookOpen },
+    { title: 'Пользователи', href: '/admin/users', icon: Users },
     { title: 'Настройки', href: '/admin/settings', icon: Settings },
+    { title: 'Cron задачи', href: '/admin/cron', icon: Clock },
   ],
   USTAZ: [
     { title: 'Главная', href: '/ustaz', icon: LayoutDashboard },

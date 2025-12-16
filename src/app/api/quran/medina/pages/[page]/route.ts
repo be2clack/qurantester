@@ -32,11 +32,13 @@ export async function GET(
     const translationId = searchParams.get('translation')
     const includeTajweed = searchParams.get('tajweed') === 'true'
     const includeChapters = searchParams.get('chapters') === 'true'
+    const includeWords = searchParams.get('words') === 'true'
 
     // Fetch page data in parallel
     const [versesData, tajweedData, chapters] = await Promise.all([
       getPageVerses(pageNumber, {
         translationId: translationId ? parseInt(translationId) : undefined,
+        wordTranslationLanguage: includeWords ? 'ru' : undefined,
       }),
       includeTajweed ? getTajweedText(pageNumber) : null,
       includeChapters ? getChaptersForPage(pageNumber) : null,

@@ -122,13 +122,19 @@ export const getPageVerses = unstable_cache(
     options?: {
       translationId?: number
       fields?: string[]
+      wordTranslationLanguage?: string
     }
   ): Promise<PageVersesResponse> => {
     const params = new URLSearchParams({
       words: 'true',
-      word_fields: 'line_number,text_uthmani,text_imlaei,position',
+      word_fields: 'line_number,text_uthmani,text_imlaei,position,translation',
       per_page: '50',
     })
+
+    // Add word translation language (default to Russian for Mufradat)
+    if (options?.wordTranslationLanguage) {
+      params.set('word_translation_language', options.wordTranslationLanguage)
+    }
 
     if (options?.translationId) {
       params.set('translations', options.translationId.toString())
