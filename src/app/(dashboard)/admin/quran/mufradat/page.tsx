@@ -29,8 +29,10 @@ import {
   Check,
   Loader2,
   Sparkles,
-  RefreshCw,
+  Download,
+  AlertCircle,
 } from 'lucide-react'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 interface WordTranslation {
   id: string
@@ -48,6 +50,8 @@ interface WordTranslation {
 export default function MufradatAdminPage() {
   const [words, setWords] = useState<WordTranslation[]>([])
   const [loading, setLoading] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [searchSurah, setSearchSurah] = useState('1')
   const [searchAyah, setSearchAyah] = useState('')
   const [stats, setStats] = useState({
@@ -142,6 +146,36 @@ export default function MufradatAdminPage() {
     }
   }
 
+  // Import words from Quran.com API
+  const importWords = async () => {
+    if (!searchSurah) return
+
+    setImporting(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/admin/quran/mufradat/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ surah: parseInt(searchSurah) }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+        setMessage({ type: 'success', text: data.message })
+        // Refresh words list
+        await fetchWords()
+      } else {
+        const error = await res.json()
+        setMessage({ type: 'error', text: error.error || 'Не удалось импортировать слова' })
+      }
+    } catch (error) {
+      console.error('Error importing words:', error)
+      setMessage({ type: 'error', text: 'Произошла ошибка при импорте' })
+    } finally {
+      setImporting(false)
+    }
+  }
+
   useEffect(() => {
     fetchWords()
   }, [])
@@ -162,6 +196,15 @@ export default function MufradatAdminPage() {
           Управление русскими переводами слов Корана
         </p>
       </div>
+
+      {/* Message */}
+      {message && (
+        <Alert variant={message.type === 'error' ? 'destructive' : 'default'}>
+          {message.type === 'error' && <AlertCircle className="h-4 w-4" />}
+          {message.type === 'success' && <Check className="h-4 w-4" />}
+          <AlertDescription>{message.text}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -222,13 +265,25 @@ export default function MufradatAdminPage() {
                 className="w-24"
               />
             </div>
-            <Button onClick={fetchWords} disabled={loading}>
+            <Button onClick={fetchWords} disabled={loading || importing}>
               {loading ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
               ) : (
                 <Search className="h-4 w-4 mr-2" />
               )}
               Найти
+            </Button>
+            <Button
+              onClick={importWords}
+              disabled={loading || importing || !searchSurah}
+              variant="outline"
+            >
+              {importing ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <Download className="h-4 w-4 mr-2" />
+              )}
+              Импортировать суру
             </Button>
           </div>
         </CardContent>
@@ -247,9 +302,19 @@ export default function MufradatAdminPage() {
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
           ) : words.length === 0 ? (
-            <p className="text-center text-muted-foreground py-8">
-              Нет данных. Откройте страницу Корана с включенным муфрадатом чтобы загрузить слова.
-            </p>
+            <div className="text-center py-8 space-y-4">
+              <p className="text-muted-foreground">
+                Нет данных для суры {searchSurah}.
+              </p>
+              <Button onClick={importWords} disabled={importing || !searchSurah}>
+                {importing ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <Download className="h-4 w-4 mr-2" />
+                )}
+                Импортировать суру {searchSurah}
+              </Button>
+            </div>
           ) : (
             <Table>
               <TableHeader>
