@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
+import { UserRole } from '@prisma/client'
 
 const QURAN_API_BASE = 'https://api.quran.com/api/v4'
 
@@ -26,7 +27,7 @@ interface QuranVerse {
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser()
 
-  if (!user || user.role !== 'ADMIN') {
+  if (!user || user.role !== UserRole.ADMIN) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
