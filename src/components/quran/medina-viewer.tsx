@@ -436,118 +436,85 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
     )
   }
 
+  // Функция перехода к прогрессу
+  const goToProgress = () => {
+    if (showProgress) {
+      setPageNumber(showProgress.currentPage)
+    }
+  }
+
+  const isOnProgressPage = showProgress && showProgress.currentPage === pageNumber
+
   return (
     <TooltipProvider>
-      <div className="space-y-3 sm:space-y-4">
-        {/* Header with navigation */}
-        <Card className="overflow-hidden">
-          <CardHeader className="pb-2 sm:pb-3">
-            {/* Mobile: Compact header with page nav centered */}
-            <div className="flex items-center justify-between gap-2 sm:hidden">
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-9 w-9"
-                onClick={() => setPageNumber(p => Math.max(1, p - 1))}
-                disabled={pageNumber === 1 || loading}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
+      <div className="space-y-2 sm:space-y-3">
+        {/* Compact header with navigation */}
+        <div className="flex items-center justify-between gap-2 p-2 bg-card border rounded-lg">
+          {/* Navigation */}
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setPageNumber(p => Math.max(1, p - 1))}
+              disabled={pageNumber === 1 || loading}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
 
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-base font-semibold px-3 py-1">
-                  {pageNumber}
+            <Badge variant="outline" className="text-sm font-semibold px-2 py-0.5 min-w-[3rem] justify-center">
+              {pageNumber}
+            </Badge>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setPageNumber(p => Math.min(604, p + 1))}
+              disabled={pageNumber === 604 || loading}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Progress info & Go to progress button */}
+          {showProgress && (
+            <div className="flex items-center gap-2">
+              {!isOnProgressPage && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700"
+                  onClick={goToProgress}
+                >
+                  📍 К прогрессу
+                </Button>
+              )}
+              {isOnProgressPage && (
+                <Badge className="bg-emerald-500 text-white text-xs">
+                  📍 Стр. {showProgress.currentPage}, строка {showProgress.currentLine}
                 </Badge>
-                <span className="text-xs text-muted-foreground">/ 604</span>
-              </div>
-
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-9 w-9"
-                onClick={() => setPageNumber(p => Math.min(604, p + 1))}
-                disabled={pageNumber === 604 || loading}
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
+              )}
             </div>
+          )}
 
-            {/* Desktop: Full header */}
-            <div className="hidden sm:flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Cloud className="h-5 w-5 text-blue-500" />
-                  Мединский мусхаф
-                  <Badge variant="secondary" className="ml-2 gap-1">
-                    <Lock className="h-3 w-3" />
-                    API
-                  </Badge>
-                </CardTitle>
-                <CardDescription>
-                  Данные из Quran.com (604 страницы, 15 строк)
-                </CardDescription>
-              </div>
+          {/* Settings button */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setSettingsOpen(!settingsOpen)}
+          >
+            <Settings2 className="h-4 w-4" />
+          </Button>
+        </div>
 
-              {/* Navigation */}
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setPageNumber(p => Math.max(1, p - 1))}
-                  disabled={pageNumber === 1 || loading}
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-
-                <form onSubmit={handleSearch} className="flex gap-1">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={604}
-                    value={searchPage}
-                    onChange={(e) => setSearchPage(e.target.value)}
-                    placeholder={pageNumber.toString()}
-                    className="w-20 text-center"
-                  />
-                  <Button type="submit" variant="ghost" size="icon">
-                    <Search className="h-4 w-4" />
-                  </Button>
-                </form>
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setPageNumber(p => Math.min(604, p + 1))}
-                  disabled={pageNumber === 604 || loading}
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-
-          {/* Display options - Collapsible on mobile */}
-          <CardContent className="border-t pt-3 sm:pt-4 px-3 sm:px-6">
-            <Collapsible open={settingsOpen} onOpenChange={setSettingsOpen}>
-              {/* Mobile: Collapsible trigger */}
-              <CollapsibleTrigger asChild className="sm:hidden">
-                <Button variant="ghost" className="w-full justify-between h-9 px-2">
-                  <span className="flex items-center gap-2 text-sm">
-                    <Settings2 className="h-4 w-4" />
-                    Настройки отображения
-                  </span>
-                  <ChevronDown className={`h-4 w-4 transition-transform ${settingsOpen ? 'rotate-180' : ''}`} />
-                </Button>
-              </CollapsibleTrigger>
-
-              {/* Desktop: Always visible title */}
-              <div className="hidden sm:block mb-3">
-                <span className="text-sm font-medium text-muted-foreground">Настройки</span>
-              </div>
-
-              <CollapsibleContent className="sm:!block">
-                {/* Settings grid - compact on mobile */}
-                <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 sm:gap-4 mt-3 sm:mt-0">
+        {/* Settings panel - collapsible */}
+        {settingsOpen && (
+          <Card>
+            <CardContent className="p-3">
+              {/* Settings grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3">
                   {/* Mufradat toggle */}
                   <div className="flex items-center gap-1.5 sm:gap-2">
                     <Switch
@@ -631,16 +598,17 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                       Суры
                     </Label>
                   </div>
-                </div>
+              </div>
 
-                {/* Selects row - only show when relevant */}
-                <div className="flex flex-wrap gap-2 mt-3">
+              {/* Selects row - only show when relevant */}
+              {(settings.showTranslation || settings.showTafsir || settings.showAudio) && (
+                <div className="flex flex-wrap gap-2 mt-2 pt-2 border-t">
                   {settings.showTranslation && (
                     <Select
                       value={settings.translationId.toString()}
                       onValueChange={(v) => updateSetting('translationId', parseInt(v))}
                     >
-                      <SelectTrigger className="w-full sm:w-32 h-8 text-xs sm:text-sm">
+                      <SelectTrigger className="w-28 h-7 text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -658,7 +626,7 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                       value={settings.tafsirId.toString()}
                       onValueChange={(v) => updateSetting('tafsirId', parseInt(v))}
                     >
-                      <SelectTrigger className="w-full sm:w-32 h-8 text-xs sm:text-sm">
+                      <SelectTrigger className="w-28 h-7 text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -676,7 +644,7 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                       value={settings.reciterId.toString()}
                       onValueChange={(v) => updateSetting('reciterId', parseInt(v))}
                     >
-                      <SelectTrigger className="w-full sm:w-40 h-8 text-xs sm:text-sm">
+                      <SelectTrigger className="w-32 h-7 text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -689,43 +657,43 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                     </Select>
                   )}
                 </div>
-              </CollapsibleContent>
-            </Collapsible>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
-            {/* Audio player - compact on mobile */}
-            {settings.showAudio && audioUrl && (
-              <div className="mt-3 p-2 sm:p-3 bg-muted/50 rounded-lg flex items-center gap-2 sm:gap-3">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 sm:h-10 sm:w-10"
-                  onClick={toggleAudio}
-                  disabled={loadingAudio}
-                >
-                  {loadingAudio ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : isPlaying ? (
-                    <Pause className="h-4 w-4" />
-                  ) : (
-                    <Play className="h-4 w-4" />
-                  )}
-                </Button>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs sm:text-sm font-medium truncate">
-                    {RECITERS.find(r => r.id === settings.reciterId)?.name || 'Чтец'}
-                  </p>
-                  <p className="text-[10px] sm:text-xs text-muted-foreground truncate">
-                    {pageData?.chapters?.[0]?.name_simple || 'Загрузка...'}
-                  </p>
-                </div>
-                <audio ref={audioRef} src={audioUrl} />
-              </div>
-            )}
+        {/* Audio player - compact */}
+        {settings.showAudio && audioUrl && (
+          <div className="p-2 bg-card border rounded-lg flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              onClick={toggleAudio}
+              disabled={loadingAudio}
+            >
+              {loadingAudio ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : isPlaying ? (
+                <Pause className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+            </Button>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium truncate">
+                {RECITERS.find(r => r.id === settings.reciterId)?.name || 'Чтец'}
+              </p>
+              <p className="text-[10px] text-muted-foreground truncate">
+                {pageData?.chapters?.[0]?.name_simple || 'Загрузка...'}
+              </p>
+            </div>
+            <audio ref={audioRef} src={audioUrl} />
+          </div>
+        )}
 
-            {/* Hidden verse audio element */}
-            <audio ref={verseAudioRef} className="hidden" />
-          </CardContent>
-        </Card>
+        {/* Hidden verse audio element */}
+        <audio ref={verseAudioRef} className="hidden" />
 
         {/* Page content */}
         <Card>
