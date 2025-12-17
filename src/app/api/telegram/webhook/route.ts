@@ -11,13 +11,22 @@ import {
 } from '@/lib/telegram/handlers/submission'
 import { handleCallbackQuery } from '@/lib/telegram/handlers/menu'
 import { handleChildPhoneInput } from '@/lib/telegram/handlers/registration'
+import { handleSetPassword, handlePasswordInput, handleCancelPassword } from '@/lib/telegram/handlers/password'
 
 // Register command handlers
 bot.command('start', handleStart)
+bot.command('setpassword', handleSetPassword)
+bot.command('cancel', async (ctx) => {
+  const handled = await handleCancelPassword(ctx)
+  if (!handled) {
+    await ctx.reply('Нет активных операций для отмены.')
+  }
+})
 bot.command('help', async (ctx) => {
   await ctx.reply(
     '<b>Помощь</b>\n\n' +
     '/start - Начать работу с ботом\n' +
+    '/setpassword - Установить пароль для веб-входа (для админов и устазов)\n' +
     '/help - Показать эту справку\n\n' +
     'Для сдачи заданий отправляйте голосовые сообщения или видео-кружочки.',
     { parse_mode: 'HTML' }
@@ -47,6 +56,11 @@ bot.on('message:text', async (ctx) => {
 
   if (ctx.session.step === 'awaiting_child_phone') {
     await handleChildPhoneInput(ctx)
+    return
+  }
+
+  if (ctx.session.step === 'awaiting_password') {
+    await handlePasswordInput(ctx)
     return
   }
 

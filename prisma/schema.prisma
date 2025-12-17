@@ -86,6 +86,7 @@ model User {
   telegramId        BigInt?   @unique
   telegramUsername  String?
   telegramPhoto     String?
+  passwordHash      String?   // For web login (admin/ustaz)
   role              UserRole  @default(STUDENT)
   isActive          Boolean   @default(true)
   createdAt         DateTime  @default(now())
