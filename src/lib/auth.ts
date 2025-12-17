@@ -1,28 +1,9 @@
 import { prisma } from './prisma'
 import { cookies } from 'next/headers'
-import { randomBytes, scryptSync, timingSafeEqual } from 'crypto'
+import { randomBytes } from 'crypto'
 import { cache } from 'react'
 import type { User } from '@prisma/client'
 import { ROLE_DASHBOARD_PATH } from './constants/roles'
-
-/**
- * Hash a password using scrypt
- */
-export function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString('hex')
-  const hash = scryptSync(password, salt, 64).toString('hex')
-  return `${salt}:${hash}`
-}
-
-/**
- * Verify a password against stored hash
- */
-export function verifyPassword(password: string, storedHash: string): boolean {
-  const [salt, hash] = storedHash.split(':')
-  const hashBuffer = Buffer.from(hash, 'hex')
-  const derivedHash = scryptSync(password, salt, 64)
-  return timingSafeEqual(hashBuffer, derivedHash)
-}
 
 const TOKEN_EXPIRY_HOURS = 24 * 7 // 7 days
 const COOKIE_NAME = 'auth_token'
