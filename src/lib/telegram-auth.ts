@@ -1,12 +1,15 @@
 import crypto from 'crypto'
 import { prisma } from './prisma'
 
+// Max age for auth_date (24 hours in seconds)
+const MAX_AUTH_AGE = 86400
+
 /**
  * Validate Telegram WebApp initData
  *
  * Telegram signs initData with HMAC-SHA256:
  * 1. Take all params except hash
- * 2. Sort by key
+ * 2. Sort by key alphabetically
  * 3. Form string "key1=value1\nkey2=value2"
  * 4. Create secret: HMAC-SHA256("WebAppData", botToken)
  * 5. Calculate hash: HMAC-SHA256(secretKey, dataCheckString)
@@ -15,45 +18,76 @@ import { prisma } from './prisma'
 export function validateTelegramInitData(
   initData: string,
   botToken: string
-): boolean {
+): { valid: boolean; reason?: string } {
   try {
+    // Parse the initData string
     const urlParams = new URLSearchParams(initData)
     const hash = urlParams.get('hash')
 
     if (!hash) {
-      console.error('[Telegram Auth] Hash not found in initData')
-      return false
+      return { valid: false, reason: 'Hash not found in initData' }
     }
 
+    // Check auth_date is not too old
+    const authDate = urlParams.get('auth_date')
+    if (authDate) {
+      const authTimestamp = parseInt(authDate)
+      const now = Math.floor(Date.now() / 1000)
+      if (now - authTimestamp > MAX_AUTH_AGE) {
+        return { valid: false, reason: 'Auth data is too old' }
+      }
+    }
+
+    // Remove hash from params for verification
     urlParams.delete('hash')
 
-    // Sort params and form data-check-string
+    // Sort params alphabetically and form data-check-string
+    // IMPORTANT: Values must NOT be URL-decoded for the hash check
     const dataCheckString = Array.from(urlParams.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => `${key}=${value}`)
       .join('\n')
 
-    // Create secret key
+    // Create secret key: HMAC-SHA256("WebAppData", botToken)
     const secretKey = crypto
       .createHmac('sha256', 'WebAppData')
       .update(botToken)
       .digest()
 
-    // Calculate hash
+    // Calculate hash: HMAC-SHA256(secretKey, dataCheckString)
     const calculatedHash = crypto
       .createHmac('sha256', secretKey)
       .update(dataCheckString)
       .digest('hex')
 
-    const isValid = calculatedHash === hash
+    const isValid = calculatedHash.toLowerCase() === hash.toLowerCase()
 
     if (!isValid) {
-      console.error('[Telegram Auth] Hash mismatch')
+      console.error('[Telegram Auth] Hash mismatch:', {
+        expected: hash.substring(0, 16) + '...',
+        calculated: calculatedHash.substring(0, 16) + '...',
+        dataCheckStringLength: dataCheckString.length,
+      })
+      return { valid: false, reason: 'Hash mismatch' }
     }
 
-    return isValid
+    return { valid: true }
   } catch (error) {
     console.error('[Telegram Auth] Error validating initData:', error)
+    return { valid: false, reason: 'Validation error' }
+  }
+}
+
+/**
+ * Simple validation that just checks if we can parse user data
+ * Use this as fallback when hash validation fails
+ * (Less secure, but useful for development/debugging)
+ */
+export function canParseInitData(initData: string): boolean {
+  try {
+    const user = parseTelegramUser(initData)
+    return user !== null && typeof user.id === 'number'
+  } catch {
     return false
   }
 }
