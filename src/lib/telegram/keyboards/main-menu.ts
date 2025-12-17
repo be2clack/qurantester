@@ -48,6 +48,11 @@ const WEB_APP_URL = process.env.NEXT_PUBLIC_APP_URL
   ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram`
   : 'https://qurantester.vercel.app/telegram'
 
+// Quran Web App URL - redirects to student quran page
+const QURAN_WEB_APP_URL = process.env.NEXT_PUBLIC_APP_URL
+  ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/student/quran`
+  : 'https://qurantester.vercel.app/telegram?redirect=/student/quran'
+
 /**
  * Main menu keyboard based on user role
  * For students, optionally pass menu info to show dynamic task button and ustaz chat
@@ -115,7 +120,7 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📚 Мои группы', 'student:groups').row()
         .text('📈 Мой прогресс', 'student:progress')
         .text('📋 История', 'student:tasks').row()
-        .text('📖 Коран', 'student:quran')
+        .webApp('📖 Коран', QURAN_WEB_APP_URL)
         .webApp('🌐 Веб', WEB_APP_URL)
       break
 

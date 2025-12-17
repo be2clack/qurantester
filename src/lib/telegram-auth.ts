@@ -10,7 +10,7 @@ const MAX_AUTH_AGE = 86400
  * Telegram signs initData with HMAC-SHA256:
  * 1. Take all params except hash
  * 2. Sort by key alphabetically
- * 3. Form string "key1=value1\nkey2=value2"
+ * 3. Form string "key1=value1\nkey2=value2" (values URL-DECODED!)
  * 4. Create secret: HMAC-SHA256("WebAppData", botToken)
  * 5. Calculate hash: HMAC-SHA256(secretKey, dataCheckString)
  * 6. Compare with provided hash
@@ -20,16 +20,28 @@ export function validateTelegramInitData(
   botToken: string
 ): { valid: boolean; reason?: string } {
   try {
-    // Parse the initData string
-    const urlParams = new URLSearchParams(initData)
-    const hash = urlParams.get('hash')
+    // Parse initData manually to control URL decoding
+    // Format: key1=value1&key2=value2&hash=xxx
+    const params: Record<string, string> = {}
+    const pairs = initData.split('&')
 
+    for (const pair of pairs) {
+      const idx = pair.indexOf('=')
+      if (idx > 0) {
+        const key = pair.substring(0, idx)
+        // URL-decode the value (Telegram expects decoded values in check string)
+        const value = decodeURIComponent(pair.substring(idx + 1))
+        params[key] = value
+      }
+    }
+
+    const hash = params['hash']
     if (!hash) {
       return { valid: false, reason: 'Hash not found in initData' }
     }
 
     // Check auth_date is not too old
-    const authDate = urlParams.get('auth_date')
+    const authDate = params['auth_date']
     if (authDate) {
       const authTimestamp = parseInt(authDate)
       const now = Math.floor(Date.now() / 1000)
@@ -38,14 +50,11 @@ export function validateTelegramInitData(
       }
     }
 
-    // Remove hash from params for verification
-    urlParams.delete('hash')
-
-    // Sort params alphabetically and form data-check-string
-    // IMPORTANT: Values must NOT be URL-decoded for the hash check
-    const dataCheckString = Array.from(urlParams.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => `${key}=${value}`)
+    // Build data-check-string: sort keys, exclude hash, join with newlines
+    const dataCheckString = Object.keys(params)
+      .filter(key => key !== 'hash')
+      .sort()
+      .map(key => `${key}=${params[key]}`)
       .join('\n')
 
     // Create secret key: HMAC-SHA256("WebAppData", botToken)
@@ -67,6 +76,7 @@ export function validateTelegramInitData(
         expected: hash.substring(0, 16) + '...',
         calculated: calculatedHash.substring(0, 16) + '...',
         dataCheckStringLength: dataCheckString.length,
+        keysCount: Object.keys(params).length - 1,
       })
       return { valid: false, reason: 'Hash mismatch' }
     }

@@ -8,7 +8,8 @@ const QURAN_API_BASE = 'https://api.quran.com/api/v4'
 interface QuranWord {
   id: number
   position: number
-  text_uthmani: string
+  text_uthmani?: string
+  text?: string // fallback field
   text_simple?: string
   char_type_name: string
   translation?: {
@@ -43,7 +44,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch verses with words from Quran.com API
-    const url = `${QURAN_API_BASE}/verses/by_chapter/${surah}?language=en&words=true&word_translation_language=en&per_page=300`
+    // Request word_fields to ensure we get all necessary fields
+    const url = `${QURAN_API_BASE}/verses/by_chapter/${surah}?language=en&words=true&word_translation_language=en&word_fields=text_uthmani,text,text_simple&per_page=300`
+
+    console.log('[Mufradat Import] Fetching from:', url)
     const response = await fetch(url)
 
     if (!response.ok) {
@@ -53,8 +57,11 @@ export async function POST(request: NextRequest) {
     const data = await response.json()
     const verses: QuranVerse[] = data.verses || []
 
+    console.log('[Mufradat Import] Received verses:', verses.length)
+
     let imported = 0
     let updated = 0
+    let skipped = 0
 
     // Process each verse
     for (const verse of verses) {
@@ -63,6 +70,15 @@ export async function POST(request: NextRequest) {
       for (const word of verse.words) {
         // Skip end markers (like ۝)
         if (word.char_type_name !== 'word') continue
+
+        // Get Arabic text with fallbacks
+        const textArabic = word.text_uthmani || word.text
+
+        if (!textArabic) {
+          console.warn(`[Mufradat Import] Skipping word ${surahNum}:${ayahNum}:${word.position} - no Arabic text`)
+          skipped++
+          continue
+        }
 
         const wordKey = `${surahNum}:${ayahNum}:${word.position}`
 
@@ -88,8 +104,8 @@ export async function POST(request: NextRequest) {
               surahNumber: surahNum,
               ayahNumber: ayahNum,
               position: word.position,
-              textArabic: word.text_uthmani,
-              textSimple: word.text_simple,
+              textArabic,
+              textSimple: word.text_simple || null,
               translationEn: word.translation?.text || null,
             }
           })
@@ -98,12 +114,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    console.log('[Mufradat Import] Complete:', { imported, updated, skipped })
+
     return NextResponse.json({
       success: true,
       imported,
       updated,
+      skipped,
       total: imported + updated,
-      message: `Импортировано ${imported} новых слов, обновлено ${updated}`
+      message: `Импортировано ${imported} новых слов, обновлено ${updated}${skipped > 0 ? `, пропущено ${skipped}` : ''}`
     })
   } catch (error) {
     console.error('Error importing words:', error)

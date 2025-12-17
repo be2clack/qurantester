@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2, AlertCircle, CheckCircle, RefreshCw } from 'lucide-react'
@@ -57,27 +57,31 @@ type AuthStatus = 'loading' | 'authenticating' | 'success' | 'error' | 'not_in_t
 
 export default function TelegramAuth() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const redirectTo = searchParams.get('redirect') // Custom redirect path (e.g., /student/quran)
   const [status, setStatus] = useState<AuthStatus>('loading')
   const [error, setError] = useState<string | null>(null)
   const [userName, setUserName] = useState<string>('')
 
-  const getInitData = useCallback((): string | null => {
-    if (typeof window === 'undefined') return null
+  const getInitData = useCallback((): { initData: string | null; isOfficial: boolean } => {
+    if (typeof window === 'undefined') return { initData: null, isOfficial: false }
 
     const tg = window.Telegram?.WebApp
-    if (!tg) return null
+    if (!tg) return { initData: null, isOfficial: false }
 
     // Tell Telegram we're ready
     tg.ready()
     tg.expand()
 
-    // Priority 1: Official initData
+    // Priority 1: Official initData (can be hash-validated)
     if (tg.initData && tg.initData.length > 0) {
-      return tg.initData
+      console.log('[TG Auth] Using official initData, length:', tg.initData.length)
+      return { initData: tg.initData, isOfficial: true }
     }
 
-    // Priority 2: Build from initDataUnsafe (fallback)
+    // Priority 2: Build from initDataUnsafe (cannot be hash-validated, JSON is re-serialized)
     if (tg.initDataUnsafe?.user) {
+      console.log('[TG Auth] Building initData from initDataUnsafe (hash validation will be skipped)')
       const params = new URLSearchParams()
       params.append('user', JSON.stringify(tg.initDataUnsafe.user))
       if (tg.initDataUnsafe.query_id) {
@@ -89,16 +93,39 @@ export default function TelegramAuth() {
       if (tg.initDataUnsafe.hash) {
         params.append('hash', tg.initDataUnsafe.hash)
       }
-      return params.toString()
+      return { initData: params.toString(), isOfficial: false }
     }
 
-    return null
+    return { initData: null, isOfficial: false }
   }, [])
 
   const authenticate = useCallback(async () => {
     try {
       setStatus('loading')
       setError(null)
+
+      // First, check if already authenticated
+      try {
+        const meResponse = await fetch('/api/auth/me')
+        if (meResponse.ok) {
+          const user = await meResponse.json()
+          if (user?.id) {
+            // Already authenticated, redirect to custom path or dashboard
+            if (redirectTo) {
+              router.push(redirectTo)
+            } else {
+              const dashboardPath = user.role === 'ADMIN' ? '/admin'
+                : user.role === 'USTAZ' ? '/ustaz'
+                : user.role === 'PARENT' ? '/parent'
+                : '/student'
+              router.push(dashboardPath)
+            }
+            return
+          }
+        }
+      } catch {
+        // Not authenticated, continue with Telegram auth
+      }
 
       // Wait for Telegram SDK to load
       let retries = 30 // 3 seconds
@@ -120,7 +147,7 @@ export default function TelegramAuth() {
       }
 
       // Get initData
-      const initData = getInitData()
+      const { initData, isOfficial } = getInitData()
 
       // Fallback: Try to auth with just userId
       const userId = tgUser?.id
@@ -139,6 +166,7 @@ export default function TelegramAuth() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           initData,
+          isOfficialInitData: isOfficial, // Tell server if hash validation should be attempted
           telegramId: !initData ? userId?.toString() : undefined,
         }),
       })
@@ -153,9 +181,9 @@ export default function TelegramAuth() {
         setStatus('success')
         setUserName(data.user?.firstName || userName)
 
-        // Redirect after short delay
+        // Redirect after short delay - use custom redirect or default dashboard
         setTimeout(() => {
-          router.push(data.redirectUrl || '/student')
+          router.push(redirectTo || data.redirectUrl || '/student')
         }, 1500)
       } else {
         throw new Error(data.error || 'Неизвестная ошибка')
@@ -165,7 +193,7 @@ export default function TelegramAuth() {
       setStatus('error')
       setError(err.message || 'Ошибка авторизации')
     }
-  }, [getInitData, router, userName])
+  }, [getInitData, router, userName, redirectTo])
 
   useEffect(() => {
     // Small delay to let Telegram SDK initialize

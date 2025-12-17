@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
 import {
   Table,
   TableBody,
@@ -31,6 +32,9 @@ import {
   Sparkles,
   Download,
   AlertCircle,
+  Play,
+  Pause,
+  RotateCcw,
 } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 
@@ -65,6 +69,17 @@ export default function MufradatAdminPage() {
   const [editWord, setEditWord] = useState<WordTranslation | null>(null)
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
+
+  // Batch import state
+  const [batchImporting, setBatchImporting] = useState(false)
+  const [batchPaused, setBatchPaused] = useState(false)
+  const [batchProgress, setBatchProgress] = useState(0)
+  const [batchCurrentSurah, setBatchCurrentSurah] = useState(1)
+  const [batchCurrentAyah, setBatchCurrentAyah] = useState(1)
+  const [batchCurrentPosition, setBatchCurrentPosition] = useState(0)
+  const [batchImported, setBatchImported] = useState(0)
+  const [batchLog, setBatchLog] = useState<string[]>([])
+  const batchPausedRef = useRef(false)
 
   // Fetch words
   const fetchWords = async () => {
@@ -176,6 +191,122 @@ export default function MufradatAdminPage() {
     }
   }
 
+  // Load saved batch progress from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('mufradat_batch_progress')
+    if (saved) {
+      try {
+        const data = JSON.parse(saved)
+        setBatchCurrentSurah(data.surah || 1)
+        setBatchCurrentAyah(data.ayah || 1)
+        setBatchCurrentPosition(data.position || 0)
+        setBatchImported(data.imported || 0)
+        setBatchProgress(data.progress || 0)
+      } catch {}
+    }
+  }, [])
+
+  // Save batch progress to localStorage
+  const saveBatchProgress = (surah: number, ayah: number, position: number, imported: number, progress: number) => {
+    localStorage.setItem('mufradat_batch_progress', JSON.stringify({
+      surah, ayah, position, imported, progress
+    }))
+  }
+
+  // Batch import function
+  const runBatchImport = async (startSurah: number, startAyah: number, startPosition: number) => {
+    setBatchImporting(true)
+    setBatchPaused(false)
+    batchPausedRef.current = false
+
+    let surah = startSurah
+    let ayah = startAyah
+    let position = startPosition
+    let totalImported = batchImported
+
+    while (surah <= 114 && !batchPausedRef.current) {
+      try {
+        const res = await fetch('/api/admin/quran/mufradat/import-batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ surah, fromAyah: ayah, fromPosition: position }),
+        })
+
+        if (!res.ok) {
+          const error = await res.json()
+          setBatchLog(prev => [...prev, `❌ Ошибка: ${error.error || 'Unknown error'}`])
+          // Save progress and pause on error
+          saveBatchProgress(surah, ayah, position, totalImported, batchProgress)
+          setBatchPaused(true)
+          break
+        }
+
+        const data = await res.json()
+        totalImported += data.imported
+        setBatchImported(totalImported)
+        setBatchProgress(data.progress)
+        setBatchCurrentSurah(data.currentSurah)
+        setBatchCurrentAyah(data.currentAyah)
+        setBatchCurrentPosition(data.currentPosition || 0)
+        setBatchLog(prev => [...prev.slice(-50), data.message])
+
+        // Save progress
+        saveBatchProgress(data.nextSurah, data.nextAyah, data.nextPosition || 0, totalImported, data.progress)
+
+        if (data.isComplete) {
+          setBatchLog(prev => [...prev, '✅ Импорт завершён!'])
+          setMessage({ type: 'success', text: `Импорт завершён! Всего импортировано: ${totalImported}` })
+          localStorage.removeItem('mufradat_batch_progress')
+          break
+        }
+
+        // Move to next position
+        surah = data.nextSurah
+        ayah = data.nextAyah
+        position = data.nextPosition || 0
+
+        // Small delay to prevent rate limiting
+        await new Promise(resolve => setTimeout(resolve, 300))
+      } catch (error) {
+        setBatchLog(prev => [...prev, `❌ Сетевая ошибка: ${error}`])
+        saveBatchProgress(surah, ayah, position, totalImported, batchProgress)
+        setBatchPaused(true)
+        break
+      }
+    }
+
+    setBatchImporting(false)
+    if (batchPausedRef.current) {
+      setBatchPaused(true)
+    }
+    fetchWords() // Refresh data
+  }
+
+  // Start batch import
+  const startBatchImport = () => {
+    setBatchLog([`🚀 Начинаем импорт с суры ${batchCurrentSurah}, аят ${batchCurrentAyah}...`])
+    runBatchImport(batchCurrentSurah, batchCurrentAyah, batchCurrentPosition)
+  }
+
+  // Pause batch import
+  const pauseBatchImport = () => {
+    batchPausedRef.current = true
+    setBatchPaused(true)
+    setBatchLog(prev => [...prev, '⏸️ Импорт приостановлен'])
+  }
+
+  // Reset batch import
+  const resetBatchImport = () => {
+    localStorage.removeItem('mufradat_batch_progress')
+    setBatchCurrentSurah(1)
+    setBatchCurrentAyah(1)
+    setBatchCurrentPosition(0)
+    setBatchImported(0)
+    setBatchProgress(0)
+    setBatchLog([])
+    setBatchPaused(false)
+  }
+
   useEffect(() => {
     fetchWords()
   }, [])
@@ -233,6 +364,66 @@ export default function MufradatAdminPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Full Import */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Download className="h-5 w-5" />
+            Полный импорт Корана
+          </CardTitle>
+          <CardDescription>
+            Импорт всех 114 сур по 30 слов за раз. Прогресс сохраняется автоматически.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Progress */}
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span>Прогресс: сура {batchCurrentSurah}/114, аят {batchCurrentAyah}</span>
+              <span>{batchProgress}%</span>
+            </div>
+            <Progress value={batchProgress} className="h-2" />
+            <div className="text-sm text-muted-foreground">
+              Импортировано слов: {batchImported}
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="flex gap-2">
+            {!batchImporting ? (
+              <Button onClick={startBatchImport} disabled={batchProgress >= 100}>
+                <Play className="h-4 w-4 mr-2" />
+                {batchProgress > 0 && batchProgress < 100 ? 'Продолжить' : 'Начать импорт'}
+              </Button>
+            ) : (
+              <Button onClick={pauseBatchImport} variant="secondary">
+                <Pause className="h-4 w-4 mr-2" />
+                Пауза
+              </Button>
+            )}
+            <Button
+              onClick={resetBatchImport}
+              variant="outline"
+              disabled={batchImporting}
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Сбросить
+            </Button>
+          </div>
+
+          {/* Log */}
+          {batchLog.length > 0 && (
+            <div className="bg-muted rounded-md p-3 max-h-40 overflow-y-auto">
+              <div className="space-y-1 text-xs font-mono">
+                {batchLog.slice(-10).map((log, i) => (
+                  <div key={i} className="text-muted-foreground">{log}</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Search */}
       <Card>

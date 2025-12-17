@@ -1,24 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  validateTelegramInitData,
   parseTelegramUser,
   findUserByTelegramId,
-  getBotToken,
   canParseInitData,
 } from '@/lib/telegram-auth'
 import { generateAuthToken, setAuthCookie, getDashboardPath } from '@/lib/auth'
-
-// Allow fallback auth (less secure, for development)
-const ALLOW_FALLBACK_AUTH = process.env.NODE_ENV !== 'production' || process.env.ALLOW_TELEGRAM_FALLBACK === 'true'
 
 /**
  * POST /api/telegram/auth
  *
  * Authenticate user from Telegram Web App
- * 1. Validate initData signature
- * 2. Find user by Telegram ID
- * 3. Generate auth token and set cookie
- * 4. Return redirect URL
+ * Security: User must exist in database (registered via Telegram bot)
  */
 export async function POST(req: NextRequest) {
   try {
@@ -28,52 +20,24 @@ export async function POST(req: NextRequest) {
     console.log('[Telegram Auth] Request received:', {
       hasInitData: !!initData,
       hasTelegramId: !!telegramId,
-      initDataLength: initData?.length,
     })
-
-    // Get bot token
-    const botToken = getBotToken()
-    if (!botToken) {
-      console.error('[Telegram Auth] Bot token not configured')
-      return NextResponse.json(
-        { error: 'Bot token not configured' },
-        { status: 500 }
-      )
-    }
 
     let userId: number | null = null
     let authMethod: string = 'unknown'
 
-    // Method 1: Validate initData (preferred, secure)
-    if (initData) {
-      const validation = validateTelegramInitData(initData, botToken)
-
-      if (validation.valid) {
-        authMethod = 'initData_validated'
-        const telegramUser = parseTelegramUser(initData)
-        if (telegramUser?.id) {
-          userId = telegramUser.id
-        }
-      } else {
-        console.warn('[Telegram Auth] Validation failed:', validation.reason)
-
-        // Fallback: Try to parse user anyway (less secure)
-        if (ALLOW_FALLBACK_AUTH && canParseInitData(initData)) {
-          authMethod = 'initData_fallback'
-          const telegramUser = parseTelegramUser(initData)
-          if (telegramUser?.id) {
-            userId = telegramUser.id
-            console.log('[Telegram Auth] Using fallback auth for user:', userId)
-          }
-        }
+    // Method 1: Parse user from initData
+    if (initData && canParseInitData(initData)) {
+      const telegramUser = parseTelegramUser(initData)
+      if (telegramUser?.id) {
+        userId = telegramUser.id
+        authMethod = 'initData_parsed'
       }
     }
 
-    // Method 2: Direct telegramId (fallback, less secure)
-    if (!userId && telegramId && ALLOW_FALLBACK_AUTH) {
-      authMethod = 'telegramId_direct'
+    // Method 2: Direct telegramId
+    if (!userId && telegramId) {
       userId = parseInt(telegramId)
-      console.log('[Telegram Auth] Using direct telegramId auth:', userId)
+      authMethod = 'telegramId_direct'
     }
 
     if (!userId) {
