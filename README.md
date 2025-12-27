@@ -1,36 +1,198 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# QuranTester
 
-## Getting Started
+Система для изучения и заучивания Корана с поддержкой Telegram-бота и веб-панели управления.
 
-First, run the development server:
+## Возможности
 
+### Типы уроков
+- **Заучивание (Memorization)** - заучивание наизусть с поэтапной проверкой
+- **Повторение (Revision)** - повторение выученных страниц
+- **Перевод (Translation)** - изучение перевода слов (муфрадат)
+
+### Роли пользователей
+- **Админ** - полный контроль системы
+- **Устаз** - преподаватель, проверяет задания студентов
+- **Студент** - изучает Коран, сдает задания
+- **Родитель** - просматривает прогресс своих детей
+
+### Telegram-бот
+- Регистрация с выбором пола, роли, группы и начального прогресса
+- Сдача заданий голосовыми сообщениями и видео-кружочками
+- Игра "Муфрадат" для изучения слов
+- Повторение страниц с отметками
+- Уведомления о проверке заданий
+
+### Веб-панель
+- Админ-панель для управления группами, студентами, устазами
+- Просмотр и прослушивание Мусхафа
+- AI-верификация заданий (OpenAI)
+- Аналитика и статистика
+
+## Технологии
+
+- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS, shadcn/ui
+- **Backend**: Next.js API Routes, Prisma ORM
+- **Database**: PostgreSQL (Prisma Accelerate)
+- **Bot**: Grammy (Telegram Bot Framework)
+- **AI**: OpenAI API (Whisper для транскрипции, GPT для верификации)
+- **Deploy**: Vercel
+
+## Установка
+
+### Требования
+- Node.js 18+
+- PostgreSQL (или Prisma Accelerate)
+
+### Шаги
+
+1. Клонировать репозиторий:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/YOUR_USERNAME/qurantester.git
+cd qurantester
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Установить зависимости:
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Создать `.env` файл:
+```env
+# Database
+DATABASE_URL="postgresql://..."
+DIRECT_URL="postgresql://..."
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# Telegram Bot
+TELEGRAM_BOT_TOKEN="your_bot_token"
+TELEGRAM_BOT_USERNAME="YourBotUsername"
 
-## Learn More
+# OpenAI
+OPENAI_API_KEY="sk-..."
 
-To learn more about Next.js, take a look at the following resources:
+# App
+NEXT_PUBLIC_APP_URL="https://your-domain.com"
+NEXTAUTH_SECRET="your_secret"
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+4. Применить миграции базы данных:
+```bash
+npm run db:push
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+5. Запустить сервер разработки:
+```bash
+npm run dev
+```
 
-## Deploy on Vercel
+6. Настроить Telegram Webhook:
+```bash
+curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://your-domain.com/api/telegram/webhook"
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Структура проекта
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+src/
+├── app/                          # Next.js App Router
+│   ├── (dashboard)/              # Панели управления
+│   │   ├── admin/                # Админ-панель
+│   │   ├── ustaz/                # Панель устаза
+│   │   ├── student/              # Панель студента
+│   │   └── parent/               # Панель родителя
+│   ├── api/                      # API эндпоинты
+│   │   ├── admin/                # Админские API
+│   │   ├── groups/               # Управление группами
+│   │   ├── lessons/              # Уроки
+│   │   ├── submissions/          # Сдачи заданий
+│   │   ├── tasks/                # Задания
+│   │   ├── telegram/             # Telegram webhook
+│   │   └── users/                # Пользователи
+│   ├── login/                    # Страница входа
+│   └── telegram/                 # Telegram Mini App
+├── components/                   # React компоненты
+│   ├── ui/                       # shadcn/ui компоненты
+│   └── ...                       # Кастомные компоненты
+├── lib/                          # Библиотеки и утилиты
+│   ├── telegram/                 # Telegram бот
+│   │   ├── bot.ts                # Инициализация бота
+│   │   ├── handlers/             # Обработчики сообщений
+│   │   ├── keyboards/            # Клавиатуры
+│   │   └── utils/                # Утилиты
+│   ├── auth.ts                   # Авторизация
+│   ├── prisma.ts                 # Prisma клиент
+│   ├── openai.ts                 # OpenAI интеграция
+│   └── quran-api.ts              # API для Корана
+└── prisma/
+    └── schema.prisma             # Схема базы данных
+```
+
+## Модели данных
+
+### User
+Пользователь системы (админ, устаз, студент, родитель)
+
+### Group
+Группа с настройками урока (тип, уровень, параметры)
+
+### StudentGroup
+Связь студента с группой + прогресс (страница, строка, этап)
+
+### Task
+Задание для студента (заучивание строк)
+
+### Submission
+Сданное задание (голос/видео + транскрипция + оценка)
+
+### MufradatWord
+Слова для изучения (арабский, перевод, контекст)
+
+## API эндпоинты
+
+### Группы
+- `GET /api/groups` - список групп
+- `POST /api/groups` - создать группу
+- `GET /api/groups/[id]` - детали группы
+- `PATCH /api/groups/[id]` - обновить группу
+- `POST /api/groups/[id]/students` - добавить студента
+
+### Пользователи
+- `GET /api/users` - список пользователей
+- `PATCH /api/users/[id]` - обновить пользователя
+
+### Задания
+- `GET /api/tasks` - активные задания
+- `POST /api/submissions` - сдать задание
+- `PATCH /api/submissions/[id]/review` - проверить задание
+
+## Этапы заучивания
+
+1. **1.1** - Чтение с листа
+2. **1.2** - Проверка чтения
+3. **2.1** - Заучивание наизусть
+4. **2.2** - Проверка заучивания
+5. **3** - Закрепление
+
+После успешного прохождения всех этапов для строки/группы строк, студент переходит к следующему заданию.
+
+## Скрипты
+
+```bash
+npm run dev          # Запуск dev-сервера
+npm run build        # Сборка для продакшена
+npm run start        # Запуск продакшен сервера
+npm run db:push      # Применить изменения схемы
+npm run db:studio    # Открыть Prisma Studio
+npm run db:seed      # Заполнить тестовыми данными
+```
+
+## Деплой
+
+Проект готов к деплою на Vercel:
+
+1. Подключить репозиторий к Vercel
+2. Добавить переменные окружения
+3. Настроить Telegram Webhook на домен Vercel
+
+## Лицензия
+
+MIT

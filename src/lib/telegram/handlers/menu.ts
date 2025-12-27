@@ -9,14 +9,19 @@ import {
   getStudentTaskKeyboard,
   getUstazSubmissionKeyboard,
   getPaginationKeyboard,
-  getStartStageKeyboard,
   getActiveTaskKeyboard,
+  getRevisionPageSelectKeyboard,
+  getRevisionSubmitKeyboard,
+  getRevisionReviewKeyboard,
   StudentMenuInfo,
   LessonTypeInfo,
   getLessonTypeName,
+  getLinesForLevelName,
 } from '../keyboards/main-menu'
 import { generateWebAuthLink } from '@/lib/auth'
-import { STAGES, getLinesPerPage } from '@/lib/constants/quran'
+import { STAGES } from '@/lib/constants/quran'
+import { getPageTotalLines, getOrCreateQuranPage } from '@/lib/quran-pages'
+import { getPrimarySurahByPage } from '@/lib/constants/surahs'
 import { StageNumber, GroupLevel, LessonType } from '@prisma/client'
 import {
   getQuranPageContent,
@@ -25,18 +30,50 @@ import {
   formatQuranLinesForTelegram,
 } from '../utils/quran-content'
 import {
+  handleGenderSelection,
   handleRoleSelection,
-  handleUstazSelection,
-  handleUstazConfirm,
-  handleBackToUstazList,
+  handleGroupSelection,
+  handleGroupConfirm,
+  handleBackToGroupList,
   handleBackToRole,
+  handleProgressPageOffset,
+  handleProgressPageSelection,
+  handleProgressLineSelection,
+  handleProgressStageSelection,
+  handleBackToProgressPage,
+  handleBackToProgressLine,
+  handleBackToGroupConfirmFromProgress,
 } from './registration'
+import { processSubmissionAndNotify, showNextPendingSubmissionToUstaz } from './submission'
 import {
   startMufradatGame,
   handleMufradatAnswer,
   handleMufradatQuit,
   showMufradatGameMenu,
+  showMufradatStats,
 } from './mufradat-game'
+import { getPageVerses, getMedinaLines } from '@/lib/quran-api'
+
+/**
+ * Russian pluralization helper
+ * @param n - number
+ * @param forms - [one, few, many] e.g. ['раз', 'раза', 'раз'] or ['день', 'дня', 'дней']
+ */
+function pluralize(n: number, forms: [string, string, string]): string {
+  const n100 = Math.abs(n) % 100
+  const n10 = n100 % 10
+
+  if (n100 >= 11 && n100 <= 19) {
+    return forms[2]  // 11-19 → "раз", "дней"
+  }
+  if (n10 === 1) {
+    return forms[0]  // 1, 21, 31 → "раз", "день"
+  }
+  if (n10 >= 2 && n10 <= 4) {
+    return forms[1]  // 2-4, 22-24 → "раза", "дня"
+  }
+  return forms[2]    // 0, 5-9, 10-20 → "раз", "дней"
+}
 
 /**
  * Handle all callback queries (menu navigation)
@@ -101,6 +138,15 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         // Start task for specific group
         await startGroupTask(ctx, user, action)
         break
+      case 'revision':
+        // Revision page selection and submission
+        await handleRevisionCallback(ctx, user, action, id)
+        break
+      case 'revision_review':
+        // Ustaz reviewing revision submission
+        await handleRevisionReviewCallback(ctx, user, action, id)
+        callbackAnswered = true
+        break
       case 'cancel':
         await handleCancel(ctx, user)
         break
@@ -110,6 +156,15 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         break
       case 'noop':
         // Do nothing, just answer callback
+        break
+      case 'close_notification':
+        // Close/delete the notification message
+        try {
+          await ctx.deleteMessage()
+        } catch (e) {
+          // Ignore if can't delete
+        }
+        callbackAnswered = true
         break
       default:
         await ctx.answerCallbackQuery({ text: 'Неизвестное действие' })
@@ -148,9 +203,6 @@ async function handleStudentCallback(
     case 'current_task':
       await showCurrentTask(ctx, user)
       break
-    case 'start_stage':
-      await startStage(ctx, user)
-      break
     case 'tasks':
       await showTaskHistory(ctx, user)
       break
@@ -164,12 +216,23 @@ async function handleStudentCallback(
     case 'quran':
       await showQuranPage(ctx, user, user.currentPage)
       break
+    case 'revision':
+      await showRevisionPages(ctx, user)
+      break
+    case 'mufradat':
+      await showMufradatMenu(ctx, user)
+      break
     default:
       await showStudentMenuEdit(ctx, user)
   }
 }
 
 async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
+  // Clean up any old messages before showing menu - prevent duplicates
+  await deleteMessagesByType(ctx, 'review_result')
+  await deleteMessagesByType(ctx, 'notification')
+  await deleteMessagesByType(ctx, 'submission_confirm')
+
   // Fetch full user data with ALL groups and statistics
   const fullUser = await prisma.user.findUnique({
     where: { id: user.id },
@@ -186,6 +249,10 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
         }
       },
       statistics: true,
+      revisionSubmissions: {
+        where: { status: SubmissionStatus.PASSED },
+        select: { id: true }
+      }
     }
   })
 
@@ -206,22 +273,38 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
         status: TaskStatus.IN_PROGRESS,
       },
       select: {
+        id: true,
         currentCount: true,
         requiredCount: true,
+        passedCount: true,
       }
     })
+
+    // Count pending submissions for accurate progress
+    let pendingCount = 0
+    if (activeTask) {
+      pendingCount = await prisma.submission.count({
+        where: {
+          taskId: activeTask.id,
+          status: SubmissionStatus.PENDING,
+        }
+      })
+    }
 
     lessonTypes.push({
       type: group.lessonType,
       groupId: group.id,
       groupName: group.name,
+      groupLevel: group.level,
       currentPage: sg.currentPage,
       currentLine: sg.currentLine,
       currentStage: sg.currentStage,
       hasActiveTask: !!activeTask,
       taskProgress: activeTask ? {
         current: activeTask.currentCount,
-        required: activeTask.requiredCount
+        required: activeTask.requiredCount,
+        passed: activeTask.passedCount,
+        pending: pendingCount,
       } : undefined
     })
   }
@@ -275,22 +358,46 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
     lessonTypes: lessonTypes.length > 0 ? lessonTypes : undefined,
   }
 
-  const stageName = STAGES[fullUser.currentStage as keyof typeof STAGES]?.nameRu || fullUser.currentStage
+  const stageName = STAGES[fullUser.currentStage as keyof typeof STAGES]?.nameRuFull || fullUser.currentStage
+
+  // Get gender emoji from primary group
+  const genderEmoji = primaryGroup?.gender === 'FEMALE' ? '🧕' : '👨'
 
   let message = `<b>Ассаляму алейкум, ${fullUser.firstName || 'пользователь'}!</b>\n\n`
   message += `📖 <b>Главное меню</b>\n\n`
 
   // Show progress - either from groups or from user
   if (lessonTypes.length > 0) {
-    message += `<b>📚 Мои уроки:</b>\n`
+    message += `<b>📚 Мой прогресс:</b>\n`
     for (const lt of lessonTypes) {
-      const typeName = getLessonTypeName(lt.type)
       const stageShort = lt.currentStage.replace('STAGE_', '').replace('_', '.')
-      if (lt.hasActiveTask && lt.taskProgress) {
-        message += `• ${typeName}: стр. ${lt.currentPage}, этап ${stageShort} [${lt.taskProgress.current}/${lt.taskProgress.required}]\n`
-      } else {
-        message += `• ${typeName}: стр. ${lt.currentPage}, этап ${stageShort}\n`
+      const groupGender = fullUser.studentGroups.find(sg => sg.groupId === lt.groupId)?.group.gender
+      const emoji = groupGender === 'FEMALE' ? '🧕' : '👨'
+      const typeName = getLessonTypeName(lt.type)
+      const levelInfo = lt.groupLevel && lt.type === LessonType.MEMORIZATION
+        ? ` (${getLinesForLevelName(lt.groupLevel)})`
+        : ''
+
+      // Get surah name for memorization
+      let surahStr = ''
+      if (lt.type === LessonType.MEMORIZATION && lt.currentPage) {
+        const surah = getPrimarySurahByPage(lt.currentPage)
+        if (surah) {
+          surahStr = ` 📖 ${surah.nameArabic}`
+        }
       }
+
+      if (lt.hasActiveTask && lt.taskProgress) {
+        message += `${emoji} ${typeName}${levelInfo}: <b>стр. ${lt.currentPage}</b>, этап ${stageShort} [${lt.taskProgress.current}/${lt.taskProgress.required}]${surahStr}\n`
+      } else {
+        message += `${emoji} ${typeName}${levelInfo}: <b>стр. ${lt.currentPage}</b>, этап ${stageShort}${surahStr}\n`
+      }
+    }
+
+    // Show revision stats
+    const revisionCount = fullUser.revisionSubmissions?.length || 0
+    if (revisionCount > 0) {
+      message += `\n🔄 Повторений сдано: <b>${revisionCount}</b>\n`
     }
     message += `\n`
   } else {
@@ -301,6 +408,7 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
   // Ustaz info
   if (menuInfo.ustazName) {
     message += `━━━━━━━━━━━━━━━━━━\n`
+    message += `${genderEmoji} Группа: <b>${primaryGroup?.name}</b>\n`
     message += `👨‍🏫 Устаз: <b>${menuInfo.ustazName}</b>\n`
     if (menuInfo.rankInGroup && menuInfo.totalInGroup) {
       message += `🏆 Рейтинг: <b>${menuInfo.rankInGroup} из ${menuInfo.totalInGroup}</b>\n`
@@ -337,118 +445,12 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
   }
 }
 
-async function showStudentMenu(ctx: BotContext, user: any): Promise<void> {
-  await cleanupAllMessages(ctx)
-
-  // Fetch full user data with group and statistics
-  const fullUser = await prisma.user.findUnique({
-    where: { id: user.id },
-    include: {
-      studentGroups: {
-        where: { isActive: true },
-        include: {
-          group: {
-            include: {
-              ustaz: true,
-              _count: { select: { students: true } }
-            }
-          }
-        },
-        take: 1
-      },
-      statistics: true,
-    }
-  })
-
-  if (!fullUser) return
-
-  // Get active task info
-  const activeTask = await prisma.task.findFirst({
-    where: {
-      studentId: user.id,
-      status: TaskStatus.IN_PROGRESS,
-    },
-    select: {
-      currentCount: true,
-      requiredCount: true,
-    }
-  })
-
-  // Calculate rank in group
-  let rankInGroup: number | undefined
-  let totalInGroup: number | undefined
-  const primaryGroup = fullUser.studentGroups[0]?.group
-
-  if (primaryGroup) {
-    totalInGroup = primaryGroup._count.students
-
-    const groupStudents = await prisma.studentGroup.findMany({
-      where: { groupId: primaryGroup.id, isActive: true },
-      select: {
-        studentId: true,
-        student: { select: { currentPage: true, currentLine: true } }
-      }
-    })
-
-    const sorted = groupStudents.sort((a, b) => {
-      if (b.student.currentPage !== a.student.currentPage) return b.student.currentPage - a.student.currentPage
-      return b.student.currentLine - a.student.currentLine
-    })
-
-    rankInGroup = sorted.findIndex(s => s.studentId === user.id) + 1
-  }
-
-  const menuInfo: StudentMenuInfo = {
-    hasActiveTask: !!activeTask,
-    currentCount: activeTask?.currentCount,
-    requiredCount: activeTask?.requiredCount,
-    groupName: primaryGroup?.name,
-    ustazName: primaryGroup?.ustaz?.firstName || undefined,
-    ustazUsername: primaryGroup?.ustaz?.telegramUsername || undefined,
-    ustazTelegramId: primaryGroup?.ustaz?.telegramId ? Number(primaryGroup.ustaz.telegramId) : undefined,
-    rankInGroup,
-    totalInGroup,
-    totalTasksCompleted: fullUser.statistics?.totalTasksCompleted,
-  }
-
-  const stageName = STAGES[fullUser.currentStage as keyof typeof STAGES]?.nameRu || fullUser.currentStage
-
-  let message = `<b>Ассаляму алейкум, ${fullUser.firstName || 'пользователь'}!</b>\n\n`
-  message += `📖 <b>Главное меню</b>\n\n`
-  message += `📍 Текущий прогресс: <b>стр. ${fullUser.currentPage}, строка ${fullUser.currentLine}</b>\n`
-  message += `📊 Этап: <b>${stageName}</b>\n\n`
-
-  // Group and ustaz info
-  if (menuInfo.groupName) {
-    message += `━━━━━━━━━━━━━━━━━━\n`
-    message += `📚 Группа: <b>${menuInfo.groupName}</b>\n`
-    if (menuInfo.ustazName) {
-      message += `👨‍🏫 Устаз: <b>${menuInfo.ustazName}</b>\n`
-    }
-    if (menuInfo.rankInGroup && menuInfo.totalInGroup) {
-      message += `🏆 Рейтинг: <b>${menuInfo.rankInGroup} из ${menuInfo.totalInGroup}</b>\n`
-    }
-    if (menuInfo.totalTasksCompleted !== undefined && menuInfo.totalTasksCompleted > 0) {
-      message += `✅ Выполнено заданий: <b>${menuInfo.totalTasksCompleted}</b>\n`
-    }
-    message += `━━━━━━━━━━━━━━━━━━\n\n`
-  }
-
-  message += `Выберите действие:`
-
-  await sendAndTrack(
-    ctx,
-    message,
-    {
-      reply_markup: getMainMenuKeyboard(fullUser.role, menuInfo),
-      parse_mode: 'HTML'
-    },
-    fullUser.id,
-    'menu'
-  )
-}
-
 async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
+  // Clean up any old messages before showing task menu - prevent duplicates
+  await deleteMessagesByType(ctx, 'review_result')
+  await deleteMessagesByType(ctx, 'notification')
+  await deleteMessagesByType(ctx, 'submission_confirm')
+
   const task = await prisma.task.findFirst({
     where: {
       studentId: user.id,
@@ -456,24 +458,33 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     },
     include: {
       page: true,
-      lesson: true,
       group: true,
     }
   })
 
   if (!task) {
-    // No active task - show option to start stage
-    const stageName = STAGES[user.currentStage as keyof typeof STAGES]?.nameRu || user.currentStage
-
-    const message = `▶️ <b>Начать задание</b>\n\n` +
-      `📍 Текущий прогресс: <b>стр. ${user.currentPage}, строка ${user.currentLine}</b>\n` +
-      `📊 Этап: <b>${stageName}</b>\n\n` +
-      `Нажмите кнопку ниже, чтобы начать изучение.`
-
-    await ctx.editMessageText(message, {
-      parse_mode: 'HTML',
-      reply_markup: getStartStageKeyboard()
+    // No active task - get data from StudentGroup for accurate progress
+    const studentGroup = await prisma.studentGroup.findFirst({
+      where: {
+        studentId: user.id,
+        isActive: true,
+        group: { lessonType: LessonType.MEMORIZATION }
+      },
+      include: {
+        group: true
+      }
     })
+
+    if (!studentGroup) {
+      await ctx.editMessageText(
+        '❌ <b>Ошибка</b>\n\nВы не состоите в группе.\n\n<i>Обратитесь к администратору.</i>',
+        { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
+      )
+      return
+    }
+
+    // Use showStartTaskForGroup which handles QRC pre-check logic
+    await showStartTaskForGroup(ctx, user, studentGroup)
     return
   }
 
@@ -481,9 +492,19 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     ? `строка ${task.startLine}`
     : `строки ${task.startLine}-${task.endLine}`
 
-  const progressPercent = ((task.currentCount / task.requiredCount) * 100).toFixed(0)
+  // Count pending submissions (waiting for ustaz review)
+  const pendingSubmissionCount = await prisma.submission.count({
+    where: {
+      taskId: task.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
+  // Calculate remaining based on PASSED + PENDING, not just currentCount
+  // This accounts for failed submissions that need to be re-submitted
+  const remaining = task.requiredCount - task.passedCount - pendingSubmissionCount
+  const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const progressBar = buildProgressBar(parseInt(progressPercent))
-  const remaining = task.requiredCount - task.currentCount
 
   // Calculate deadline
   const now = new Date()
@@ -505,18 +526,20 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     ? `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
     : `⚠️ <b>Срок истёк!</b>`
 
-  // Build format hint - use group settings (primary) or lesson settings (fallback)
-  const settings = task.group || task.lesson
+  // Build format hint - use group settings only
+  const group = task.group
   let formatHint = ''
-  if (settings) {
-    if (settings.allowVoice && settings.allowVideoNote) {
+  if (group) {
+    if (group.allowVoice && group.allowVideoNote) {
       formatHint = '🎤 голос или 📹 кружок'
-    } else if (settings.allowVoice) {
+    } else if (group.allowVoice) {
       formatHint = '🎤 голосовое сообщение'
-    } else if (settings.allowVideoNote) {
+    } else if (group.allowVideoNote) {
       formatHint = '📹 видео-кружок'
-    } else if (settings.allowText) {
+    } else if (group.allowText) {
       formatHint = '📝 текст'
+    } else {
+      formatHint = '🎤 голос или 📹 кружок' // default
     }
   } else {
     formatHint = '🎤 голос или 📹 кружок' // default
@@ -524,240 +547,168 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
 
   let message = `📝 <b>Текущее задание</b>\n\n`
   message += `📖 Страница ${task.page.pageNumber}, ${lineRange}\n`
-  message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRu || task.stage}\n\n`
+  message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRuFull || task.stage}\n\n`
   message += `${progressBar}\n`
-  message += `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n`
-  message += `⏳ Осталось: <b>${remaining}</b>\n`
+  message += `✅ Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
 
-  if (task.passedCount > 0 || task.failedCount > 0) {
-    message += `✅ Принято: <b>${task.passedCount}</b>\n`
+  if (pendingSubmissionCount > 0) {
+    message += `⏳ На проверке: <b>${pendingSubmissionCount}</b>\n`
+  }
+
+  // Only show failedCount if there are still submissions needed
+  if (task.failedCount > 0 && remaining > 0) {
     message += `❌ На пересдачу: <b>${task.failedCount}</b>\n`
   }
 
-  message += `\n${deadlineStr}\n\n`
-  message += `📤 Принимается: ${formatHint}\n\n`
-  message += `<i>Отправьте запись чтения.</i>`
+  if (remaining > 0) {
+    message += `📤 Осталось отправить: <b>${remaining}</b>\n`
+  }
 
-  // Check if there's a pending submission for cancel button
-  const hasPending = await prisma.submission.findFirst({
-    where: {
-      taskId: task.id,
-      studentId: user.id,
-      status: SubmissionStatus.PENDING,
+  // MAIN LOGIC: Check task state (failedCount is history, not a blocker)
+  const isTaskComplete = remaining === 0 && pendingSubmissionCount === 0
+  const allSentWaitingReview = remaining === 0 && pendingSubmissionCount > 0
+
+  if (isTaskComplete) {
+    // ALL PASSED - task complete!
+    message += `\n🎉 <b>Все записи приняты!</b>\n`
+    message += `<i>Нажмите кнопку ниже для перехода.</i>`
+  } else if (allSentWaitingReview) {
+    // All sent, waiting for review
+    message += `\n✅ <b>Все записи отправлены!</b>\n`
+    message += `<i>Ожидайте проверку устаза.</i>`
+  } else if (remaining > 0) {
+    // Need more submissions
+    message += `\n${deadlineStr}\n\n`
+    message += `📤 Принимается: ${formatHint}\n\n`
+    if (task.failedCount > 0) {
+      message += `<i>⚠️ У вас есть записи на пересдачу. Отправьте ${remaining} записей.</i>`
+    } else {
+      message += `<i>Отправьте запись чтения.</i>`
     }
-  })
+  }
+
+  // Show cancel button only when there are pending submissions and not all sent yet
+  const showCancelButton = pendingSubmissionCount > 0 && remaining > 0
 
   await ctx.editMessageText(message, {
     parse_mode: 'HTML',
-    reply_markup: getActiveTaskKeyboard(task.id, !!hasPending)
+    reply_markup: getActiveTaskKeyboard(task.id, showCancelButton, isTaskComplete, allSentWaitingReview)
   })
 }
 
 /**
- * Start studying current stage - auto-create task
+ * Get number of lines based on group level
+ * Level 1 (BEGINNER): 1 line at a time
+ * Level 2 (INTERMEDIATE): 3 lines at a time
+ * Level 3 (ADVANCED): 7 lines at a time
  */
-async function startStage(ctx: BotContext, user: any): Promise<void> {
-  // Check if user already has an active task
-  const existingTask = await prisma.task.findFirst({
-    where: {
-      studentId: user.id,
-      status: TaskStatus.IN_PROGRESS,
-    }
-  })
-
-  if (existingTask) {
-    await ctx.answerCallbackQuery({ text: 'У вас уже есть активное задание!' })
-    await showCurrentTask(ctx, user)
-    return
+function getLinesForLevel(groupLevel: GroupLevel): number {
+  switch (groupLevel) {
+    case GroupLevel.LEVEL_1:
+      return 1
+    case GroupLevel.LEVEL_2:
+      return 3
+    case GroupLevel.LEVEL_3:
+      return 7
+    default:
+      return 1
   }
-
-  // Get user with group info
-  const userWithGroup = await prisma.user.findUnique({
-    where: { id: user.id },
-    include: {
-      studentGroups: {
-        where: { isActive: true },
-        include: {
-          group: {
-            include: {
-              lessons: {
-                where: { isActive: true },
-                take: 1
-              }
-            }
-          }
-        },
-        take: 1
-      }
-    }
-  })
-
-  const primaryStudentGroup = userWithGroup?.studentGroups[0]
-  if (!primaryStudentGroup) {
-    await ctx.editMessageText(
-      '❌ <b>Ошибка</b>\n\nВы не состоите в группе.\n\n<i>Обратитесь к администратору.</i>',
-      { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
-    )
-    return
-  }
-
-  const lesson = primaryStudentGroup.group.lessons[0]
-  if (!lesson) {
-    await ctx.editMessageText(
-      '❌ <b>Ошибка</b>\n\nВ вашей группе нет активного урока.\n\n<i>Обратитесь к устазу.</i>',
-      { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
-    )
-    return
-  }
-
-  // Find or create the QuranPage
-  let page = await prisma.quranPage.findUnique({
-    where: { pageNumber: user.currentPage }
-  })
-
-  if (!page) {
-    page = await prisma.quranPage.create({
-      data: {
-        pageNumber: user.currentPage,
-        totalLines: getLinesPerPage(user.currentPage)
-      }
-    })
-  }
-
-  // Calculate line range based on stage
-  const { startLine, endLine } = getLineRangeForStage(
-    user.currentStage as StageNumber,
-    user.currentPage,
-    primaryStudentGroup.group.level as GroupLevel
-  )
-
-  // Calculate deadline based on stage and group level
-  const stageDays = getStageDays(user.currentStage as StageNumber, lesson)
-  const deadline = new Date()
-  deadline.setDate(deadline.getDate() + stageDays)
-
-  // Create the task
-  const task = await prisma.task.create({
-    data: {
-      lessonId: lesson.id,
-      studentId: user.id,
-      pageId: page.id,
-      startLine,
-      endLine,
-      stage: user.currentStage,
-      status: TaskStatus.IN_PROGRESS,
-      requiredCount: lesson.repetitionCount,
-      deadline,
-    },
-    include: {
-      page: true,
-      lesson: true,
-    }
-  })
-
-  // Create statistics record if not exists
-  await prisma.userStatistics.upsert({
-    where: { userId: user.id },
-    create: { userId: user.id },
-    update: {}
-  })
-
-  const stageName = STAGES[user.currentStage as keyof typeof STAGES]?.nameRu || user.currentStage
-  const lineRange = startLine === endLine
-    ? `строку ${startLine}`
-    : `строки ${startLine}-${endLine}`
-
-  // Build format hint
-  let formatHint = ''
-  if (lesson.allowVoice && lesson.allowVideoNote) {
-    formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
-  } else if (lesson.allowVoice) {
-    formatHint = '🎤 голосовое сообщение'
-  } else if (lesson.allowVideoNote) {
-    formatHint = '📹 видео-кружок'
-  } else if (lesson.allowText) {
-    formatHint = '📝 текстовое сообщение'
-  }
-
-  let message = `✅ <b>Задание создано!</b>\n\n`
-  message += `📖 Страница ${page.pageNumber}, ${lineRange}\n`
-  message += `📚 ${stageName}\n\n`
-  message += `📊 Нужно сдать: <b>${lesson.repetitionCount} раз</b>\n`
-  message += `⏰ Срок: <b>${stageDays} дней</b>\n\n`
-  message += `📤 Отправьте ${formatHint}.`
-
-  await ctx.editMessageText(message, {
-    parse_mode: 'HTML',
-    reply_markup: getActiveTaskKeyboard(task.id, false)
-  })
 }
 
 /**
- * Get line range for a stage
+ * Get line range for a stage based on group level and current position
+ *
+ * ЛОГИКА ЭТАПОВ:
+ * - Этапы изучения (1.1, 2.1): сдаём по linesPerTask строк за раз, двигаемся по строкам
+ * - Этапы соединения (1.2, 2.2, 3): сдаём ВСЕ строки диапазона сразу
  */
-function getLineRangeForStage(
+async function getLineRangeForStage(
   stage: StageNumber,
   pageNumber: number,
-  groupLevel: GroupLevel
-): { startLine: number; endLine: number } {
-  const totalLines = getLinesPerPage(pageNumber)
+  groupLevel: GroupLevel,
+  currentLine: number = 1
+): Promise<{ startLine: number; endLine: number }> {
+  const totalLines = await getPageTotalLines(pageNumber)
+  const linesPerTask = getLinesForLevel(groupLevel)
+  const firstHalfEnd = Math.min(7, totalLines)
 
-  // For pages with <= 7 lines, use all lines for all stages
+  // For pages with <= 7 lines (like Fatiha), simplified flow
   if (totalLines <= 7) {
+    // Learning stage: use linesPerTask from current position
+    if (stage === StageNumber.STAGE_1_1) {
+      const startLine = Math.max(currentLine, 1)
+      const endLine = Math.min(startLine + linesPerTask - 1, totalLines)
+      return { startLine, endLine }
+    }
+    // Connection/full page stage: all lines
     return { startLine: 1, endLine: totalLines }
   }
 
-  // Standard 15-line pages
   switch (stage) {
+    // ===== ЭТАПЫ ИЗУЧЕНИЯ (по группам строк) =====
     case StageNumber.STAGE_1_1:
-    case StageNumber.STAGE_1_2:
-      // Lines 1-7
-      return { startLine: 1, endLine: 7 }
+      // Изучение строк 1-7: сдаём по linesPerTask за раз
+      {
+        const startLine = Math.max(currentLine, 1)
+        const endLine = Math.min(startLine + linesPerTask - 1, firstHalfEnd)
+        return { startLine, endLine }
+      }
 
     case StageNumber.STAGE_2_1:
+      // Изучение строк 8-15: сдаём по linesPerTask за раз
+      {
+        const startLine = Math.max(currentLine, 8)
+        const endLine = Math.min(startLine + linesPerTask - 1, totalLines)
+        return { startLine, endLine }
+      }
+
+    // ===== ЭТАПЫ СОЕДИНЕНИЯ (все строки сразу) =====
+    case StageNumber.STAGE_1_2:
+      // Соединение строк 1-7: ВСЕ строки первой половины сразу
+      return { startLine: 1, endLine: firstHalfEnd }
+
     case StageNumber.STAGE_2_2:
-      // Lines 8-15
+      // Соединение строк 8-15: ВСЕ строки второй половины сразу
       return { startLine: 8, endLine: totalLines }
 
     case StageNumber.STAGE_3:
-      // All lines
+      // Вся страница: ВСЕ строки сразу
       return { startLine: 1, endLine: totalLines }
 
     default:
       return { startLine: 1, endLine: totalLines }
-  }
-}
-
-/**
- * Get days for a stage from lesson settings
- */
-function getStageDays(stage: StageNumber, lesson: any): number {
-  switch (stage) {
-    case StageNumber.STAGE_1_1:
-    case StageNumber.STAGE_1_2:
-      return lesson.stage1Days || 1
-
-    case StageNumber.STAGE_2_1:
-    case StageNumber.STAGE_2_2:
-      return lesson.stage2Days || 2
-
-    case StageNumber.STAGE_3:
-      return lesson.stage3Days || 2
-
-    default:
-      return 1
   }
 }
 
 async function showTaskHistory(ctx: BotContext, user: any): Promise<void> {
   const tasks = await prisma.task.findMany({
     where: { studentId: user.id },
-    include: { page: true },
+    include: {
+      page: true,
+      group: true,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 15
+  })
+
+  // Get revision submissions
+  const revisionSubmissions = await prisma.revisionSubmission.findMany({
+    where: { studentId: user.id },
     orderBy: { createdAt: 'desc' },
     take: 10
   })
 
-  if (tasks.length === 0) {
+  // Get mufradat submissions
+  const mufradatSubmissions = await prisma.submission.findMany({
+    where: {
+      studentId: user.id,
+      submissionType: 'MUFRADAT_GAME'
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10
+  })
+
+  if (tasks.length === 0 && revisionSubmissions.length === 0 && mufradatSubmissions.length === 0) {
     await ctx.editMessageText(
       '📋 <b>История заданий</b>\n\n<i>История заданий пуста.</i>',
       { parse_mode: 'HTML', reply_markup: getBackKeyboard('student:menu', '◀️ В меню') }
@@ -767,13 +718,41 @@ async function showTaskHistory(ctx: BotContext, user: any): Promise<void> {
 
   let message = '<b>📋 История заданий</b>\n\n'
 
-  for (const task of tasks) {
-    const status = getTaskStatusEmoji(task.status)
-    const lineRange = task.startLine === task.endLine
-      ? `стр. ${task.startLine}`
-      : `стр. ${task.startLine}-${task.endLine}`
+  // Memorization tasks
+  if (tasks.length > 0) {
+    message += '<b>📖 Заучивание:</b>\n'
+    for (const task of tasks) {
+      const status = getTaskStatusEmoji(task.status)
+      const lineRange = task.startLine === task.endLine
+        ? `стр. ${task.startLine}`
+        : `стр. ${task.startLine}-${task.endLine}`
+      const date = task.createdAt.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
 
-    message += `${status} ${task.page.pageNumber}-${lineRange} (${task.passedCount}/${task.requiredCount})\n`
+      message += `${status} ${task.page.pageNumber}-${lineRange} (${task.passedCount}/${task.requiredCount}) ${date}\n`
+    }
+    message += '\n'
+  }
+
+  // Revision submissions
+  if (revisionSubmissions.length > 0) {
+    message += '<b>🔄 Повторение:</b>\n'
+    for (const rev of revisionSubmissions) {
+      const status = rev.status === 'PASSED' ? '✅' : rev.status === 'FAILED' ? '❌' : '⏳'
+      const date = rev.createdAt.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+      message += `${status} Стр. ${rev.pageNumber} ${date}\n`
+    }
+    message += '\n'
+  }
+
+  // Mufradat submissions
+  if (mufradatSubmissions.length > 0) {
+    message += '<b>📝 Переводы:</b>\n'
+    for (const muf of mufradatSubmissions) {
+      const status = muf.status === 'PASSED' ? '✅' : muf.status === 'FAILED' ? '❌' : '⏳'
+      const date = muf.createdAt.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
+      const score = muf.gameScore ?? 0
+      message += `${status} ${score}% (${muf.gameCorrect}/${muf.gameTotal}) ${date}\n`
+    }
   }
 
   await ctx.editMessageText(message, {
@@ -816,16 +795,30 @@ async function showProgress(ctx: BotContext, user: any): Promise<void> {
     }
   })
 
+  // Use memorization group's progress for overall page (most relevant)
+  const memGroup = studentGroups.find(sg => sg.group.lessonType === LessonType.MEMORIZATION)
+  const currentPage = memGroup?.currentPage || user.currentPage
+  const currentLine = memGroup?.currentLine || user.currentLine
+
   const totalPages = 602
-  const completedPages = user.currentPage - 1
+  const completedPages = currentPage - 1
   const progressPercent = ((completedPages / totalPages) * 100).toFixed(2)
 
   let message = `<b>📈 Мой прогресс</b>\n\n`
 
   // Overall progress
   message += `📖 <b>Общий прогресс</b>\n`
-  message += `   Позиция: стр. ${user.currentPage}, строка ${user.currentLine}\n`
+  message += `   Позиция: стр. ${currentPage}, строка ${currentLine}\n`
   message += `   Пройдено: ${completedPages}/${totalPages} стр. (${progressPercent}%)\n\n`
+
+  // Get revision stats
+  const revisionStats = await prisma.revisionSubmission.groupBy({
+    by: ['status'],
+    where: { studentId: user.id },
+    _count: true
+  })
+  const revisionPassed = revisionStats.find(r => r.status === 'PASSED')?._count || 0
+  const revisionTotal = revisionStats.reduce((sum, r) => sum + r._count, 0)
 
   // Progress by lesson type
   if (studentGroups.length > 0) {
@@ -833,6 +826,7 @@ async function showProgress(ctx: BotContext, user: any): Promise<void> {
     for (const sg of studentGroups) {
       const typeName = getLessonTypeName(sg.group.lessonType)
       const stageShort = sg.currentStage.replace('STAGE_', '').replace('_', '.')
+      const levelInfo = sg.group.level ? getLinesForLevelName(sg.group.level as GroupLevel) : ''
 
       if (sg.group.lessonType === LessonType.TRANSLATION) {
         // Special info for mufradat
@@ -844,10 +838,19 @@ async function showProgress(ctx: BotContext, user: any): Promise<void> {
         message += `   🎯 Игр сыграно: ${mufradatStats._count}\n`
         message += `   ✅ Пройдено: ${mufradatPassed}\n`
         message += `   📊 Средний балл: ${avgScore}%\n`
+      } else if (sg.group.lessonType === LessonType.REVISION) {
+        // Special info for revision
+        message += `\n🔄 <b>${typeName}</b>\n`
+        message += `   📍 Страниц сдано: ${revisionPassed}/${revisionTotal}\n`
+        message += `   📊 Страниц в день: ${sg.group.revisionPagesPerDay}\n`
       } else {
+        // Memorization
         message += `\n📖 <b>${typeName}</b>\n`
         message += `   📍 Стр. ${sg.currentPage}, строка ${sg.currentLine}\n`
         message += `   📊 Этап ${stageShort}\n`
+        if (levelInfo) {
+          message += `   📐 Уровень: ${levelInfo} за раз\n`
+        }
       }
     }
     message += `\n`
@@ -962,11 +965,7 @@ async function handleLessonTypeCallback(
       isActive: true
     },
     include: {
-      group: {
-        include: {
-          ustaz: true
-        }
-      }
+      group: true
     }
   })
 
@@ -1005,6 +1004,7 @@ async function handleLessonTypeCallback(
 
 /**
  * Show active task for a specific group
+ * Uses same logic as showCurrentTask to avoid duplication
  */
 async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGroup: any): Promise<void> {
   const group = studentGroup.group
@@ -1014,9 +1014,19 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
     ? `строка ${task.startLine}`
     : `строки ${task.startLine}-${task.endLine}`
 
-  const progressPercent = ((task.currentCount / task.requiredCount) * 100).toFixed(0)
+  // Count pending submissions (waiting for ustaz review)
+  const pendingSubmissionCount = await prisma.submission.count({
+    where: {
+      taskId: task.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
+  // Calculate remaining based on PASSED + PENDING, not just currentCount
+  // This accounts for failed submissions that need to be re-submitted
+  const remaining = task.requiredCount - task.passedCount - pendingSubmissionCount
+  const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const progressBar = buildProgressBar(parseInt(progressPercent))
-  const remaining = task.requiredCount - task.currentCount
 
   // Calculate deadline
   const now = new Date()
@@ -1054,32 +1064,52 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
 
   let message = `📝 <b>${typeName}</b>\n\n`
   message += `📖 Страница ${task.page.pageNumber}, ${lineRange}\n`
-  message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRu || task.stage}\n\n`
+  message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRuFull || task.stage}\n\n`
   message += `${progressBar}\n`
-  message += `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n`
-  message += `⏳ Осталось: <b>${remaining}</b>\n`
+  message += `✅ Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
 
-  if (task.passedCount > 0 || task.failedCount > 0) {
-    message += `✅ Принято: <b>${task.passedCount}</b>\n`
+  if (pendingSubmissionCount > 0) {
+    message += `⏳ На проверке: <b>${pendingSubmissionCount}</b>\n`
+  }
+
+  // Only show failedCount if there are still submissions needed
+  if (task.failedCount > 0 && remaining > 0) {
     message += `❌ На пересдачу: <b>${task.failedCount}</b>\n`
   }
 
-  message += `\n${deadlineStr}\n\n`
-  message += `📤 Принимается: ${formatHint}\n\n`
-  message += `<i>Отправьте запись чтения.</i>`
+  if (remaining > 0) {
+    message += `📤 Осталось отправить: <b>${remaining}</b>\n`
+  }
 
-  // Check if there's a pending submission for cancel button
-  const hasPending = await prisma.submission.findFirst({
-    where: {
-      taskId: task.id,
-      studentId: user.id,
-      status: SubmissionStatus.PENDING,
+  // MAIN LOGIC: Check task state (failedCount is history, not a blocker)
+  const isTaskComplete = remaining === 0 && pendingSubmissionCount === 0
+  const allSentWaitingReview = remaining === 0 && pendingSubmissionCount > 0
+
+  if (isTaskComplete) {
+    // ALL PASSED - task complete!
+    message += `\n🎉 <b>Все записи приняты!</b>\n`
+    message += `<i>Нажмите кнопку ниже для перехода.</i>`
+  } else if (allSentWaitingReview) {
+    // All sent, waiting for review
+    message += `\n✅ <b>Все записи отправлены!</b>\n`
+    message += `<i>Ожидайте проверку устаза.</i>`
+  } else if (remaining > 0) {
+    // Need more submissions
+    message += `\n${deadlineStr}\n\n`
+    message += `📤 Принимается: ${formatHint}\n\n`
+    if (task.failedCount > 0) {
+      message += `<i>⚠️ У вас есть записи на пересдачу. Отправьте ${remaining} записей.</i>`
+    } else {
+      message += `<i>Отправьте запись чтения.</i>`
     }
-  })
+  }
+
+  // Show cancel button only when there are pending submissions and not all sent yet
+  const showCancelButton = pendingSubmissionCount > 0 && remaining > 0
 
   await ctx.editMessageText(message, {
     parse_mode: 'HTML',
-    reply_markup: getActiveTaskKeyboard(task.id, !!hasPending)
+    reply_markup: getActiveTaskKeyboard(task.id, showCancelButton, isTaskComplete, allSentWaitingReview)
   })
 }
 
@@ -1089,16 +1119,83 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
 async function showStartTaskForGroup(ctx: BotContext, user: any, studentGroup: any): Promise<void> {
   const group = studentGroup.group
   const typeName = getLessonTypeName(group.lessonType)
-  const stageName = STAGES[studentGroup.currentStage as keyof typeof STAGES]?.nameRu || studentGroup.currentStage
+  const stageName = STAGES[studentGroup.currentStage as keyof typeof STAGES]?.nameRuFull || studentGroup.currentStage
 
-  const message = `▶️ <b>Начать ${typeName}</b>\n\n` +
-    `📍 Текущий прогресс: <b>стр. ${studentGroup.currentPage}, строка ${studentGroup.currentLine}</b>\n` +
-    `📊 Этап: <b>${stageName}</b>\n\n` +
-    `Нажмите кнопку ниже, чтобы начать изучение.`
+  // Check if QRC pre-check is needed for learning stages (1.1 and 2.1)
+  const isLearningStage = studentGroup.currentStage === StageNumber.STAGE_1_1 ||
+                          studentGroup.currentStage === StageNumber.STAGE_2_1
+  const qrcPreCheckEnabled = group.qrcPreCheckEnabled === true
+
+  // Calculate line range for pre-check
+  const linesPerTask = getLinesForLevel(group.level as GroupLevel)
+  const totalLines = await getPageTotalLines(studentGroup.currentPage)
+  const firstHalfEnd = Math.min(7, totalLines)
+
+  let startLine: number
+  let endLine: number
+
+  if (studentGroup.currentStage === StageNumber.STAGE_1_1) {
+    startLine = Math.max(studentGroup.currentLine, 1)
+    endLine = Math.min(startLine + linesPerTask - 1, firstHalfEnd)
+  } else if (studentGroup.currentStage === StageNumber.STAGE_2_1) {
+    startLine = Math.max(studentGroup.currentLine, 8)
+    endLine = Math.min(startLine + linesPerTask - 1, totalLines)
+  } else {
+    startLine = 1
+    endLine = totalLines
+  }
+
+  // Check if pre-check is passed (only for learning stages with QRC enabled)
+  let needsPreCheck = false
+  let preCheckPassed = false
+
+  if (isLearningStage && qrcPreCheckEnabled) {
+    const existingPreCheck = await prisma.qRCPreCheck.findUnique({
+      where: {
+        studentId_groupId_pageNumber_startLine_endLine_stage: {
+          studentId: user.id,
+          groupId: group.id,
+          pageNumber: studentGroup.currentPage,
+          startLine,
+          endLine,
+          stage: studentGroup.currentStage as StageNumber,
+        }
+      }
+    })
+
+    preCheckPassed = existingPreCheck?.passed === true
+    needsPreCheck = !preCheckPassed
+  }
+
+  let message = `▶️ <b>Начать ${typeName}</b>\n\n`
+  message += `📍 Текущий прогресс: <b>стр. ${studentGroup.currentPage}, строка ${studentGroup.currentLine}</b>\n`
+  message += `📊 Этап: <b>${stageName}</b>\n`
+
+  if (needsPreCheck) {
+    message += `\n🤖 <b>AI предпроверка</b>\n`
+    message += `<i>Перед сдачей работ пройдите AI проверку чтения.</i>\n`
+    message += `<i>Порог: ${group.qrcPassThreshold || 70}%</i>\n\n`
+    message += `Нажмите кнопку ниже для проверки.`
+  } else if (preCheckPassed) {
+    message += `\n✅ <b>AI проверка пройдена!</b>\n\n`
+    message += `Нажмите кнопку ниже, чтобы начать изучение.`
+  } else {
+    message += `\nНажмите кнопку ниже, чтобы начать изучение.`
+  }
 
   const keyboard = new InlineKeyboard()
-    .text('▶️ Начать изучать этап', `start_group_task:${group.id}`).row()
-    .text('◀️ В меню', 'student:menu')
+
+  if (needsPreCheck) {
+    // WebApp button for QRC pre-check
+    // Include message_id so webapp can delete this message after passing
+    const messageId = ctx.callbackQuery?.message?.message_id || 0
+    const webAppUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'}/telegram/qrc-check?groupId=${group.id}&page=${studentGroup.currentPage}&startLine=${startLine}&endLine=${endLine}&stage=${studentGroup.currentStage}&msgId=${messageId}`
+    keyboard.webApp('🎙 Пройти AI проверку', webAppUrl).row()
+  } else {
+    keyboard.text('▶️ Начать изучать этап', `start_group_task:${group.id}`).row()
+  }
+
+  keyboard.text('◀️ В меню', 'student:menu')
 
   await ctx.editMessageText(message, {
     parse_mode: 'HTML',
@@ -1149,25 +1246,51 @@ async function startGroupTask(ctx: BotContext, user: any, groupId: string): Prom
   })
 
   if (!page) {
-    page = await prisma.quranPage.create({
-      data: {
-        pageNumber: studentGroup.currentPage,
-        totalLines: getLinesPerPage(studentGroup.currentPage)
-      }
-    })
+    page = await getOrCreateQuranPage(studentGroup.currentPage)
   }
 
-  // Calculate line range based on stage
-  const { startLine, endLine } = getLineRangeForStage(
-    studentGroup.currentStage as StageNumber,
+  // Auto-correct invalid stage for short pages (<=7 lines)
+  const pageLines = await getPageTotalLines(studentGroup.currentPage)
+  let correctedStage = studentGroup.currentStage as StageNumber
+  let correctedLine = studentGroup.currentLine
+
+  if (pageLines <= 7) {
+    // For pages with <=7 lines, stages 1.2, 2.1, 2.2 are invalid
+    // Only valid stages: STAGE_1_1 and STAGE_3
+    if (correctedStage === StageNumber.STAGE_1_2 ||
+        correctedStage === StageNumber.STAGE_2_1 ||
+        correctedStage === StageNumber.STAGE_2_2) {
+      // Auto-correct to STAGE_3
+      correctedStage = StageNumber.STAGE_3
+      correctedLine = 1
+
+      // Update the database
+      await prisma.studentGroup.update({
+        where: { id: studentGroup.id },
+        data: {
+          currentStage: correctedStage,
+          currentLine: correctedLine
+        }
+      })
+
+      // Also update the local reference
+      studentGroup.currentStage = correctedStage
+      studentGroup.currentLine = correctedLine
+    }
+  }
+
+  // Calculate line range based on stage and group level
+  const { startLine, endLine } = await getLineRangeForStage(
+    correctedStage,
     studentGroup.currentPage,
-    group.level as GroupLevel
+    group.level as GroupLevel,
+    correctedLine
   )
 
-  // Calculate deadline based on stage and group settings
-  const stageDays = getStageDaysFromGroup(studentGroup.currentStage as StageNumber, group)
+  // Calculate deadline based on stage and group settings (in hours)
+  const stageHours = getStageHoursFromGroup(correctedStage, group)
   const deadline = new Date()
-  deadline.setDate(deadline.getDate() + stageDays)
+  deadline.setTime(deadline.getTime() + stageHours * 60 * 60 * 1000)
 
   // Create the task
   const task = await prisma.task.create({
@@ -1177,7 +1300,7 @@ async function startGroupTask(ctx: BotContext, user: any, groupId: string): Prom
       pageId: page.id,
       startLine,
       endLine,
-      stage: studentGroup.currentStage,
+      stage: correctedStage,
       status: TaskStatus.IN_PROGRESS,
       requiredCount: group.repetitionCount,
       deadline,
@@ -1196,57 +1319,143 @@ async function startGroupTask(ctx: BotContext, user: any, groupId: string): Prom
   })
 
   const typeName = getLessonTypeName(group.lessonType)
-  const stageName = STAGES[studentGroup.currentStage as keyof typeof STAGES]?.nameRu || studentGroup.currentStage
+  const currentStage = correctedStage
+  const isLearningStage = currentStage === StageNumber.STAGE_1_1 || currentStage === StageNumber.STAGE_2_1
+  const totalLines = await getPageTotalLines(page.pageNumber)
+  const firstHalfEnd = Math.min(7, totalLines)
   const lineRange = startLine === endLine
     ? `строку ${startLine}`
     : `строки ${startLine}-${endLine}`
 
-  // Build format hint
+  // Определяем актуальное название этапа
+  let stageName = ''
+  if (currentStage === StageNumber.STAGE_1_1) {
+    stageName = `Этап 1.1: Изучение строки ${startLine} из ${firstHalfEnd}`
+  } else if (currentStage === StageNumber.STAGE_1_2) {
+    stageName = `Этап 1.2: Соединение строк 1-${firstHalfEnd}`
+  } else if (currentStage === StageNumber.STAGE_2_1) {
+    stageName = `Этап 2.1: Изучение строки ${startLine} из ${totalLines}`
+  } else if (currentStage === StageNumber.STAGE_2_2) {
+    stageName = `Этап 2.2: Соединение строк 8-${totalLines}`
+  } else if (currentStage === StageNumber.STAGE_3) {
+    stageName = `Этап 3: Вся страница 1-${totalLines}`
+  } else {
+    stageName = STAGES[currentStage as keyof typeof STAGES]?.nameRuFull || currentStage
+  }
+
+  // Build format hint - ТОЛЬКО из настроек группы!
   let formatHint = ''
-  if (group.allowVoice && group.allowVideoNote) {
+  const allowVoice = group.allowVoice ?? false
+  const allowVideoNote = group.allowVideoNote ?? false
+  const allowText = group.allowText ?? false
+
+  if (allowVoice && allowVideoNote) {
     formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
-  } else if (group.allowVoice) {
+  } else if (allowVoice) {
     formatHint = '🎤 голосовое сообщение'
-  } else if (group.allowVideoNote) {
+  } else if (allowVideoNote) {
     formatHint = '📹 видео-кружок'
-  } else if (group.allowText) {
+  } else if (allowText) {
     formatHint = '📝 текстовое сообщение'
   } else {
-    formatHint = '🎤 голосовое сообщение или 📹 видео-кружок'
+    // Если ничего не включено - по умолчанию голосовое
+    formatHint = '🎤 голосовое сообщение'
+  }
+
+  // Get surah name and level
+  const surah = getPrimarySurahByPage(page.pageNumber)
+  const surahStr = surah ? ` <b>${surah.nameArabic}</b>` : ''
+  const levelInfo = getLinesForLevelName(group.level as GroupLevel)
+
+  // Количество повторений из настроек группы
+  const repetitions = group.repetitionCount || 80
+
+  // Pluralization for Russian
+  const repsPlural = pluralize(repetitions, ['раз', 'раза', 'раз'])
+  const days = stageHours >= 24 ? Math.round(stageHours / 24) : 0
+  const daysPlural = pluralize(days, ['день', 'дня', 'дней'])
+  const hoursPlural = pluralize(stageHours, ['час', 'часа', 'часов'])
+
+  // Определяем тип задания для пояснения
+  let taskTypeHint = ''
+  if (isLearningStage) {
+    taskTypeHint = `\n💡 <i>Изучение: сдавайте ${lineRange} (${repetitions} ${repsPlural})</i>`
+  } else if (currentStage === StageNumber.STAGE_3) {
+    taskTypeHint = `\n💡 <i>Соединение: читайте ВСЮ страницу целиком</i>`
+  } else {
+    taskTypeHint = `\n💡 <i>Соединение: читайте ${lineRange} ВСЕ ВМЕСТЕ</i>`
+  }
+
+  // Fetch Arabic text for the lines
+  let arabicTextSection = ''
+  try {
+    const pageData = await getPageVerses(page.pageNumber)
+    const allLines = getMedinaLines(pageData.verses)
+    const targetLines = allLines.filter(l => l.lineNumber >= startLine && l.lineNumber <= endLine)
+
+    if (targetLines.length > 0) {
+      arabicTextSection = '\n\n📜 <b>Текст для сдачи:</b>\n'
+      for (const line of targetLines) {
+        // Filter out verse numbers from text
+        const cleanText = (line.textArabic || '')
+          .replace(/[\u0660-\u0669\u06F0-\u06F9\u06DD]/g, '') // Remove Arabic digits
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (cleanText) {
+          arabicTextSection += `<code>${cleanText}</code>\n`
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Task] Failed to fetch Arabic text:', err)
+    // Continue without Arabic text
   }
 
   let message = `✅ <b>Задание создано!</b>\n\n`
   message += `📖 <b>${typeName}</b>\n\n`
-  message += `📄 Страница ${page.pageNumber}, ${lineRange}\n`
-  message += `📚 ${stageName}\n\n`
-  message += `📊 Нужно сдать: <b>${group.repetitionCount} раз</b>\n`
-  message += `⏰ Срок: <b>${stageDays} дней</b>\n\n`
+  message += `📄 Страница ${page.pageNumber}${surahStr}\n`
+  message += `📝 Сдать: <b>${lineRange}</b>\n`
+  message += `📚 ${stageName}\n`
+  if (isLearningStage) {
+    message += `📐 Уровень: <b>${levelInfo}</b> за раз\n`
+  }
+  message += taskTypeHint
+  message += arabicTextSection
+  message += `\n\n📊 Повторений: <b>${repetitions} ${repsPlural}</b>\n`
+  message += `⏰ Срок: <b>${days > 0 ? days + ' ' + daysPlural : stageHours + ' ' + hoursPlural}</b>\n\n`
   message += `📤 Отправьте ${formatHint}.`
 
   await ctx.editMessageText(message, {
     parse_mode: 'HTML',
     reply_markup: getActiveTaskKeyboard(task.id, false)
   })
+
+  // Track this message for cleanup when submission is received
+  const messageId = ctx.callbackQuery?.message?.message_id
+  if (messageId) {
+    const { trackMessage } = await import('../utils/message-cleaner')
+    await trackMessage(ctx, messageId, user.id, 'task_info')
+  }
 }
 
 /**
- * Get days for a stage from group settings
+ * Get hours for a stage from group settings
  */
-function getStageDaysFromGroup(stage: StageNumber, group: any): number {
+function getStageHoursFromGroup(stage: StageNumber, group: any): number {
   switch (stage) {
     case StageNumber.STAGE_1_1:
     case StageNumber.STAGE_1_2:
-      return group.stage1Days || 1
+      return group.stage1Hours || 24
 
     case StageNumber.STAGE_2_1:
     case StageNumber.STAGE_2_2:
-      return group.stage2Days || 2
+      return group.stage2Hours || 48
 
     case StageNumber.STAGE_3:
-      return group.stage3Days || 2
+      return group.stage3Hours || 48
 
     default:
-      return 1
+      return 24
   }
 }
 
@@ -1331,15 +1540,16 @@ async function handleUstazCallback(
 async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
   const groups = await prisma.group.findMany({
     where: { ustazId: user.id },
-    select: { id: true }
+    select: { id: true, name: true, gender: true, _count: { select: { students: true } } }
   })
 
   const groupIds = groups.map(g => g.id)
 
-  const pendingCount = await prisma.submission.count({
+  // Count pending memorization submissions
+  const pendingMemorizationCount = await prisma.submission.count({
     where: {
       status: SubmissionStatus.PENDING,
-      sentToUstazAt: { not: null }, // Only count submissions that were sent to ustaz
+      sentToUstazAt: { not: null },
       OR: [
         { task: { lesson: { groupId: { in: groupIds } } } },
         { task: { groupId: { in: groupIds } } }
@@ -1347,10 +1557,40 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
     }
   })
 
-  const message = `<b>👨‍🏫 Панель устаза</b>\n\n` +
-    `📚 Групп: ${groups.length}\n` +
-    `📝 Работ на проверку: <b>${pendingCount}</b>\n\n` +
-    `Выберите действие:`
+  // Count pending revision submissions
+  const pendingRevisionCount = await prisma.revisionSubmission.count({
+    where: {
+      status: SubmissionStatus.PENDING,
+      student: {
+        studentGroups: {
+          some: { groupId: { in: groupIds } }
+        }
+      }
+    }
+  })
+
+  // Count total students
+  const totalStudents = groups.reduce((sum, g) => sum + g._count.students, 0)
+
+  let message = `<b>👨‍🏫 Панель устаза</b>\n\n`
+
+  // Groups with gender emoji
+  if (groups.length > 0) {
+    message += `<b>📚 Группы:</b>\n`
+    for (const g of groups) {
+      const genderEmoji = g.gender === 'MALE' ? '👨' : '🧕'
+      message += `• ${genderEmoji} ${g.name} (${g._count.students} студ.)\n`
+    }
+    message += `\n`
+  }
+
+  message += `👥 Всего студентов: <b>${totalStudents}</b>\n\n`
+
+  // Pending work
+  message += `<b>📝 На проверку:</b>\n`
+  message += `• Заучивание: <b>${pendingMemorizationCount}</b>\n`
+  message += `• Повторение: <b>${pendingRevisionCount}</b>\n\n`
+  message += `Выберите действие:`
 
   try {
     await ctx.editMessageText(message, {
@@ -1374,45 +1614,6 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
       throw error // Re-throw other errors
     }
   }
-}
-
-async function showUstazMenu(ctx: BotContext, user: any): Promise<void> {
-  await cleanupAllMessages(ctx)
-
-  // Count pending submissions
-  const groups = await prisma.group.findMany({
-    where: { ustazId: user.id },
-    select: { id: true }
-  })
-
-  const groupIds = groups.map(g => g.id)
-
-  const pendingCount = await prisma.submission.count({
-    where: {
-      status: SubmissionStatus.PENDING,
-      sentToUstazAt: { not: null }, // Only count submissions that were sent to ustaz
-      OR: [
-        { task: { lesson: { groupId: { in: groupIds } } } },
-        { task: { groupId: { in: groupIds } } }
-      ]
-    }
-  })
-
-  const message = `<b>Панель устаза</b>\n\n` +
-    `Групп: ${groups.length}\n` +
-    `Работ на проверку: <b>${pendingCount}</b>\n\n` +
-    `Выберите действие:`
-
-  await sendAndTrack(
-    ctx,
-    message,
-    {
-      reply_markup: getMainMenuKeyboard(user.role),
-      parse_mode: 'HTML'
-    },
-    user.id,
-    'menu'
-  )
 }
 
 async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void> {
@@ -1471,11 +1672,13 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   })
 
   if (submissions.length === 0) {
+    const { InlineKeyboard } = await import('grammy')
+    const closeKeyboard = new InlineKeyboard().text('✖️ Закрыть', 'close_notification')
     await ctx.editMessageText(
       '📝 <b>Работы на проверку</b>\n\n<i>✅ Все работы проверены!</i>',
       {
         parse_mode: 'HTML',
-        reply_markup: getBackKeyboard('ustaz:menu', '◀️ В меню')
+        reply_markup: closeKeyboard
       }
     )
     return
@@ -1483,7 +1686,7 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
 
   // Show first submission with file and buttons together
   const first = submissions[0]
-  const studentName = first.student.firstName || 'Студент'
+  const studentName = first.student.firstName?.trim() || 'Студент'
   const groupName = first.student.studentGroups[0]?.group?.name || first.task.group?.name || ''
 
   const lineRange = first.task.startLine === first.task.endLine
@@ -1500,9 +1703,10 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   }
   const stageName = stageNames[first.task.stage] || first.task.stage
 
-  // Calculate progress
+  // Calculate progress - clamp to 0-100 to avoid negative values
   const progressPercent = Math.round((first.task.currentCount / first.task.requiredCount) * 100)
-  const progressBar = `[${'▓'.repeat(Math.round(progressPercent / 10))}${'░'.repeat(10 - Math.round(progressPercent / 10))}]`
+  const clampedPercent = Math.min(100, Math.max(0, progressPercent))
+  const progressBar = `[${'▓'.repeat(Math.round(clampedPercent / 10))}${'░'.repeat(10 - Math.round(clampedPercent / 10))}]`
 
   let caption = `📝 <b>Работа 1/${submissions.length}</b>\n\n`
   if (groupName) caption += `📚 <b>${groupName}</b>\n`
@@ -1595,164 +1799,6 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
 
 async function showNextSubmission(ctx: BotContext, user: any): Promise<void> {
   await showPendingSubmissions(ctx, user)
-}
-
-/**
- * Show next pending submission after review (sends NEW message, doesn't edit)
- * Called after pass/fail action when old message was already deleted
- */
-async function showNextPendingSubmissionAfterReview(ctx: BotContext, user: any): Promise<void> {
-  // Delete any old menus to keep chat clean
-  await deleteMessagesByType(ctx, 'menu')
-
-  // Get ustaz's groups
-  const groups = await prisma.group.findMany({
-    where: { ustazId: user.id },
-    select: { id: true }
-  })
-
-  const groupIds = groups.map(g => g.id)
-
-  // Get next pending submission (only those that were sent to ustaz)
-  const submissions = await prisma.submission.findMany({
-    where: {
-      status: SubmissionStatus.PENDING,
-      sentToUstazAt: { not: null }, // Only show submissions that were actually sent to ustaz
-      OR: [
-        { task: { lesson: { groupId: { in: groupIds } } } },
-        { task: { groupId: { in: groupIds } } }
-      ]
-    },
-    include: {
-      student: {
-        include: {
-          studentGroups: {
-            where: { isActive: true },
-            include: {
-              group: { select: { name: true } }
-            },
-            take: 1
-          }
-        }
-      },
-      task: {
-        include: { page: true, group: true }
-      }
-    },
-    orderBy: { createdAt: 'asc' },
-    take: 10
-  })
-
-  // No more submissions - show "all done" message
-  if (submissions.length === 0) {
-    await ctx.reply(
-      '📝 <b>Работы на проверку</b>\n\n✅ <b>Все работы проверены!</b>\n\nОтличная работа! 🎉',
-      {
-        parse_mode: 'HTML',
-        reply_markup: getBackKeyboard('ustaz:menu', '◀️ В меню')
-      }
-    )
-    return
-  }
-
-  // Show next submission
-  const first = submissions[0]
-  const studentName = first.student.firstName || 'Студент'
-  const groupName = first.student.studentGroups[0]?.group?.name || first.task.group?.name || ''
-
-  const lineRange = first.task.startLine === first.task.endLine
-    ? `строка ${first.task.startLine}`
-    : `строки ${first.task.startLine}-${first.task.endLine}`
-
-  const stageNames: Record<string, string> = {
-    STAGE_1_1: 'Этап 1.1',
-    STAGE_1_2: 'Этап 1.2',
-    STAGE_2_1: 'Этап 2.1',
-    STAGE_2_2: 'Этап 2.2',
-    STAGE_3: 'Этап 3',
-  }
-  const stageName = stageNames[first.task.stage] || first.task.stage
-
-  const progressPercent = Math.round((first.task.currentCount / first.task.requiredCount) * 100)
-  const progressBar = `[${'▓'.repeat(Math.round(progressPercent / 10))}${'░'.repeat(10 - Math.round(progressPercent / 10))}]`
-
-  let caption = `📝 <b>Работа 1/${submissions.length}</b>\n\n`
-  if (groupName) caption += `📚 <b>${groupName}</b>\n`
-  caption += `👤 ${studentName}\n`
-  caption += `📖 Стр. ${first.task.page.pageNumber}, ${lineRange}\n`
-  caption += `🎯 ${stageName}\n\n`
-  caption += `${progressBar} ${progressPercent}%\n`
-  caption += `📊 <b>${first.task.currentCount}/${first.task.requiredCount}</b>`
-
-  if (first.task.passedCount > 0 || first.task.failedCount > 0) {
-    caption += `\n✅ ${first.task.passedCount}`
-    if (first.task.failedCount > 0) {
-      caption += ` | ❌ ${first.task.failedCount}`
-    }
-  }
-
-  if (first.aiScore !== null && first.aiScore !== undefined) {
-    const scoreEmoji = first.aiScore >= 85 ? '🟢' : first.aiScore >= 50 ? '🟡' : '🔴'
-    caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(first.aiScore)}%</b>`
-  }
-
-  const reviewKeyboard = new InlineKeyboard()
-  if (first.aiScore !== null && first.aiScore >= 85) {
-    reviewKeyboard.text('✅ Принять (AI: ✓)', `review:pass:${first.id}`)
-  } else if (first.aiScore !== null && first.aiScore < 50) {
-    reviewKeyboard.text('❌ Отклонить (AI: ✗)', `review:fail:${first.id}`)
-  } else {
-    reviewKeyboard.text('✅ Сдал', `review:pass:${first.id}`)
-  }
-  reviewKeyboard.text('❌ Не сдал', `review:fail:${first.id}`).row()
-
-  if (submissions.length > 1) {
-    reviewKeyboard.text(`➡️ След. (${submissions.length - 1})`, 'ustaz:next_submission')
-  }
-  reviewKeyboard.text('◀️ Меню', 'ustaz:menu')
-
-  // Send file with caption and buttons (using reply, not edit)
-  try {
-    // Handle MUFRADAT_GAME submissions (no file, just game results)
-    if (first.submissionType === 'MUFRADAT_GAME' || !first.fileId) {
-      let gameCaption = caption
-      if (first.gameScore !== null) {
-        const scoreEmoji = first.gameScore >= 80 ? '🟢' : first.gameScore >= 50 ? '🟡' : '🔴'
-        gameCaption += `\n\n🎮 <b>Муфрадат игра:</b>\n`
-        gameCaption += `${scoreEmoji} <b>${first.gameCorrect}/${first.gameTotal}</b> (${first.gameScore}%)`
-      }
-      await ctx.reply(gameCaption, {
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard
-      })
-    } else if (first.fileType === 'voice') {
-      await ctx.replyWithVoice(first.fileId, {
-        caption,
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard
-      })
-    } else if (first.fileType === 'video_note') {
-      const videoMsg = await ctx.replyWithVideoNote(first.fileId)
-      await ctx.reply(caption, {
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard,
-        reply_parameters: { message_id: videoMsg.message_id }
-      })
-    } else if (first.fileType === 'text') {
-      const textContent = first.fileId.replace('text:', '')
-      const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
-      await ctx.reply(textMessage, {
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard
-      })
-    }
-  } catch (error) {
-    console.error('Failed to send next submission:', error)
-    await ctx.reply(caption + '\n\n⚠️ Не удалось загрузить файл', {
-      parse_mode: 'HTML',
-      reply_markup: reviewKeyboard
-    })
-  }
 }
 
 async function showUstazGroups(ctx: BotContext, user: any): Promise<void> {
@@ -1879,6 +1925,214 @@ async function showUstazStats(ctx: BotContext, user: any): Promise<void> {
   })
 }
 
+// ============== PROGRESS ADVANCEMENT ==============
+
+/**
+ * Advance student to next line/stage/page after completing a task
+ */
+async function advanceStudentProgress(studentId: string, task: any): Promise<void> {
+  try {
+    // Get group (from task.group or task.lesson.group)
+    let group = task.group
+    if (!group && task.lessonId) {
+      const lesson = await prisma.lesson.findUnique({
+        where: { id: task.lessonId },
+        include: { group: true }
+      })
+      group = lesson?.group
+    }
+
+    if (!group) return
+
+    // Get student's group membership
+    const studentGroup = await prisma.studentGroup.findFirst({
+      where: {
+        studentId,
+        groupId: group.id,
+        isActive: true
+      }
+    })
+
+    if (!studentGroup) return
+
+    const totalLines = await getPageTotalLines(studentGroup.currentPage)
+    const linesPerTask = getLinesForLevel(group.level as GroupLevel)
+    const currentStage = studentGroup.currentStage as StageNumber
+    const firstHalfEnd = Math.min(7, totalLines)
+
+    // Calculate next position
+    let newLine = studentGroup.currentLine
+    let newStage = currentStage
+    let newPage = studentGroup.currentPage
+    let progressMessage = ''
+
+    // Определяем тип этапа: ИЗУЧЕНИЕ или СОЕДИНЕНИЕ
+    const isLearningStage = currentStage === StageNumber.STAGE_1_1 || currentStage === StageNumber.STAGE_2_1
+
+    // Для страниц с ≤7 строками: пропускаем этапы 2.1 и 2.2
+    const isSimplePage = totalLines <= 7
+
+    if (isLearningStage) {
+      // ===== ЭТАПЫ ИЗУЧЕНИЯ (1.1, 2.1) =====
+      // Проверяем есть ли ещё строки для изучения в текущем этапе
+      const nextLineInStage = task.endLine + 1
+      const stageEndLine = currentStage === StageNumber.STAGE_1_1 ? firstHalfEnd : totalLines
+
+      if (nextLineInStage <= stageEndLine) {
+        // Ещё есть строки - продвигаемся к следующей группе строк
+        newLine = nextLineInStage
+        const lineEnd = Math.min(newLine + linesPerTask - 1, stageEndLine)
+        const lineRange = newLine === lineEnd ? `строка ${newLine}` : `строки ${newLine}-${lineEnd}`
+        progressMessage = `📈 <b>Продолжайте изучение!</b>\n\nСледующее задание: ${lineRange}`
+      } else {
+        // Все строки этапа изучены - переход к соединению
+        if (currentStage === StageNumber.STAGE_1_1) {
+          if (isSimplePage) {
+            // Для коротких страниц: 1.1 -> сразу STAGE_3 (вся страница)
+            newStage = StageNumber.STAGE_3
+            newLine = 1
+            progressMessage = `🎉 <b>Этап 1.1 завершён!</b>\n\n` +
+              `Вы изучили все строки 1-${totalLines} по отдельности.\n\n` +
+              `📚 <b>Следующий этап 3: Вся страница</b>\n` +
+              `Теперь сдавайте <b>ВСЮ СТРАНИЦУ</b> целиком (строки 1-${totalLines}).`
+          } else {
+            // Обычные страницы: 1.1 -> 1.2
+            newStage = StageNumber.STAGE_1_2
+            newLine = 1
+            progressMessage = `🎉 <b>Этап 1.1 завершён!</b>\n\n` +
+              `Вы изучили все строки 1-${firstHalfEnd} по отдельности.\n\n` +
+              `📚 <b>Следующий этап 1.2: Соединение</b>\n` +
+              `Теперь сдавайте строки 1-${firstHalfEnd} <b>ВСЕ ВМЕСТЕ</b>.`
+          }
+        } else {
+          // STAGE_2_1 -> STAGE_2_2
+          newStage = StageNumber.STAGE_2_2
+          newLine = 8
+          progressMessage = `🎉 <b>Этап 2.1 завершён!</b>\n\n` +
+            `Вы изучили все строки 8-${totalLines} по отдельности.\n\n` +
+            `📚 <b>Следующий этап 2.2: Соединение</b>\n` +
+            `Теперь сдавайте строки 8-${totalLines} <b>ВСЕ ВМЕСТЕ</b>.`
+        }
+      }
+    } else {
+      // ===== ЭТАПЫ СОЕДИНЕНИЯ (1.2, 2.2, 3) =====
+      // После выполнения сразу переходим к следующему этапу
+      switch (currentStage) {
+        case StageNumber.STAGE_1_2:
+          if (isSimplePage) {
+            // Для коротких страниц: 1.2 -> STAGE_3 (вся страница = то же самое)
+            newStage = StageNumber.STAGE_3
+            newLine = 1
+            progressMessage = `🎉 <b>Этап 1.2 завершён!</b>\n\n` +
+              `Вы освоили соединение строк 1-${totalLines}.\n\n` +
+              `📚 <b>Следующий этап 3: Вся страница</b>\n` +
+              `Последний этап! Сдавайте <b>ВСЮ СТРАНИЦУ</b> целиком.`
+          } else {
+            // Обычные страницы: 1.2 -> 2.1
+            newStage = StageNumber.STAGE_2_1
+            newLine = 8
+            progressMessage = `🎉 <b>Этап 1.2 завершён!</b>\n\n` +
+              `Вы освоили соединение строк 1-${firstHalfEnd}.\n\n` +
+              `📚 <b>Следующий этап 2.1: Изучение</b>\n` +
+              `Теперь учите строки 8-${totalLines} ${linesPerTask === 1 ? 'по одной' : `по ${linesPerTask}`}.`
+          }
+          break
+
+        case StageNumber.STAGE_2_2:
+          // 2.2 -> 3: переход к полной странице
+          newStage = StageNumber.STAGE_3
+          newLine = 1
+          progressMessage = `🎉 <b>Этап 2.2 завершён!</b>\n\n` +
+            `Вы освоили соединение строк 8-${totalLines}.\n\n` +
+            `📚 <b>Следующий этап 3: Вся страница</b>\n` +
+            `Теперь сдавайте <b>ВСЮ СТРАНИЦУ</b> целиком (1-${totalLines}).`
+          break
+
+        case StageNumber.STAGE_3:
+          // Страница полностью выучена - переход на следующую!
+          newPage = studentGroup.currentPage + 1
+          newStage = StageNumber.STAGE_1_1
+          newLine = 1
+          const nextPageLines = await getPageTotalLines(newPage)
+          const nextFirstHalfEnd = Math.min(7, nextPageLines)
+          progressMessage = `🏆 <b>СТРАНИЦА ${studentGroup.currentPage} ВЫУЧЕНА!</b>\n\n` +
+            `Поздравляем! Вы полностью освоили страницу.\n\n` +
+            `🚀 <b>Переход на страницу ${newPage}</b>\n` +
+            `Начинаем с этапа 1.1 - изучение строк 1-${nextFirstHalfEnd}.`
+          break
+      }
+    }
+
+    // Update StudentGroup
+    await prisma.studentGroup.update({
+      where: { id: studentGroup.id },
+      data: {
+        currentLine: newLine,
+        currentStage: newStage,
+        currentPage: newPage
+      }
+    })
+
+    // Also update legacy User fields for compatibility
+    await prisma.user.update({
+      where: { id: studentId },
+      data: {
+        currentLine: newLine,
+        currentStage: newStage,
+        currentPage: newPage
+      }
+    })
+
+    // Notify student about progression
+    if (progressMessage) {
+      const student = await prisma.user.findUnique({
+        where: { id: studentId }
+      })
+
+      if (student?.telegramId) {
+        const { bot } = await import('../bot')
+        const { InlineKeyboard } = await import('grammy')
+        const { deleteMessagesByTypeForChat, trackMessageForChat } = await import('../utils/message-cleaner')
+        const { getPrimarySurahByPage } = await import('@/lib/constants/surahs')
+        const { getLinesForLevelName } = await import('../keyboards/main-menu')
+
+        // Delete old submission confirms to keep chat clean (but not menus - we're about to send one)
+        const botToken = process.env.TELEGRAM_BOT_TOKEN
+        if (botToken) {
+          await deleteMessagesByTypeForChat(Number(student.telegramId), 'submission_confirm', botToken)
+        }
+
+        // Get surah name
+        const surah = getPrimarySurahByPage(newPage)
+        const surahStr = surah ? ` ${surah.nameArabic}` : ''
+        const levelStr = getLinesForLevelName(group.level as GroupLevel)
+
+        let message = `✅ <b>Задание выполнено!</b>\n\n`
+        message += `${progressMessage}\n\n`
+        message += `━━━━━━━━━━━━━━━━━━\n`
+        message += `📖 Страница ${newPage}${surahStr}\n`
+        message += `📐 Уровень: ${levelStr}\n`
+        message += `━━━━━━━━━━━━━━━━━━`
+
+        const keyboard = new InlineKeyboard()
+          .text('▶️ Начать следующее задание', 'student:start_stage')
+          .row()
+          .text('◀️ В меню', 'student:menu')
+
+        const sentMsg = await bot.api.sendMessage(Number(student.telegramId), message, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        })
+
+        // Track as menu for cleanup
+        await trackMessageForChat(Number(student.telegramId), sentMsg.message_id, studentId, 'menu')
+      }
+    }
+  } catch (error) {
+    console.error('Failed to advance student progress:', error)
+  }
+}
+
 // ============== REVIEW HANDLERS ==============
 
 async function handleReviewCallback(
@@ -1947,8 +2201,9 @@ async function handleReviewCallback(
       include: { lesson: true, group: true }
     })
 
-    // Check if task is completed - must pass ALL required count with no failures
-    if (task.passedCount >= task.requiredCount && task.failedCount === 0) {
+    // Check if task is completed - all required submissions passed
+    // Note: failedCount tracks history, doesn't block completion if all passed
+    if (task.passedCount >= task.requiredCount) {
       await prisma.task.update({
         where: { id: task.id },
         data: {
@@ -1973,7 +2228,8 @@ async function handleReviewCallback(
         }
       })
 
-      // TODO: Move user to next line/stage/page
+      // Move student to next line/stage/page
+      await advanceStudentProgress(submission.studentId, task)
     }
 
     // Answer callback
@@ -1984,15 +2240,34 @@ async function handleReviewCallback(
     // Delete the review message and the video note (if reply) to keep ustaz chat clean
     try {
       const msg = ctx.callbackQuery?.message
+      const chatId = ctx.chat!.id
+      const messageIdsToDelete: number[] = []
+
       // If this message is a reply to the video note, delete the video note too
       if (msg && 'reply_to_message' in msg && msg.reply_to_message) {
         try {
-          await ctx.api.deleteMessage(ctx.chat!.id, msg.reply_to_message.message_id)
+          await ctx.api.deleteMessage(chatId, msg.reply_to_message.message_id)
+          messageIdsToDelete.push(msg.reply_to_message.message_id)
         } catch (e) {
           // Video note might already be deleted
         }
       }
+
+      // Delete the review message
+      if (msg?.message_id) {
+        messageIdsToDelete.push(msg.message_id)
+      }
       await ctx.deleteMessage()
+
+      // Also clean from tracking database
+      if (messageIdsToDelete.length > 0) {
+        await prisma.botMessage.deleteMany({
+          where: {
+            chatId: BigInt(chatId),
+            messageId: { in: messageIdsToDelete.map(id => BigInt(id)) }
+          }
+        })
+      }
     } catch (e) {
       // Ignore if can't delete
     }
@@ -2002,66 +2277,792 @@ async function handleReviewCallback(
       const student = submission.task.student
       if (student.telegramId) {
         const { bot } = await import('../bot')
-        const resultEmoji = status === SubmissionStatus.PASSED ? '✅' : '❌'
-        const resultText = status === SubmissionStatus.PASSED ? 'принята' : 'отклонена'
+        const { deleteMessagesByTypeForChat } = await import('../utils/message-cleaner')
+        const botToken = process.env.TELEGRAM_BOT_TOKEN
+        const studentChatId = Number(student.telegramId)
+
+        // If rejected, delete old submission confirmation messages to avoid confusion
+        if (status === SubmissionStatus.FAILED && botToken) {
+          await deleteMessagesByTypeForChat(studentChatId, 'submission_confirm', botToken)
+        }
+
         const lineRange = submission.task.startLine === submission.task.endLine
           ? `строка ${submission.task.startLine}`
           : `строки ${submission.task.startLine}-${submission.task.endLine}`
 
-        let message = `${resultEmoji} <b>Запись ${resultText}</b>\n\n`
-        message += `📖 Стр. ${submission.task.page.pageNumber}, ${lineRange}\n`
-        message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>`
+        // Check if task is now complete
+        const taskComplete = task.passedCount >= task.requiredCount
+        const remaining = task.requiredCount - task.passedCount
 
-        if (task.failedCount > 0) {
-          message += `\n❌ На пересдачу: <b>${task.failedCount}</b>`
-        }
+        let message: string
+        const { InlineKeyboard } = await import('grammy')
+        const notificationKeyboard = new InlineKeyboard()
 
-        // Add deadline info
-        const deadline = new Date(submission.task.deadline)
-        const now = new Date()
-        const timeLeft = deadline.getTime() - now.getTime()
-        const hoursLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60)))
-        const minutesLeft = Math.max(0, Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60)))
+        if (taskComplete && status === SubmissionStatus.PASSED) {
+          // Task completed! advanceStudentProgress already sent a notification
+          // Just clean up old submission confirms, but NOT menus (the new notification is tracked as menu)
+          if (botToken) {
+            await deleteMessagesByTypeForChat(studentChatId, 'submission_confirm', botToken)
+          }
+          // Don't send additional notification - advanceStudentProgress already handled it
+          return
+        } else if (status === SubmissionStatus.FAILED) {
+          // Rejected - need resubmission
+          message = `❌ <b>Запись отклонена</b>\n\n`
+          message += `📖 Стр. ${submission.task.page.pageNumber}, ${lineRange}\n`
+          message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
+          message += `❌ На пересдачу: <b>${task.failedCount}</b>\n\n`
+          message += `<i>Отправьте запись повторно.</i>`
 
-        // Format deadline time
-        const deadlineTimeStr = deadline.toLocaleTimeString('ru-RU', {
-          hour: '2-digit',
-          minute: '2-digit',
-          timeZone: 'Asia/Bishkek'
-        })
-        const deadlineDateStr = deadline.toLocaleDateString('ru-RU', {
-          day: 'numeric',
-          month: 'short',
-          timeZone: 'Asia/Bishkek'
-        })
-
-        if (timeLeft > 0) {
-          message += `\n\n⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
-          message += `\n⏳ Осталось: <b>${hoursLeft}ч ${minutesLeft}м</b>`
+          notificationKeyboard.text('✖️ Закрыть', 'close_notification')
         } else {
-          message += `\n\n⚠️ <b>Срок истёк!</b>`
+          // Passed but more needed
+          message = `✅ <b>Запись принята</b>\n\n`
+          message += `📖 Стр. ${submission.task.page.pageNumber}, ${lineRange}\n`
+          message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>`
+
+          if (remaining > 0) {
+            message += `\n⏳ Осталось: <b>${remaining}</b>`
+          }
+
+          notificationKeyboard.text('✖️ Закрыть', 'close_notification')
         }
 
-        const sentMsg = await bot.api.sendMessage(Number(student.telegramId), message, {
-          parse_mode: 'HTML'
+        const sentMsg = await bot.api.sendMessage(studentChatId, message, {
+          parse_mode: 'HTML',
+          reply_markup: notificationKeyboard
         })
 
-        // Track message for auto-delete after 30 seconds
+        // Track message for cleanup (no auto-delete since we have close button)
         const { trackMessageForChat } = await import('../utils/message-cleaner')
         await trackMessageForChat(
           Number(student.telegramId),
           sentMsg.message_id,
           student.id,
-          'review_result',
-          0.5 // Delete after 30 seconds
+          'review_result'
         )
       }
     } catch (e) {
       console.error('Failed to notify student:', e)
     }
 
-    // Show next submission or "all done" message
-    await showNextPendingSubmissionAfterReview(ctx, user)
+    // Show next submission from queue or "all done" message
+    const ustazChatId = ctx.chat!.id
+    const hasMore = await showNextPendingSubmissionToUstaz(ustazChatId, user.id)
+
+    if (!hasMore) {
+      // No more pending submissions - show "all done" message
+      const { InlineKeyboard } = await import('grammy')
+
+      const doneKeyboard = new InlineKeyboard()
+        .text('✖️ Закрыть', 'close_notification')
+
+      await ctx.reply(
+        `✅ <b>Все работы проверены!</b>\n\nНет ожидающих работ на проверку.`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: doneKeyboard
+        }
+      )
+    }
+  }
+}
+
+// ============== MUFRADAT (TRANSLATIONS) HANDLERS ==============
+
+/**
+ * Show mufradat menu - accessible to all students
+ */
+async function showMufradatMenu(ctx: BotContext, user: any): Promise<void> {
+  // First, try to find a TRANSLATION group for this student
+  let studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.TRANSLATION }
+    },
+    include: { group: true }
+  })
+
+  // If no TRANSLATION group, use MEMORIZATION group for context
+  if (!studentGroup) {
+    studentGroup = await prisma.studentGroup.findFirst({
+      where: {
+        studentId: user.id,
+        isActive: true,
+        group: { lessonType: LessonType.MEMORIZATION }
+      },
+      include: { group: true }
+    })
+  }
+
+  // If student has a group, show mufradat game menu
+  if (studentGroup) {
+    await showMufradatGameMenu(ctx, user, studentGroup)
+    return
+  }
+
+  // No groups - show generic mufradat info
+  const message = `📝 <b>Переводы (Муфрадат)</b>\n\n` +
+    `🎮 Игра «Угадай слово» для изучения арабских слов.\n\n` +
+    `❗ <i>Чтобы играть, нужно присоединиться к группе.</i>\n\n` +
+    `Используйте кнопку "📚 Мои группы" для просмотра групп.`
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+    })
+  } catch (error: any) {
+    if (error?.description?.includes("can't be edited") ||
+        error?.description?.includes('message to edit not found')) {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+      })
+    }
+  }
+}
+
+// ============== REVISION HANDLERS ==============
+
+/**
+ * Show list of learned pages for revision
+ */
+async function showRevisionPages(ctx: BotContext, user: any, offset: number = 0): Promise<void> {
+  // Get student's REVISION group to get settings
+  const revisionGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.REVISION }
+    },
+    include: { group: true }
+  })
+
+  // Get student's MEMORIZATION group progress to determine learned pages
+  const memorizationGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.MEMORIZATION }
+    },
+    include: { group: true }
+  })
+
+  // Use group progress or fallback to user's progress
+  const currentPage = memorizationGroup?.currentPage ?? user.currentPage
+  const revisionPagesPerDay = revisionGroup?.group?.revisionPagesPerDay ?? 3
+  const revisionAllPages = revisionGroup?.group?.revisionAllPages ?? false
+  const revisionButtonOnly = revisionGroup?.group?.revisionButtonOnly ?? false
+
+  // Learned pages are all pages before current page
+  // If on page 5, learned pages are 1, 2, 3, 4
+  const learnedPages: number[] = []
+  for (let i = 1; i < currentPage; i++) {
+    learnedPages.push(i)
+  }
+
+  // Calculate required pages for today
+  const requiredPagesCount = revisionAllPages
+    ? learnedPages.length  // Must revise ALL learned pages
+    : revisionPagesPerDay  // Must revise fixed number per day
+
+  if (learnedPages.length === 0) {
+    const message = `🔄 <b>Повторение</b>\n\n` +
+      `📚 У вас пока нет выученных страниц.\n\n` +
+      `<i>Продолжайте изучение, и выученные страницы появятся здесь для повторения.</i>`
+
+    try {
+      await ctx.editMessageText(message, {
+        parse_mode: 'HTML',
+        reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+      })
+    } catch (error: any) {
+      if (error?.description?.includes("can't be edited") ||
+          error?.description?.includes('message to edit not found')) {
+        await ctx.reply(message, {
+          parse_mode: 'HTML',
+          reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+        })
+      }
+    }
+    return
+  }
+
+  // Get today's date
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  let todayPassed = 0
+  let todayPending = 0
+  let todayFailed = 0
+  let todayMarkedPages: number[] = []
+
+  if (revisionButtonOnly && revisionGroup) {
+    // For button-only mode, use DailyRevisionLog
+    const todayLogs = await prisma.dailyRevisionLog.findMany({
+      where: {
+        studentId: user.id,
+        groupId: revisionGroup.groupId,
+        date: today,
+      }
+    })
+    todayMarkedPages = todayLogs.map(l => l.pageNumber)
+    todayPassed = todayLogs.filter(l => l.ustazAckedAt).length
+    todayPending = todayLogs.filter(l => !l.ustazAckedAt).length
+  } else {
+    // For voice mode, use RevisionSubmission
+    const todaySubmissions = await prisma.revisionSubmission.findMany({
+      where: {
+        studentId: user.id,
+        date: today,
+      },
+      select: {
+        pageNumber: true,
+        status: true,
+      }
+    })
+
+    todayPassed = todaySubmissions.filter(s => s.status === SubmissionStatus.PASSED).length
+    todayPending = todaySubmissions.filter(s => s.status === SubmissionStatus.PENDING).length
+    todayFailed = todaySubmissions.filter(s => s.status === SubmissionStatus.FAILED).length
+    todayMarkedPages = todaySubmissions.map(s => s.pageNumber)
+  }
+
+  // Get revision stats for this student (all time)
+  const revisionStats = await prisma.revisionSubmission.groupBy({
+    by: ['pageNumber', 'status'],
+    where: { studentId: user.id },
+    _count: true
+  })
+
+  // Count total revisions per page
+  const pageStats: Record<number, { passed: number; failed: number; pending: number }> = {}
+  for (const stat of revisionStats) {
+    if (!pageStats[stat.pageNumber]) {
+      pageStats[stat.pageNumber] = { passed: 0, failed: 0, pending: 0 }
+    }
+    if (stat.status === SubmissionStatus.PASSED) {
+      pageStats[stat.pageNumber].passed = stat._count
+    } else if (stat.status === SubmissionStatus.FAILED) {
+      pageStats[stat.pageNumber].failed = stat._count
+    } else {
+      pageStats[stat.pageNumber].pending = stat._count
+    }
+  }
+
+  // Calculate total revisions
+  const totalRevisions = revisionStats.reduce((sum, s) => sum + s._count, 0)
+  const passedRevisions = revisionStats
+    .filter(s => s.status === SubmissionStatus.PASSED)
+    .reduce((sum, s) => sum + s._count, 0)
+
+  // Build today's progress message
+  const markedCount = todayPassed + todayPending  // Total marked today
+  const remainingToday = Math.max(0, requiredPagesCount - markedCount)
+  const todayComplete = remainingToday === 0
+
+  let todayProgressText = ''
+  if (revisionAllPages) {
+    // Show all pages mode info
+    if (todayComplete) {
+      todayProgressText = `✅ <b>Все страницы повторены!</b>\n`
+    } else {
+      todayProgressText = `📅 <b>Сегодня:</b> ${markedCount}/${requiredPagesCount} стр.\n`
+      if (todayPending > 0) {
+        todayProgressText += `⏳ ${todayPending} ожидают подтверждения\n`
+      }
+      todayProgressText += `📝 Осталось повторить: <b>${remainingToday}</b> стр.\n`
+    }
+    todayProgressText += `\n<i>Режим: повторить все выученные страницы</i>\n`
+  } else {
+    if (todayComplete) {
+      todayProgressText = `✅ <b>Норма на сегодня выполнена!</b>\n`
+    } else {
+      todayProgressText = `📅 <b>Сегодня:</b> ${todayPassed}/${requiredPagesCount} стр.`
+      if (todayPending > 0) {
+        todayProgressText += ` (⏳ ${todayPending} на проверке)`
+      }
+      todayProgressText += `\n`
+      if (remainingToday > 0) {
+        todayProgressText += `📝 Осталось сдать: <b>${remainingToday}</b> стр.\n`
+      }
+    }
+  }
+
+  const message = `🔄 <b>Повторение</b>\n\n` +
+    todayProgressText +
+    `\n━━━━━━━━━━━━━━━━━━\n` +
+    `📚 Выучено страниц: <b>${learnedPages.length}</b>\n` +
+    `✅ Всего повторений: <b>${totalRevisions}</b> (сдано: ${passedRevisions})\n\n` +
+    `<i>Выберите страницу для повторения:</i>`
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: getRevisionPageSelectKeyboard(learnedPages, offset, 15, todayMarkedPages)
+    })
+  } catch (error: any) {
+    if (error?.description?.includes("can't be edited") ||
+        error?.description?.includes('message to edit not found')) {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: getRevisionPageSelectKeyboard(learnedPages, offset, 15, todayMarkedPages)
+      })
+    }
+  }
+}
+
+/**
+ * Handle revision callbacks (page selection, offset navigation)
+ */
+async function handleRevisionCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  value?: string
+): Promise<void> {
+  // action is actually the second part of "revision:page:5" -> "page"
+  // value is the third part -> "5"
+  if (action === 'page' && value) {
+    await showRevisionSubmitMode(ctx, user, parseInt(value))
+  } else if (action === 'offset' && value) {
+    await showRevisionPages(ctx, user, parseInt(value))
+  } else if (action === 'mark' && value) {
+    await handleRevisionMarkButton(ctx, user, parseInt(value))
+  } else if (action === 'ack' && value) {
+    await handleRevisionAcknowledge(ctx, user, value)
+  }
+}
+
+/**
+ * Handle student clicking "Повторил" button (button-only mode)
+ */
+async function handleRevisionMarkButton(ctx: BotContext, user: any, pageNumber: number): Promise<void> {
+  // Get student's REVISION group
+  const revisionGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.REVISION }
+    },
+    include: {
+      group: {
+        include: {
+          ustaz: true
+        }
+      }
+    }
+  })
+
+  if (!revisionGroup?.group?.revisionButtonOnly) {
+    await ctx.answerCallbackQuery({ text: 'Режим не активен', show_alert: true })
+    return
+  }
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Check if already marked today
+  const existingLog = await prisma.dailyRevisionLog.findUnique({
+    where: {
+      studentId_groupId_date_pageNumber: {
+        studentId: user.id,
+        groupId: revisionGroup.groupId,
+        date: today,
+        pageNumber
+      }
+    }
+  })
+
+  if (existingLog) {
+    await ctx.answerCallbackQuery({ text: 'Уже отмечено сегодня!', show_alert: true })
+    return
+  }
+
+  // Create revision log entry
+  const revisionLog = await prisma.dailyRevisionLog.create({
+    data: {
+      studentId: user.id,
+      groupId: revisionGroup.groupId,
+      date: today,
+      pageNumber,
+    }
+  })
+
+  await ctx.answerCallbackQuery({ text: '✅ Отмечено!' })
+
+  // Update the message to show it's marked
+  const message = `🔄 <b>Повторение страницы ${pageNumber}</b>\n\n` +
+    `✅ <b>Отмечено!</b>\n` +
+    `<i>Устаз получит уведомление.</i>`
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: new InlineKeyboard().text('◀️ Назад', 'revision:offset:0')
+    })
+  } catch (e) {
+    // Ignore edit errors
+  }
+
+  // Notify ustaz
+  await notifyUstazAboutRevisionMark(user, revisionGroup.group, revisionLog)
+}
+
+/**
+ * Notify ustaz about student marking a page as revised
+ */
+async function notifyUstazAboutRevisionMark(
+  student: any,
+  group: any,
+  revisionLog: any
+): Promise<void> {
+  try {
+    if (!group.ustaz?.telegramId) return
+
+    const { bot } = await import('../bot')
+    const ustazChatId = Number(group.ustaz.telegramId)
+    const studentName = student.firstName?.trim() || 'Студент'
+
+    const message = `📖 <b>Повторение отмечено</b>\n\n` +
+      `📚 Группа: <b>${group.name}</b>\n` +
+      `👤 Студент: ${studentName}\n` +
+      `📄 Страница: <b>${revisionLog.pageNumber}</b>\n\n` +
+      `<i>Студент отметил, что повторил эту страницу.</i>`
+
+    const keyboard = new InlineKeyboard()
+      .text('👍 Принял', `revision:ack:${revisionLog.id}`)
+
+    await bot.api.sendMessage(ustazChatId, message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch (error) {
+    console.error('Failed to notify ustaz about revision mark:', error)
+  }
+}
+
+/**
+ * Handle ustaz clicking "Принял" button for revision mark
+ */
+async function handleRevisionAcknowledge(ctx: BotContext, user: any, logId: string): Promise<void> {
+  // Find the revision log
+  const revisionLog = await prisma.dailyRevisionLog.findUnique({
+    where: { id: logId },
+    include: { student: true, group: true }
+  })
+
+  if (!revisionLog) {
+    await ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true })
+    try { await ctx.deleteMessage() } catch (e) {}
+    return
+  }
+
+  // Check if already acknowledged
+  if (revisionLog.ustazAckedAt) {
+    await ctx.answerCallbackQuery({ text: 'Уже подтверждено', show_alert: true })
+    try { await ctx.deleteMessage() } catch (e) {}
+    return
+  }
+
+  // Update the log
+  await prisma.dailyRevisionLog.update({
+    where: { id: logId },
+    data: {
+      ustazAckedAt: new Date(),
+      status: 'ACKNOWLEDGED'
+    }
+  })
+
+  await ctx.answerCallbackQuery({ text: '✅ Подтверждено' })
+
+  // Update message
+  const studentName = revisionLog.student.firstName?.trim() || 'Студент'
+  const message = `📖 <b>Повторение принято</b>\n\n` +
+    `📚 Группа: <b>${revisionLog.group.name}</b>\n` +
+    `👤 Студент: ${studentName}\n` +
+    `📄 Страница: <b>${revisionLog.pageNumber}</b>\n\n` +
+    `✅ <b>Подтверждено</b>`
+
+  try {
+    await ctx.editMessageText(message, { parse_mode: 'HTML' })
+  } catch (e) {
+    // Ignore edit errors
+  }
+
+  // Notify student (optional)
+  try {
+    const { bot } = await import('../bot')
+    const studentChatId = Number(revisionLog.student.telegramId)
+    if (studentChatId) {
+      await bot.api.sendMessage(studentChatId,
+        `✅ Устаз подтвердил повторение страницы ${revisionLog.pageNumber}!`,
+        { parse_mode: 'HTML' }
+      )
+    }
+  } catch (e) {
+    // Ignore
+  }
+}
+
+/**
+ * Show revision submit mode for a specific page
+ */
+async function showRevisionSubmitMode(ctx: BotContext, user: any, pageNumber: number): Promise<void> {
+  // Get student's REVISION group to get settings
+  const revisionGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.REVISION }
+    },
+    include: { group: true }
+  })
+
+  const buttonOnlyMode = revisionGroup?.group?.revisionButtonOnly ?? false
+
+  // Update session to track revision mode
+  ctx.session.step = buttonOnlyMode ? 'idle' : 'awaiting_revision'
+  ctx.session.revisionPageNumber = pageNumber
+
+  // Check if already marked today (for button-only mode)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const todayLog = await prisma.dailyRevisionLog.findUnique({
+    where: {
+      studentId_groupId_date_pageNumber: {
+        studentId: user.id,
+        groupId: revisionGroup?.groupId || '',
+        date: today,
+        pageNumber
+      }
+    }
+  })
+
+  // Get revision history for this page
+  const revisions = await prisma.revisionSubmission.findMany({
+    where: {
+      studentId: user.id,
+      pageNumber
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 5
+  })
+
+  let historyText = ''
+  if (revisions.length > 0) {
+    historyText = '\n\n<b>Последние повторения:</b>\n'
+    for (const rev of revisions) {
+      const date = rev.createdAt.toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'short',
+        timeZone: 'Asia/Bishkek'
+      })
+      const statusEmoji = rev.status === SubmissionStatus.PASSED ? '✅'
+        : rev.status === SubmissionStatus.FAILED ? '❌' : '⏳'
+      historyText += `${statusEmoji} ${date}\n`
+    }
+  }
+
+  // Check if there's a pending revision
+  const pendingRevision = revisions.find(r => r.status === SubmissionStatus.PENDING)
+  let pendingText = ''
+  if (pendingRevision) {
+    pendingText = '\n\n⏳ <b>Ожидает проверки устаза</b>'
+  }
+
+  let message: string
+  let keyboard: InlineKeyboard
+
+  if (buttonOnlyMode) {
+    // Button-only mode - just show button to mark as revised
+    if (todayLog) {
+      const statusEmoji = todayLog.ustazAckedAt ? '✅' : '⏳'
+      const statusText = todayLog.ustazAckedAt
+        ? 'Устаз подтвердил'
+        : 'Ожидает подтверждения устаза'
+      message = `🔄 <b>Повторение страницы ${pageNumber}</b>\n\n` +
+        `${statusEmoji} <b>Сегодня уже отмечено!</b>\n` +
+        `<i>${statusText}</i>\n` +
+        `${historyText}`
+
+      keyboard = new InlineKeyboard()
+        .text('◀️ Назад', 'revision:offset:0')
+    } else {
+      message = `🔄 <b>Повторение страницы ${pageNumber}</b>\n\n` +
+        `📖 Нажмите кнопку после того как повторите эту страницу.\n` +
+        `<i>Устаз получит уведомление о вашем повторении.</i>\n` +
+        `${historyText}`
+
+      keyboard = new InlineKeyboard()
+        .text('✅ Повторил', `revision:mark:${pageNumber}`).row()
+        .text('◀️ Назад', 'revision:offset:0')
+    }
+  } else {
+    // Voice/video mode
+    message = `🔄 <b>Повторение страницы ${pageNumber}</b>\n\n` +
+      `📖 Отправьте голосовое сообщение или видео-кружок с чтением этой страницы.\n` +
+      `${historyText}${pendingText}`
+
+    keyboard = getRevisionSubmitKeyboard(pageNumber)
+  }
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch (error: any) {
+    if (error?.description?.includes("can't be edited") ||
+        error?.description?.includes('message to edit not found')) {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      })
+    }
+  }
+}
+
+/**
+ * Handle ustaz reviewing revision submission
+ */
+async function handleRevisionReviewCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  revisionId: string
+): Promise<void> {
+  if (action !== 'pass' && action !== 'fail') return
+
+  const status = action === 'pass' ? SubmissionStatus.PASSED : SubmissionStatus.FAILED
+
+  // Find revision first
+  const existingRevision = await prisma.revisionSubmission.findUnique({
+    where: { id: revisionId }
+  })
+
+  if (!existingRevision) {
+    await ctx.answerCallbackQuery({ text: 'Запись не найдена', show_alert: true })
+    try {
+      await ctx.deleteMessage()
+    } catch (e) {
+      // Ignore
+    }
+    return
+  }
+
+  // Check if already reviewed
+  if (existingRevision.status !== SubmissionStatus.PENDING) {
+    await ctx.answerCallbackQuery({ text: 'Уже проверено', show_alert: true })
+    try {
+      await ctx.deleteMessage()
+    } catch (e) {
+      // Ignore
+    }
+    return
+  }
+
+  // Update revision
+  const revision = await prisma.revisionSubmission.update({
+    where: { id: revisionId },
+    data: {
+      status,
+      reviewerId: user.id,
+      reviewedAt: new Date()
+    },
+    include: {
+      student: true
+    }
+  })
+
+  // Update daily revision progress
+  if (existingRevision.date) {
+    const updateData = status === SubmissionStatus.PASSED
+      ? { pagesPassed: { increment: 1 } }
+      : { pagesFailed: { increment: 1 } }
+
+    // Try to update existing progress record
+    const progress = await prisma.dailyRevisionProgress.findUnique({
+      where: {
+        studentId_date: {
+          studentId: existingRevision.studentId,
+          date: existingRevision.date,
+        }
+      }
+    })
+
+    if (progress) {
+      const newPassed = status === SubmissionStatus.PASSED
+        ? progress.pagesPassed + 1
+        : progress.pagesPassed
+      const isComplete = newPassed >= progress.pagesRequired
+
+      await prisma.dailyRevisionProgress.update({
+        where: {
+          studentId_date: {
+            studentId: existingRevision.studentId,
+            date: existingRevision.date,
+          }
+        },
+        data: {
+          ...updateData,
+          isComplete,
+        }
+      })
+    }
+  }
+
+  // Answer callback
+  await ctx.answerCallbackQuery({
+    text: status === SubmissionStatus.PASSED ? '✅ Принято' : '❌ Отклонено'
+  })
+
+  // Delete the review message and video note (if reply)
+  try {
+    const msg = ctx.callbackQuery?.message
+    if (msg && 'reply_to_message' in msg && msg.reply_to_message) {
+      try {
+        await ctx.api.deleteMessage(ctx.chat!.id, msg.reply_to_message.message_id)
+      } catch (e) {
+        // Video note might already be deleted
+      }
+    }
+    await ctx.deleteMessage()
+  } catch (e) {
+    // Ignore if can't delete
+  }
+
+  // Notify student
+  try {
+    const student = revision.student
+    if (student.telegramId) {
+      const { bot } = await import('../bot')
+      const resultEmoji = status === SubmissionStatus.PASSED ? '✅' : '❌'
+      const resultText = status === SubmissionStatus.PASSED ? 'принято' : 'отклонено'
+
+      const message = `${resultEmoji} <b>Повторение ${resultText}</b>\n\n` +
+        `📖 Страница: <b>${revision.pageNumber}</b>\n\n` +
+        `<i>Продолжайте повторять выученные страницы!</i>`
+
+      const sentMsg = await bot.api.sendMessage(Number(student.telegramId), message, {
+        parse_mode: 'HTML'
+      })
+
+      // Track message for auto-delete after 30 seconds
+      const { trackMessageForChat } = await import('../utils/message-cleaner')
+      await trackMessageForChat(
+        Number(student.telegramId),
+        sentMsg.message_id,
+        student.id,
+        'review_result',
+        0.5 // Delete after 30 seconds
+      )
+    }
+  } catch (e) {
+    console.error('Failed to notify student about revision:', e)
   }
 }
 
@@ -2307,7 +3308,57 @@ async function handleTaskCallback(
     case 'progress':
       await showCurrentTask(ctx, user)
       break
+    case 'confirm':
+      await confirmAndSendToUstaz(ctx, user, taskId)
+      break
+    case 'advance':
+      await advanceToNextStage(ctx, user, taskId)
+      break
   }
+}
+
+/**
+ * Advance student to the next stage after task completion
+ */
+async function advanceToNextStage(ctx: BotContext, user: any, taskId: string): Promise<void> {
+  // Find the task
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      page: true,
+      group: true,
+    }
+  })
+
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: 'Задание не найдено', show_alert: true })
+    return
+  }
+
+  // Verify task is complete (all submissions passed)
+  if (task.passedCount < task.requiredCount) {
+    await ctx.answerCallbackQuery({ text: 'Задание ещё не завершено', show_alert: true })
+    return
+  }
+
+  // Mark task as completed if not already
+  if (task.status !== TaskStatus.PASSED) {
+    await prisma.task.update({
+      where: { id: taskId },
+      data: {
+        status: TaskStatus.PASSED,
+        completedAt: new Date()
+      }
+    })
+  }
+
+  // Advance student progress to next stage/page
+  await advanceStudentProgress(user.id, task)
+
+  await ctx.answerCallbackQuery({ text: '✅ Переходим к следующему этапу!' })
+
+  // Show the student menu with updated progress
+  await showStudentMenuEdit(ctx, user)
 }
 
 /**
@@ -2408,6 +3459,87 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
   })
 }
 
+/**
+ * Confirm and send pending submission to ustaz
+ * Called when student presses "Подтвердить работу" button on last submission
+ * Now uses processSubmissionAndNotify for AI verification support
+ */
+async function confirmAndSendToUstaz(ctx: BotContext, user: any, taskId: string): Promise<void> {
+  // Find pending submission for this task
+  const pendingSubmission = await prisma.submission.findFirst({
+    where: {
+      taskId,
+      studentId: user.id,
+      status: SubmissionStatus.PENDING,
+    },
+    orderBy: { createdAt: 'desc' }
+  })
+
+  if (!pendingSubmission) {
+    await ctx.answerCallbackQuery({ text: 'Нет записи для отправки', show_alert: true })
+    return
+  }
+
+  // Get task with group/lesson info
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      page: true,
+      lesson: {
+        include: {
+          group: { include: { ustaz: true } }
+        }
+      },
+      group: { include: { ustaz: true } },
+    }
+  })
+
+  if (!task) {
+    await ctx.answerCallbackQuery({ text: 'Задание не найдено', show_alert: true })
+    return
+  }
+
+  if (!pendingSubmission.fileId) {
+    await ctx.answerCallbackQuery({ text: 'Файл не найден', show_alert: true })
+    return
+  }
+
+  // Delete student's original message
+  if (pendingSubmission.studentMsgId && ctx.chat?.id) {
+    try {
+      await ctx.api.deleteMessage(ctx.chat.id, Number(pendingSubmission.studentMsgId))
+    } catch (e) {
+      // Message might already be deleted
+    }
+  }
+
+  try {
+    // Use processSubmissionAndNotify for AI verification and notification
+    // This handles AI processing, auto-pass/fail, and ustaz notification
+    await processSubmissionAndNotify(task, pendingSubmission, user)
+
+    await ctx.answerCallbackQuery({ text: '✅ Работа отправлена устазу!' })
+
+    // Update message to show confirmation
+    const lineRange = task.startLine === task.endLine
+      ? `строка ${task.startLine}`
+      : `строки ${task.startLine}-${task.endLine}`
+
+    const confirmMessage = `✅ <b>Работа отправлена!</b>\n\n` +
+      `📖 Страница ${task.page.pageNumber}, ${lineRange}\n` +
+      `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n\n` +
+      `<i>Ожидайте проверку устаза.</i>`
+
+    await ctx.editMessageText(confirmMessage, {
+      parse_mode: 'HTML',
+      reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+    })
+  } catch (error) {
+    console.error('Failed to send to ustaz:', error)
+    await ctx.answerCallbackQuery({ text: 'Ошибка отправки. Попробуйте снова.', show_alert: true })
+  }
+}
+
 // ============== REGISTRATION CALLBACK HANDLER ==============
 
 async function handleRegistrationCallback(
@@ -2417,33 +3549,81 @@ async function handleRegistrationCallback(
 ): Promise<void> {
   const fullData = ctx.callbackQuery?.data || ''
 
+  // Handle gender selection: reg:gender:MALE, reg:gender:FEMALE
+  if (fullData.startsWith('reg:gender:')) {
+    await handleGenderSelection(ctx)
+    return
+  }
+
   // Handle role selection: reg:role:STUDENT, reg:role:USTAZ, reg:role:PARENT
   if (fullData.startsWith('reg:role:')) {
     await handleRoleSelection(ctx)
     return
   }
 
-  // Handle ustaz selection: reg:ustaz:{ustazId}
-  if (fullData.startsWith('reg:ustaz:')) {
-    await handleUstazSelection(ctx)
+  // Handle group selection: reg:group:{groupId}
+  if (fullData.startsWith('reg:group:')) {
+    await handleGroupSelection(ctx)
     return
   }
 
-  // Handle ustaz confirmation: reg:confirm_ustaz:{ustazId}
-  if (fullData.startsWith('reg:confirm_ustaz:')) {
-    await handleUstazConfirm(ctx)
+  // Handle group confirmation: reg:confirm_group:{groupId}
+  if (fullData.startsWith('reg:confirm_group:')) {
+    await handleGroupConfirm(ctx)
     return
   }
 
-  // Handle back to ustaz list
-  if (fullData === 'reg:back_to_ustaz_list') {
-    await handleBackToUstazList(ctx)
+  // Handle back to group list
+  if (fullData === 'reg:back_to_group_list') {
+    await handleBackToGroupList(ctx)
     return
   }
 
   // Handle back to role selection
   if (fullData === 'reg:back_to_role') {
     await handleBackToRole(ctx)
+    return
+  }
+
+  // Handle progress page offset navigation
+  if (fullData.startsWith('reg:progress_offset:')) {
+    await handleProgressPageOffset(ctx)
+    return
+  }
+
+  // Handle progress page selection
+  if (fullData.startsWith('reg:progress_page:')) {
+    await handleProgressPageSelection(ctx)
+    return
+  }
+
+  // Handle progress line selection
+  if (fullData.startsWith('reg:progress_line:')) {
+    await handleProgressLineSelection(ctx)
+    return
+  }
+
+  // Handle progress stage selection
+  if (fullData.startsWith('reg:progress_stage:')) {
+    await handleProgressStageSelection(ctx)
+    return
+  }
+
+  // Handle back to progress page
+  if (fullData === 'reg:back_to_progress_page') {
+    await handleBackToProgressPage(ctx)
+    return
+  }
+
+  // Handle back to progress line
+  if (fullData.startsWith('reg:back_to_progress_line:')) {
+    await handleBackToProgressLine(ctx)
+    return
+  }
+
+  // Handle back to group confirm from progress selection
+  if (fullData === 'reg:back_to_group_confirm') {
+    await handleBackToGroupConfirmFromProgress(ctx)
     return
   }
 
@@ -2474,6 +3654,12 @@ async function handleMufradatCallback(
     case 'quit':
       await handleMufradatQuit(ctx, user)
       break
+    case 'stats':
+      // id is groupId
+      if (id) {
+        await showMufradatStats(ctx, user, id)
+      }
+      break
     default:
       await ctx.answerCallbackQuery({ text: 'Неизвестное действие игры' })
   }
@@ -2483,7 +3669,7 @@ async function handleMufradatCallback(
 
 async function handleCancel(ctx: BotContext, user: any): Promise<void> {
   ctx.session.step = 'browsing_menu'
-  await showStudentMenu(ctx, user)
+  await showStudentMenuEdit(ctx, user)
 }
 
 // ============== HELPERS ==============
@@ -2499,7 +3685,9 @@ function getTaskStatusEmoji(status: TaskStatus): string {
 }
 
 function buildProgressBar(percent: number): string {
-  const filled = Math.round(percent / 10)
+  // Clamp percent to 0-100 range to avoid negative repeat values
+  const clampedPercent = Math.min(100, Math.max(0, percent))
+  const filled = Math.round(clampedPercent / 10)
   const empty = 10 - filled
   return `[${'▓'.repeat(filled)}${'░'.repeat(empty)}] ${percent}%`
 }

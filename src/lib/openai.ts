@@ -150,6 +150,31 @@ ${wordsText}
 }
 
 /**
+ * Clean translation text - remove punctuation, quotes, extra spaces
+ * Keep only the first word/phrase
+ */
+function cleanTranslation(text: string): string {
+  if (!text) return ''
+
+  // Remove quotes, parentheses, and common punctuation
+  let cleaned = text
+    .replace(/["""''«»()[\]{}]/g, '')
+    .replace(/[.,;:!?…]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  // If there's a dash or slash, take just the first part
+  if (cleaned.includes(' - ')) {
+    cleaned = cleaned.split(' - ')[0].trim()
+  }
+  if (cleaned.includes(' / ')) {
+    cleaned = cleaned.split(' / ')[0].trim()
+  }
+
+  return cleaned
+}
+
+/**
  * Translate a single word (for admin corrections or one-off translations)
  */
 export async function translateSingleWord(
@@ -163,7 +188,7 @@ export async function translateSingleWord(
     messages: [
       {
         role: 'system',
-        content: 'Ты переводчик Корана. Дай краткий перевод слова на русский (1-3 слова).'
+        content: 'Ты переводчик Корана. Дай краткий перевод слова на русский - ТОЛЬКО ОДНО СЛОВО, без знаков препинания, кавычек, скобок. Если нужно несколько слов для смысла - максимум 2 слова.'
       },
       {
         role: 'user',
@@ -171,10 +196,61 @@ export async function translateSingleWord(
       }
     ],
     temperature: 0.3,
-    max_tokens: 50,
+    max_tokens: 30,
   })
 
-  return response.choices[0]?.message?.content?.trim() || ''
+  const raw = response.choices[0]?.message?.content?.trim() || ''
+  return cleanTranslation(raw)
+}
+
+/**
+ * Batch translate multiple words (for mass import)
+ * More efficient than single-word calls
+ */
+export async function translateWordsBatch(
+  words: Array<{ wordKey: string; textArabic: string; translationEn?: string }>
+): Promise<Array<{ wordKey: string; translationRu: string }>> {
+  if (words.length === 0) return []
+
+  const { client, model } = await createOpenAIClient()
+
+  // Build compact prompt
+  const wordsText = words
+    .map((w, i) => `${i + 1}. ${w.textArabic}${w.translationEn ? ` (${w.translationEn})` : ''}`)
+    .join('\n')
+
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: `Ты переводчик Корана. Переводи каждое слово на русский ОДНИМ СЛОВОМ без знаков препинания. Используй коранические термины. Ответь в формате JSON: {"translations": [{"i": 1, "ru": "слово"}, ...]}`
+      },
+      {
+        role: 'user',
+        content: `Переведи слова:\n${wordsText}`
+      }
+    ],
+    temperature: 0.3,
+    max_tokens: words.length * 20,
+    response_format: { type: 'json_object' }
+  })
+
+  const content = response.choices[0]?.message?.content
+  if (!content) return []
+
+  try {
+    const parsed = JSON.parse(content)
+    const translations = parsed.translations || []
+
+    return translations.map((t: { i: number; ru: string }) => ({
+      wordKey: words[t.i - 1]?.wordKey || '',
+      translationRu: cleanTranslation(t.ru)
+    })).filter((t: { wordKey: string; translationRu: string }) => t.wordKey)
+  } catch (e) {
+    console.error('Failed to parse GPT batch response:', e)
+    return []
+  }
 }
 
 /**
@@ -187,4 +263,134 @@ export async function isOpenAIConfigured(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+interface WordWithContext {
+  wordKey: string // "surah:ayah:position"
+  textArabic: string
+  translationEn?: string
+  ayahKey: string // "surah:ayah" for grouping
+}
+
+interface AyahTranslation {
+  ayahKey: string
+  translationRu: string // Kuliev translation
+}
+
+/**
+ * Translate words with full context awareness
+ * Uses Kuliev's verse translation to understand context
+ * and produce accurate word-level translations
+ */
+export async function translateWordsWithContext(
+  words: WordWithContext[],
+  ayahTranslations: AyahTranslation[]
+): Promise<Array<{ wordKey: string; translationRu: string }>> {
+  if (words.length === 0) return []
+
+  const { client, model } = await createOpenAIClient()
+
+  // Group words by ayah
+  const wordsByAyah = words.reduce((acc, word) => {
+    if (!acc[word.ayahKey]) acc[word.ayahKey] = []
+    acc[word.ayahKey].push(word)
+    return acc
+  }, {} as Record<string, WordWithContext[]>)
+
+  // Create translation map
+  const translationMap = ayahTranslations.reduce((acc, t) => {
+    acc[t.ayahKey] = t.translationRu
+    return acc
+  }, {} as Record<string, string>)
+
+  // Build comprehensive prompt with context
+  let promptContent = ''
+  for (const [ayahKey, ayahWords] of Object.entries(wordsByAyah)) {
+    const kulievTranslation = translationMap[ayahKey] || ''
+
+    promptContent += `\n=== Аят ${ayahKey} ===\n`
+    if (kulievTranslation) {
+      promptContent += `Перевод аята (Кулиев): "${kulievTranslation}"\n`
+    }
+    promptContent += `Слова:\n`
+
+    for (const word of ayahWords) {
+      promptContent += `- ${word.wordKey}: "${word.textArabic}"${word.translationEn ? ` (англ: ${word.translationEn})` : ''}\n`
+    }
+  }
+
+  const systemPrompt = `Ты профессиональный переводчик Корана. Твоя задача - перевести арабские слова на русский язык С УЧЁТОМ КОНТЕКСТА.
+
+ВАЖНЫЕ ПРАВИЛА:
+1. Для каждого слова дан перевод аята по Кулиеву - используй его как контекст для точного перевода слов
+2. Переводи каждое слово 1-2 словами максимум (кратко!)
+3. Используй тот же смысл что в переводе Кулиева где возможно
+4. Используй традиционные исламские термины (Аллах, намаз, закят и т.д.)
+5. Не добавляй знаки препинания, кавычки или скобки
+
+ФОРМАТ ОТВЕТА - JSON:
+{
+  "translations": [
+    {"key": "1:1:1", "ru": "перевод"},
+    {"key": "1:1:2", "ru": "перевод"}
+  ]
+}`
+
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Переведи слова с учётом контекста:\n${promptContent}` }
+      ],
+      temperature: 0.2, // Lower for more consistent context-aware translations
+      max_tokens: words.length * 25,
+      response_format: { type: 'json_object' }
+    })
+
+    const content = response.choices[0]?.message?.content
+    if (!content) return []
+
+    const parsed = JSON.parse(content)
+    const translations = parsed.translations || []
+
+    return translations.map((t: { key: string; ru: string }) => ({
+      wordKey: t.key,
+      translationRu: cleanTranslation(t.ru)
+    })).filter((t: { wordKey: string; translationRu: string }) => t.wordKey && t.translationRu)
+  } catch (error) {
+    console.error('Context-aware translation error:', error)
+    return []
+  }
+}
+
+/**
+ * Batch translate with context for large imports
+ * Processes in smaller chunks to avoid token limits
+ */
+export async function translateBatchWithContext(
+  words: WordWithContext[],
+  ayahTranslations: AyahTranslation[],
+  chunkSize: number = 30
+): Promise<Array<{ wordKey: string; translationRu: string }>> {
+  const results: Array<{ wordKey: string; translationRu: string }> = []
+
+  // Process in chunks
+  for (let i = 0; i < words.length; i += chunkSize) {
+    const chunk = words.slice(i, i + chunkSize)
+
+    // Get unique ayah keys for this chunk
+    const ayahKeys = [...new Set(chunk.map(w => w.ayahKey))]
+    const relevantTranslations = ayahTranslations.filter(t => ayahKeys.includes(t.ayahKey))
+
+    const chunkResults = await translateWordsWithContext(chunk, relevantTranslations)
+    results.push(...chunkResults)
+
+    // Small delay between chunks to avoid rate limits
+    if (i + chunkSize < words.length) {
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+
+  return results
 }

@@ -29,28 +29,23 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, BookText, RefreshCw, Languages, MessageCircle, CheckCircle2, Phone, Cloud, Sparkles, Volume2, Check, Palette, Bot, Zap, Hand, PlayCircle } from 'lucide-react'
+import { ArrowLeft, Save, Loader2, Users, BookOpen, Trash2, UserPlus, Search, Settings, GraduationCap, Edit3, Mic, Video, MessageSquare, Clock, ChevronDown, ChevronUp, MessageCircle, CheckCircle2, Phone, Cloud, Sparkles, Volume2, Check, Palette, Bot, Zap, Hand, PlayCircle, Languages, BookText, RefreshCw, Pencil } from 'lucide-react'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Slider } from '@/components/ui/slider'
 import { StageNumber, GroupLevel, LessonType, MushafType, AIProvider, VerificationMode } from '@prisma/client'
+import { StudentProgressEditDialog } from '@/components/student-progress-edit-dialog'
+import { StudentStatsDetailDialog } from '@/components/student-stats-detail-dialog'
 
 const GROUP_LEVELS = [
-  { value: 'LEVEL_1', label: 'Уровень 1', description: '1 строка за 12ч', num: '1' },
-  { value: 'LEVEL_2', label: 'Уровень 2', description: '3 строки за 12ч', num: '2' },
-  { value: 'LEVEL_3', label: 'Уровень 3', description: '7 строк за 12ч', num: '3' },
+  { value: 'LEVEL_1', label: 'Уровень 1', description: '1 строка за раз (начальный)', num: '1', linesPerBatch: 1 },
+  { value: 'LEVEL_2', label: 'Уровень 2', description: '3 строки за раз (средний)', num: '2', linesPerBatch: 3 },
+  { value: 'LEVEL_3', label: 'Уровень 3', description: '7 строк за раз (продвинутый)', num: '3', linesPerBatch: 7 },
 ]
 
-const LESSON_TYPES = [
-  { value: 'MEMORIZATION', label: 'Заучивание', prefix: 'ЗА' },
-  { value: 'REVISION', label: 'Повторение', prefix: 'ПО' },
-  { value: 'TRANSLATION', label: 'Перевод', prefix: 'ПЕ' },
+const GROUP_GENDERS = [
+  { value: 'MALE', label: 'Мужская', prefix: 'М', icon: '👨' },
+  { value: 'FEMALE', label: 'Женская', prefix: 'Ж', icon: '🧕' },
 ]
-
-const LESSON_TYPE_ICONS: Record<string, React.ReactNode> = {
-  MEMORIZATION: <BookText className="h-5 w-5" />,
-  REVISION: <RefreshCw className="h-5 w-5" />,
-  TRANSLATION: <Languages className="h-5 w-5" />,
-}
 
 const LEVEL_COLORS: Record<string, string> = {
   LEVEL_1: 'bg-emerald-100 text-emerald-800',
@@ -81,15 +76,38 @@ const POPULAR_RECITERS = [
 
 const AI_PROVIDERS = [
   { value: 'NONE', label: 'Без AI', description: 'Только ручная проверка устазом', icon: Hand },
-  { value: 'QURANI_AI', label: 'Qurani.ai', description: 'QRC API для проверки чтения', icon: Sparkles },
-  { value: 'WHISPER', label: 'OpenAI Whisper', description: 'Распознавание речи + сравнение', icon: Mic },
-  { value: 'HUGGINGFACE', label: 'HuggingFace', description: 'Quran ASR модель (скоро)', icon: Bot },
+  { value: 'QURANI_AI', label: 'Qurani.ai', description: 'Специализированный API для проверки чтения Корана с таджвидом', icon: Sparkles },
+  { value: 'WHISPER', label: 'OpenAI Whisper', description: 'Распознавание речи + сравнение с текстом', icon: Mic },
+]
+
+// AI providers for QRC pre-check (excludes NONE)
+const QRC_PRECHECK_PROVIDERS = [
+  { value: 'QURANI_AI', label: 'Qurani.ai QRC', description: 'API проверки чтения Корана', icon: Sparkles },
+  { value: 'WHISPER', label: 'OpenAI Whisper', description: 'Whisper + сравнение текста', icon: Mic },
 ]
 
 const VERIFICATION_MODES = [
-  { value: 'MANUAL', label: 'Ручная', description: 'Устаз проверяет все работы', icon: Hand },
-  { value: 'SEMI_AUTO', label: 'Полуавто', description: 'AI помогает, устаз подтверждает', icon: Zap },
-  { value: 'FULL_AUTO', label: 'Автоматическая', description: 'AI проверяет по порогам', icon: PlayCircle },
+  {
+    value: 'MANUAL',
+    label: 'Ручная',
+    description: 'Все работы проверяет устаз',
+    details: 'AI оценивает, но решение за устазом',
+    icon: Hand
+  },
+  {
+    value: 'SEMI_AUTO',
+    label: 'Полуавто',
+    description: 'AI принимает хорошие работы',
+    details: 'Работы выше порога принимаются автоматически, остальные проверяет устаз',
+    icon: Zap
+  },
+  {
+    value: 'FULL_AUTO',
+    label: 'Автомат',
+    description: 'AI принимает и отклоняет',
+    details: 'Работы выше/ниже порогов обрабатываются автоматически, средние - к устазу',
+    icon: PlayCircle
+  },
 ]
 
 // Parse group name like "ЗА-25-1-3" into components
@@ -98,10 +116,9 @@ function parseGroupName(name: string) {
   if (parts.length !== 4) return null
 
   const [prefix, year, levelNum, groupNum] = parts
-  const lessonType = LESSON_TYPES.find(t => t.prefix === prefix)?.value || 'MEMORIZATION'
   const level = GROUP_LEVELS.find(l => l.num === levelNum)?.value || 'LEVEL_1'
 
-  return { prefix, year, levelNum, groupNum, lessonType, level }
+  return { prefix, year, levelNum, groupNum, lessonType: 'MEMORIZATION', level }
 }
 
 interface GroupData {
@@ -109,14 +126,15 @@ interface GroupData {
   name: string
   description: string | null
   level: GroupLevel
+  gender: 'MALE' | 'FEMALE'
   lessonType: LessonType
   isActive: boolean
   ustazId: string
   // Lesson settings
   repetitionCount: number
-  stage1Days: number
-  stage2Days: number
-  stage3Days: number
+  stage1Hours: number
+  stage2Hours: number
+  stage3Hours: number
   allowVoice: boolean
   allowVideoNote: boolean
   allowText: boolean
@@ -136,6 +154,12 @@ interface GroupData {
   verificationMode: VerificationMode
   aiAcceptThreshold: number
   aiRejectThreshold: number
+  // QRC Pre-check settings
+  qrcPreCheckEnabled: boolean
+  qrcPreCheckProvider: AIProvider
+  qrcHafzLevel: number
+  qrcTajweedLevel: number
+  qrcPassThreshold: number
   // Relations
   ustaz: {
     id: string
@@ -156,6 +180,19 @@ interface GroupData {
       passedCount: number
       requiredCount: number
     }[]
+    // Progress stats
+    completedTasksCount?: number
+    revisionsPassed?: number
+    revisionsPending?: number
+    revisionsTotal?: number
+    // Mufradat stats
+    mufradatWeekPassed?: number
+    mufradatWeekTotal?: number
+    mufradatToday?: {
+      wordsCorrect: number
+      wordsTotal: number
+      passed: boolean
+    } | null
   }[]
 }
 
@@ -190,6 +227,15 @@ export default function EditGroupPage() {
   const [loadingStudents, setLoadingStudents] = useState(false)
   const [addingStudent, setAddingStudent] = useState<string | null>(null)
 
+  // Progress edit dialog
+  const [progressDialogOpen, setProgressDialogOpen] = useState(false)
+  const [editingStudent, setEditingStudent] = useState<GroupData['students'][0] | null>(null)
+
+  // Stats detail dialog
+  const [statsDialogOpen, setStatsDialogOpen] = useState(false)
+  const [statsDialogType, setStatsDialogType] = useState<'memorization' | 'revision' | 'mufradat'>('memorization')
+  const [statsStudent, setStatsStudent] = useState<{ id: string; name: string } | null>(null)
+
   // Collapsible settings
   const [groupSettingsOpen, setGroupSettingsOpen] = useState(false)
   const [lessonSettingsOpen, setLessonSettingsOpen] = useState(false)
@@ -199,13 +245,23 @@ export default function EditGroupPage() {
     description: '',
     ustazId: '',
     level: 'LEVEL_1' as GroupLevel,
+    gender: 'MALE' as 'MALE' | 'FEMALE',
     isActive: true,
     lessonType: 'MEMORIZATION',
-    // Lesson settings
+    // MEMORIZATION settings (Заучивание)
     repetitionCount: 80,
-    stage1Days: 1,
-    stage2Days: 2,
-    stage3Days: 2,
+    stage1Hours: 24,  // 24 часа = 1 день
+    stage2Hours: 48,  // 48 часов = 2 дня
+    stage3Hours: 48,
+    // REVISION settings (Повторение)
+    revisionPagesPerDay: 3,
+    revisionAllPages: false,
+    revisionButtonOnly: false,
+    // TRANSLATION settings (Переводы)
+    wordsPerDay: 10,
+    wordsPassThreshold: 8,
+    mufradatTimeLimit: 180,
+    // Content settings
     allowVoice: true,
     allowVideoNote: true,
     allowText: false,
@@ -225,6 +281,12 @@ export default function EditGroupPage() {
     verificationMode: 'MANUAL' as VerificationMode,
     aiAcceptThreshold: 85,
     aiRejectThreshold: 50,
+    // QRC Pre-check settings
+    qrcPreCheckEnabled: false,
+    qrcPreCheckProvider: 'QURANI_AI' as AIProvider,
+    qrcHafzLevel: 1,
+    qrcTajweedLevel: 1,
+    qrcPassThreshold: 70,
   })
   const [savingSection, setSavingSection] = useState<string | null>(null)
   const [savedSection, setSavedSection] = useState<string | null>(null)
@@ -249,13 +311,23 @@ export default function EditGroupPage() {
           description: groupData.description || '',
           ustazId: groupData.ustazId,
           level: groupData.level || 'LEVEL_1',
+          gender: groupData.gender || 'MALE',
           isActive: groupData.isActive,
           lessonType: groupData.lessonType || 'MEMORIZATION',
-          // Lesson settings
+          // MEMORIZATION settings
           repetitionCount: groupData.repetitionCount || 80,
-          stage1Days: groupData.stage1Days || 1,
-          stage2Days: groupData.stage2Days || 2,
-          stage3Days: groupData.stage3Days || 2,
+          stage1Hours: groupData.stage1Hours || 24,
+          stage2Hours: groupData.stage2Hours || 48,
+          stage3Hours: groupData.stage3Hours || 48,
+          // REVISION settings
+          revisionPagesPerDay: groupData.revisionPagesPerDay || 3,
+          revisionAllPages: groupData.revisionAllPages ?? false,
+          revisionButtonOnly: groupData.revisionButtonOnly ?? false,
+          // TRANSLATION settings
+          wordsPerDay: groupData.wordsPerDay || 10,
+          wordsPassThreshold: groupData.wordsPassThreshold || 8,
+          mufradatTimeLimit: groupData.mufradatTimeLimit || 180,
+          // Content settings
           allowVoice: groupData.allowVoice ?? true,
           allowVideoNote: groupData.allowVideoNote ?? true,
           allowText: groupData.allowText ?? false,
@@ -275,6 +347,12 @@ export default function EditGroupPage() {
           verificationMode: groupData.verificationMode || 'MANUAL',
           aiAcceptThreshold: groupData.aiAcceptThreshold ?? 85,
           aiRejectThreshold: groupData.aiRejectThreshold ?? 50,
+          // QRC Pre-check settings
+          qrcPreCheckEnabled: groupData.qrcPreCheckEnabled ?? false,
+          qrcPreCheckProvider: groupData.qrcPreCheckProvider || 'QURANI_AI',
+          qrcHafzLevel: groupData.qrcHafzLevel ?? 1,
+          qrcTajweedLevel: groupData.qrcTajweedLevel ?? 1,
+          qrcPassThreshold: groupData.qrcPassThreshold ?? 70,
         })
       } catch (err) {
         setError('Ошибка загрузки данных')
@@ -299,13 +377,23 @@ export default function EditGroupPage() {
           description: formData.description,
           ustazId: formData.ustazId,
           level: formData.level,
+          gender: formData.gender,
           isActive: formData.isActive,
           lessonType: formData.lessonType,
-          // Lesson settings
+          // MEMORIZATION settings
           repetitionCount: formData.repetitionCount,
-          stage1Days: formData.stage1Days,
-          stage2Days: formData.stage2Days,
-          stage3Days: formData.stage3Days,
+          stage1Hours: formData.stage1Hours,
+          stage2Hours: formData.stage2Hours,
+          stage3Hours: formData.stage3Hours,
+          // REVISION settings
+          revisionPagesPerDay: formData.revisionPagesPerDay,
+          revisionAllPages: formData.revisionAllPages,
+          revisionButtonOnly: formData.revisionButtonOnly,
+          // TRANSLATION settings
+          wordsPerDay: formData.wordsPerDay,
+          wordsPassThreshold: formData.wordsPassThreshold,
+          mufradatTimeLimit: formData.mufradatTimeLimit,
+          // Content settings
           allowVoice: formData.allowVoice,
           allowVideoNote: formData.allowVideoNote,
           allowText: formData.allowText,
@@ -325,15 +413,34 @@ export default function EditGroupPage() {
           verificationMode: formData.verificationMode,
           aiAcceptThreshold: formData.aiAcceptThreshold,
           aiRejectThreshold: formData.aiRejectThreshold,
+          // QRC Pre-check settings
+          qrcPreCheckEnabled: formData.qrcPreCheckEnabled,
+          qrcPreCheckProvider: formData.qrcPreCheckProvider,
+          qrcHafzLevel: formData.qrcHafzLevel,
+          qrcTajweedLevel: formData.qrcTajweedLevel,
+          qrcPassThreshold: formData.qrcPassThreshold,
         }),
       })
 
+      const data = await res.json()
+
       if (!res.ok) {
-        const data = await res.json()
         throw new Error(data.error || 'Failed to update')
       }
 
-      router.push('/admin/groups')
+      // Update group with new data (including new name, gender, level if changed)
+      if (group) {
+        setGroup({
+          ...group,
+          name: data.name || group.name,
+          gender: formData.gender,
+          level: formData.level
+        })
+      }
+
+      // Show success and stay on page
+      setSavedSection('group')
+      setTimeout(() => setSavedSection(null), 3000)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ошибка сохранения')
     } finally {
@@ -355,13 +462,23 @@ export default function EditGroupPage() {
           description: formData.description,
           ustazId: formData.ustazId,
           level: formData.level,
+          gender: formData.gender,
           isActive: formData.isActive,
           lessonType: formData.lessonType,
-          // Lesson settings
+          // MEMORIZATION settings
           repetitionCount: formData.repetitionCount,
-          stage1Days: formData.stage1Days,
-          stage2Days: formData.stage2Days,
-          stage3Days: formData.stage3Days,
+          stage1Hours: formData.stage1Hours,
+          stage2Hours: formData.stage2Hours,
+          stage3Hours: formData.stage3Hours,
+          // REVISION settings
+          revisionPagesPerDay: formData.revisionPagesPerDay,
+          revisionAllPages: formData.revisionAllPages,
+          revisionButtonOnly: formData.revisionButtonOnly,
+          // TRANSLATION settings
+          wordsPerDay: formData.wordsPerDay,
+          wordsPassThreshold: formData.wordsPassThreshold,
+          mufradatTimeLimit: formData.mufradatTimeLimit,
+          // Content settings
           allowVoice: formData.allowVoice,
           allowVideoNote: formData.allowVideoNote,
           allowText: formData.allowText,
@@ -381,12 +498,24 @@ export default function EditGroupPage() {
           verificationMode: formData.verificationMode,
           aiAcceptThreshold: formData.aiAcceptThreshold,
           aiRejectThreshold: formData.aiRejectThreshold,
+          // QRC Pre-check settings
+          qrcPreCheckEnabled: formData.qrcPreCheckEnabled,
+          qrcPreCheckProvider: formData.qrcPreCheckProvider,
+          qrcHafzLevel: formData.qrcHafzLevel,
+          qrcTajweedLevel: formData.qrcTajweedLevel,
+          qrcPassThreshold: formData.qrcPassThreshold,
         }),
       })
 
+      const data = await res.json()
+
       if (!res.ok) {
-        const data = await res.json()
         throw new Error(data.error || 'Failed to update')
+      }
+
+      // Update group with new data (including new name if changed)
+      if (data.name && group) {
+        setGroup({ ...group, name: data.name })
       }
 
       setSavedSection(section)
@@ -473,7 +602,39 @@ export default function EditGroupPage() {
     }
   }
 
+  const getStageName = (stage: StageNumber | string) => {
+    const names: Record<string, string> = {
+      'STAGE_1_1': 'Этап 1.1',
+      'STAGE_1_2': 'Этап 1.2',
+      'STAGE_2_1': 'Этап 2.1',
+      'STAGE_2_2': 'Этап 2.2',
+      'STAGE_3': 'Этап 3',
+    }
+    return names[stage] || stage
+  }
+
   const getLevelLabel = (level: GroupLevel) => GROUP_LEVELS.find(l => l.value === level)?.label || level
+
+  const openProgressDialog = (student: GroupData['students'][0]) => {
+    setEditingStudent(student)
+    setProgressDialogOpen(true)
+  }
+
+  const openStatsDialog = (student: GroupData['students'][0], type: 'memorization' | 'revision' | 'mufradat') => {
+    const name = `${student.firstName || ''} ${student.lastName || ''}`.trim() || 'Студент'
+    setStatsStudent({ id: student.id, name })
+    setStatsDialogType(type)
+    setStatsDialogOpen(true)
+  }
+
+  const handleProgressUpdate = async () => {
+    // Refresh group data
+    const res = await fetch(`/api/groups/${params.id}`)
+    if (res.ok) {
+      const data = await res.json()
+      setGroup(data)
+    }
+  }
 
   if (loading) {
     return (
@@ -494,8 +655,6 @@ export default function EditGroupPage() {
     )
   }
 
-  const currentLessonType = LESSON_TYPES.find(t => t.value === formData.lessonType)
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -511,7 +670,7 @@ export default function EditGroupPage() {
             </Badge>
           </div>
           <p className="text-muted-foreground">
-            {LESSON_TYPES.find(t => t.value === formData.lessonType)?.label || 'Без урока'} • {getLevelLabel(formData.level)} • {group.students.length} студентов
+            Заучивание • {getLevelLabel(formData.level)} • {group.students.length} студентов
           </p>
         </div>
       </div>
@@ -559,12 +718,12 @@ export default function EditGroupPage() {
           <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
             <CardDescription>Тип урока</CardDescription>
             <div className="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
-              {LESSON_TYPE_ICONS[formData.lessonType]}
+              <BookOpen className="h-5 w-5" />
             </div>
           </CardHeader>
           <CardContent>
             <CardTitle className="text-lg">
-              {currentLessonType?.label || '—'}
+              Заучивание
             </CardTitle>
           </CardContent>
         </Card>
@@ -592,50 +751,81 @@ export default function EditGroupPage() {
             <CollapsibleContent>
               <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Group Name Section */}
+              {/* Gender Selection */}
+              <div className="space-y-2">
+                <Label>Пол группы</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  {GROUP_GENDERS.map((gender) => (
+                    <button
+                      key={gender.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, gender: gender.value as 'MALE' | 'FEMALE' })}
+                      className={`p-3 rounded-lg border-2 text-center transition-all ${
+                        formData.gender === gender.value
+                          ? 'border-primary bg-primary/5'
+                          : 'border-muted hover:border-muted-foreground/30'
+                      }`}
+                    >
+                      <span className="text-2xl block mb-1">{gender.icon}</span>
+                      <span className="font-semibold text-sm">{gender.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Group Name Section with Preview */}
               <div className="p-4 bg-muted rounded-lg space-y-3">
                 <div className="flex items-center gap-2">
                   <Edit3 className="h-4 w-4 text-muted-foreground" />
                   <Label className="font-medium">Название группы</Label>
                 </div>
-                <p className="text-2xl font-bold">{group.name}</p>
-                <p className="text-xs text-muted-foreground">Год и номер генерируются автоматически при создании</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Тип урока</Label>
-                    <Select
-                      value={formData.lessonType}
-                      onValueChange={(value) => setFormData({ ...formData, lessonType: value })}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {LESSON_TYPES.map((type) => (
-                          <SelectItem key={type.value} value={type.value}>
-                            {type.prefix} - {type.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Уровень</Label>
-                    <Select
-                      value={formData.level}
-                      onValueChange={(value) => setFormData({ ...formData, level: value as GroupLevel })}
-                    >
-                      <SelectTrigger className="h-9">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {GROUP_LEVELS.map((level) => (
-                          <SelectItem key={level.value} value={level.value}>
-                            {level.num} - {level.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                {(() => {
+                  // Generate preview name based on current formData
+                  const genderPrefix = formData.gender === 'MALE' ? 'М' : 'Ж'
+                  const year = new Date().getFullYear().toString().slice(-2)
+                  const levelNum = formData.level.replace('LEVEL_', '')
+                  const previewBase = `${genderPrefix}-${year}-${levelNum}`
+                  // Check if gender or level changed
+                  const hasChanges = formData.gender !== group.gender || formData.level !== group.level
+
+                  return hasChanges ? (
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground line-through">{group.name}</p>
+                      <p className="text-2xl font-bold text-primary">{previewBase}-<span className="text-muted-foreground">X</span></p>
+                      <p className="text-xs text-amber-600">Номер будет присвоен автоматически при сохранении</p>
+                    </div>
+                  ) : (
+                    <p className="text-2xl font-bold">{group.name}</p>
+                  )
+                })()}
+                <p className="text-xs text-muted-foreground">Формат: [Пол]-[Год]-[Уровень]-[Номер]</p>
+
+                {/* Level Selection */}
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">Уровень сложности</Label>
+                  <div className="grid gap-2">
+                    {GROUP_LEVELS.map((level) => (
+                      <button
+                        key={level.value}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, level: level.value as GroupLevel })}
+                        className={`p-3 rounded-lg border-2 text-left transition-all ${
+                          formData.level === level.value
+                            ? `${LEVEL_COLORS[level.value]} border-current`
+                            : 'border-muted hover:border-muted-foreground/30'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className={`font-bold text-xl w-8 h-8 flex items-center justify-center rounded-full ${LEVEL_COLORS[level.value]}`}>
+                            {level.linesPerBatch}
+                          </span>
+                          <div>
+                            <p className="font-semibold text-sm">{level.label}</p>
+                            <p className="text-xs text-muted-foreground">{level.description}</p>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -684,11 +874,23 @@ export default function EditGroupPage() {
 
               {error && <p className="text-sm text-destructive">{error}</p>}
 
+              {savedSection === 'group' && (
+                <div className="flex items-center gap-2 p-3 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                  <Check className="h-5 w-5" />
+                  <span className="font-medium">Настройки группы сохранены!</span>
+                </div>
+              )}
+
               <Button type="submit" className="w-full" disabled={saving}>
                 {saving ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Сохранение...
+                  </>
+                ) : savedSection === 'group' ? (
+                  <>
+                    <Check className="mr-2 h-4 w-4" />
+                    Сохранено
                   </>
                 ) : (
                   <>
@@ -722,57 +924,169 @@ export default function EditGroupPage() {
               </CardHeader>
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <CardContent className="space-y-4">
-            {/* Repetition Count */}
-            <div className="space-y-2">
-              <Label htmlFor="repetitionCount">Количество повторений</Label>
-              <Input
-                id="repetitionCount"
-                type="number"
-                min={1}
-                max={200}
-                value={formData.repetitionCount}
-                onChange={(e) => setFormData({ ...formData, repetitionCount: parseInt(e.target.value) || 80 })}
-              />
-              <p className="text-xs text-muted-foreground">Сколько раз студент должен сдать строку</p>
+              <CardContent className="space-y-6">
+
+            {/* === MEMORIZATION (Заучивание) === */}
+            <div className="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border border-emerald-200 dark:border-emerald-800 space-y-4">
+              <div className="flex items-center gap-2">
+                <BookOpen className="h-5 w-5 text-emerald-600" />
+                <h4 className="font-semibold text-emerald-800 dark:text-emerald-300">Заучивание</h4>
+              </div>
+
+              {/* Repetition Count */}
+              <div className="space-y-2">
+                <Label htmlFor="repetitionCount">Количество повторений</Label>
+                <Input
+                  id="repetitionCount"
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={formData.repetitionCount}
+                  onChange={(e) => setFormData({ ...formData, repetitionCount: parseInt(e.target.value) || 80 })}
+                />
+                <p className="text-xs text-muted-foreground">Сколько раз студент должен повторить строку для заучивания</p>
+              </div>
+
+              {/* Hours per Stage */}
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2">
+                  <Clock className="h-4 w-4" />
+                  Часов на этап (время в зависимости от уровня)
+                </Label>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Этап 1.1/1.2</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={720}
+                      value={formData.stage1Hours}
+                      onChange={(e) => setFormData({ ...formData, stage1Hours: parseInt(e.target.value) || 24 })}
+                    />
+                    <p className="text-xs text-muted-foreground">{formData.stage1Hours}ч = {(formData.stage1Hours / 24).toFixed(1)} дн.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Этап 2.1/2.2</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={720}
+                      value={formData.stage2Hours}
+                      onChange={(e) => setFormData({ ...formData, stage2Hours: parseInt(e.target.value) || 48 })}
+                    />
+                    <p className="text-xs text-muted-foreground">{formData.stage2Hours}ч = {(formData.stage2Hours / 24).toFixed(1)} дн.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Этап 3</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={720}
+                      value={formData.stage3Hours}
+                      onChange={(e) => setFormData({ ...formData, stage3Hours: parseInt(e.target.value) || 48 })}
+                    />
+                    <p className="text-xs text-muted-foreground">{formData.stage3Hours}ч = {(formData.stage3Hours / 24).toFixed(1)} дн.</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Days per Stage */}
-            <div className="space-y-2">
-              <Label className="flex items-center gap-2">
-                <Clock className="h-4 w-4" />
-                Дней на этап
-              </Label>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Этап 1</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={formData.stage1Days}
-                    onChange={(e) => setFormData({ ...formData, stage1Days: parseInt(e.target.value) || 1 })}
-                  />
+            {/* === REVISION (Повторение) === */}
+            <div className="p-4 bg-blue-50 dark:bg-blue-950/30 rounded-lg border border-blue-200 dark:border-blue-800 space-y-4">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="h-5 w-5 text-blue-600" />
+                <h4 className="font-semibold text-blue-800 dark:text-blue-300">Повторение</h4>
+              </div>
+              <p className="text-xs text-muted-foreground">Ежедневное повторение выученных страниц. Задания обнуляются каждый день.</p>
+
+              <div className="space-y-2">
+                <Label htmlFor="revisionPagesPerDay">Минимум страниц в день</Label>
+                <Input
+                  id="revisionPagesPerDay"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={formData.revisionPagesPerDay}
+                  onChange={(e) => setFormData({ ...formData, revisionPagesPerDay: parseInt(e.target.value) || 3 })}
+                  disabled={formData.revisionAllPages}
+                />
+                <p className="text-xs text-muted-foreground">Минимум страниц для повторения (игнорируется если включено "Все страницы")</p>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="revisionAllPages">Все выученные страницы</Label>
+                  <p className="text-xs text-muted-foreground">Студент должен повторить все страницы до его текущего прогресса</p>
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Этап 2</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={formData.stage2Days}
-                    onChange={(e) => setFormData({ ...formData, stage2Days: parseInt(e.target.value) || 2 })}
-                  />
+                <Switch
+                  id="revisionAllPages"
+                  checked={formData.revisionAllPages}
+                  onCheckedChange={(checked) => setFormData({ ...formData, revisionAllPages: checked })}
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label htmlFor="revisionButtonOnly">Только кнопка (без голоса)</Label>
+                  <p className="text-xs text-muted-foreground">Студент просто нажимает "Повторил" без отправки голоса. Устаз получает уведомление.</p>
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Этап 3</Label>
+                <Switch
+                  id="revisionButtonOnly"
+                  checked={formData.revisionButtonOnly}
+                  onCheckedChange={(checked) => setFormData({ ...formData, revisionButtonOnly: checked })}
+                />
+              </div>
+            </div>
+
+            {/* === TRANSLATION (Переводы/Муфрадат) === */}
+            <div className="p-4 bg-purple-50 dark:bg-purple-950/30 rounded-lg border border-purple-200 dark:border-purple-800 space-y-4">
+              <div className="flex items-center gap-2">
+                <Languages className="h-5 w-5 text-purple-600" />
+                <h4 className="font-semibold text-purple-800 dark:text-purple-300">Переводы (Муфрадат)</h4>
+              </div>
+              <p className="text-xs text-muted-foreground">Ежедневное изучение новых слов через игру. Задания обнуляются каждый день.</p>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="wordsPerDay">Слов в день</Label>
                   <Input
+                    id="wordsPerDay"
                     type="number"
                     min={1}
-                    max={30}
-                    value={formData.stage3Days}
-                    onChange={(e) => setFormData({ ...formData, stage3Days: parseInt(e.target.value) || 2 })}
+                    max={50}
+                    value={formData.wordsPerDay}
+                    onChange={(e) => setFormData({ ...formData, wordsPerDay: parseInt(e.target.value) || 10 })}
                   />
+                  <p className="text-xs text-muted-foreground">Сколько слов студент должен выучить</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wordsPassThreshold">Порог сдачи</Label>
+                  <Input
+                    id="wordsPassThreshold"
+                    type="number"
+                    min={1}
+                    max={formData.wordsPerDay}
+                    value={formData.wordsPassThreshold}
+                    onChange={(e) => setFormData({ ...formData, wordsPassThreshold: parseInt(e.target.value) || 8 })}
+                  />
+                  <p className="text-xs text-muted-foreground">Минимум правильных для сдачи</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="mufradatTimeLimit" className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Время (сек)
+                  </Label>
+                  <Input
+                    id="mufradatTimeLimit"
+                    type="number"
+                    min={30}
+                    max={600}
+                    value={formData.mufradatTimeLimit}
+                    onChange={(e) => setFormData({ ...formData, mufradatTimeLimit: parseInt(e.target.value) || 180 })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {Math.floor(formData.mufradatTimeLimit / 60)} мин. {formData.mufradatTimeLimit % 60} сек.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1033,17 +1347,14 @@ export default function EditGroupPage() {
                     {AI_PROVIDERS.map((provider) => {
                       const Icon = provider.icon
                       const isSelected = formData.aiProvider === provider.value
-                      const isDisabled = provider.value === 'HUGGINGFACE'
                       return (
                         <div
                           key={provider.value}
-                          onClick={() => !isDisabled && setFormData({ ...formData, aiProvider: provider.value as AIProvider })}
-                          className={`p-3 rounded-lg border-2 transition-all ${
-                            isDisabled
-                              ? 'opacity-50 cursor-not-allowed border-muted bg-muted/30'
-                              : isSelected
-                                ? 'border-amber-500 bg-amber-100/50 dark:bg-amber-900/30 cursor-pointer'
-                                : 'border-transparent bg-background hover:border-muted-foreground/50 cursor-pointer'
+                          onClick={() => setFormData({ ...formData, aiProvider: provider.value as AIProvider })}
+                          className={`p-3 rounded-lg border-2 transition-all cursor-pointer ${
+                            isSelected
+                              ? 'border-amber-500 bg-amber-100/50 dark:bg-amber-900/30'
+                              : 'border-transparent bg-background hover:border-muted-foreground/50'
                           }`}
                         >
                           <div className="flex items-center gap-2">
@@ -1087,7 +1398,7 @@ export default function EditGroupPage() {
                         })}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        {VERIFICATION_MODES.find(m => m.value === formData.verificationMode)?.description}
+                        {VERIFICATION_MODES.find(m => m.value === formData.verificationMode)?.details}
                       </p>
                     </div>
 
@@ -1136,15 +1447,171 @@ export default function EditGroupPage() {
                           </div>
                         )}
 
-                        <div className="p-2 bg-amber-100/50 dark:bg-amber-900/30 rounded text-xs text-amber-800 dark:text-amber-200">
-                          Работы с оценкой между порогами отправляются устазу на ручную проверку
-                        </div>
+                        {/* Mode-specific info box */}
+                        {formData.verificationMode === 'SEMI_AUTO' && (
+                          <div className="p-3 bg-amber-100/50 dark:bg-amber-900/30 rounded-lg text-xs">
+                            <p className="font-medium text-amber-800 dark:text-amber-200 mb-2">Режим ПОЛУАВТО:</p>
+                            <ul className="space-y-1 text-amber-700 dark:text-amber-300">
+                              <li>✅ Оценка ≥ {formData.aiAcceptThreshold}% → автопринятие</li>
+                              <li>📋 Оценка &lt; {formData.aiAcceptThreshold}% → устазу на проверку</li>
+                            </ul>
+                          </div>
+                        )}
+                        {formData.verificationMode === 'FULL_AUTO' && (
+                          <div className="p-3 bg-amber-100/50 dark:bg-amber-900/30 rounded-lg text-xs">
+                            <p className="font-medium text-amber-800 dark:text-amber-200 mb-2">Режим АВТОМАТ:</p>
+                            <ul className="space-y-1 text-amber-700 dark:text-amber-300">
+                              <li>✅ Оценка ≥ {formData.aiAcceptThreshold}% → автопринятие</li>
+                              <li>📋 Оценка {formData.aiRejectThreshold}-{formData.aiAcceptThreshold}% → устазу</li>
+                              <li>❌ Оценка &lt; {formData.aiRejectThreshold}% → автоотклонение</li>
+                            </ul>
+                          </div>
+                        )}
                       </div>
                     )}
                   </>
                 )}
               </div>
 
+              {/* QRC Pre-check Settings (for MEMORIZATION only) */}
+              {formData.lessonType === 'MEMORIZATION' && (
+                <div className="space-y-4 p-4 bg-gradient-to-br from-purple-50 to-indigo-50 dark:from-purple-950/20 dark:to-indigo-950/20 rounded-lg border border-purple-200 dark:border-purple-800">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Mic className="h-4 w-4 text-purple-600" />
+                      <span className="text-sm font-medium">AI Предпроверка</span>
+                    </div>
+                    <Switch
+                      checked={formData.qrcPreCheckEnabled}
+                      onCheckedChange={(checked) => setFormData({ ...formData, qrcPreCheckEnabled: checked })}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Перед сдачей работ на этапах 1.1 и 2.1, студент должен пройти AI проверку чтения через WebApp
+                  </p>
+
+                  {formData.qrcPreCheckEnabled && (
+                    <div className="space-y-4 pt-3 border-t border-purple-200 dark:border-purple-800">
+                      {/* AI Provider Selection */}
+                      <div className="space-y-2">
+                        <Label>AI Модель</Label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {QRC_PRECHECK_PROVIDERS.map((provider) => {
+                            const Icon = provider.icon
+                            const isSelected = formData.qrcPreCheckProvider === provider.value
+                            return (
+                              <div
+                                key={provider.value}
+                                onClick={() => setFormData({ ...formData, qrcPreCheckProvider: provider.value as AIProvider })}
+                                className={`p-2 rounded-lg border-2 text-center cursor-pointer transition-all ${
+                                  isSelected
+                                    ? 'border-purple-500 bg-purple-100/50 dark:bg-purple-900/30'
+                                    : 'border-transparent bg-background hover:border-muted-foreground/50'
+                                }`}
+                              >
+                                <Icon className={`h-4 w-4 mx-auto mb-1 ${isSelected ? 'text-purple-600' : 'text-muted-foreground'}`} />
+                                <p className="text-xs font-medium">{provider.label}</p>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {QRC_PRECHECK_PROVIDERS.find(p => p.value === formData.qrcPreCheckProvider)?.description}
+                        </p>
+                      </div>
+
+                      {/* Pass Threshold */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label>Порог прохождения</Label>
+                          <Badge variant="outline" className="bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300">
+                            {formData.qrcPassThreshold}%
+                          </Badge>
+                        </div>
+                        <Slider
+                          value={[formData.qrcPassThreshold]}
+                          onValueChange={([value]) => setFormData({ ...formData, qrcPassThreshold: value })}
+                          min={50}
+                          max={95}
+                          step={5}
+                          className="[&_[role=slider]]:bg-purple-500"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Студент должен набрать минимум {formData.qrcPassThreshold}% для прохождения
+                        </p>
+                      </div>
+
+                      {/* Hafz Level - For both Qurani.ai and Whisper */}
+                      <div className="space-y-2">
+                        <Label>Уровень строгости проверки</Label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[1, 2, 3].map((level) => (
+                            <div
+                              key={level}
+                              onClick={() => setFormData({ ...formData, qrcHafzLevel: level })}
+                              className={`p-2 rounded-lg border-2 text-center cursor-pointer transition-all ${
+                                formData.qrcHafzLevel === level
+                                  ? 'border-purple-500 bg-purple-100/50 dark:bg-purple-900/30'
+                                  : 'border-transparent bg-background hover:border-muted-foreground/50'
+                              }`}
+                            >
+                              <span className="font-semibold">{level}</span>
+                              <p className="text-xs text-muted-foreground">
+                                {level === 1 ? 'Лёгкий' : level === 2 ? 'Средний' : 'Строгий'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {formData.qrcPreCheckProvider === 'WHISPER'
+                            ? 'Уровень 1: допускает больше вариаций в произношении. Уровень 3: требует точного соответствия.'
+                            : 'Насколько строго проверять точность заучивания'}
+                        </p>
+                      </div>
+
+                      {/* Tajweed Level - Only for Qurani.ai QRC */}
+                      {formData.qrcPreCheckProvider === 'QURANI_AI' && (
+                        <div className="space-y-2">
+                          <Label>Уровень проверки таджвида</Label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {[1, 2, 3].map((level) => (
+                              <div
+                                key={level}
+                                onClick={() => setFormData({ ...formData, qrcTajweedLevel: level })}
+                                className={`p-2 rounded-lg border-2 text-center cursor-pointer transition-all ${
+                                  formData.qrcTajweedLevel === level
+                                    ? 'border-purple-500 bg-purple-100/50 dark:bg-purple-900/30'
+                                    : 'border-transparent bg-background hover:border-muted-foreground/50'
+                                }`}
+                              >
+                                <span className="font-semibold">{level}</span>
+                                <p className="text-xs text-muted-foreground">
+                                  {level === 1 ? 'Лёгкий' : level === 2 ? 'Средний' : 'Строгий'}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Насколько строго проверять правила таджвида
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Info for Whisper */}
+                      {formData.qrcPreCheckProvider === 'WHISPER' && (
+                        <div className="p-2 bg-emerald-100/50 dark:bg-emerald-900/30 rounded text-xs text-emerald-800 dark:text-emerald-200">
+                          OpenAI Whisper распознает речь и сравнивает с ожидаемым текстом.
+                          Уровень влияет на допустимые отклонения в порядке слов.
+                        </div>
+                      )}
+
+                      <div className="p-2 bg-purple-100/50 dark:bg-purple-900/30 rounded text-xs text-purple-800 dark:text-purple-200">
+                        AI предпроверка работает только на этапах изучения (1.1 и 2.1). На этапах соединения проверка не требуется.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Save button */}
               <Button
@@ -1270,8 +1737,9 @@ export default function EditGroupPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Студент</TableHead>
-                  <TableHead>Телефон</TableHead>
-                  <TableHead>Прогресс</TableHead>
+                  <TableHead>Заучивание</TableHead>
+                  <TableHead>Повторение</TableHead>
+                  <TableHead>Переводы</TableHead>
                   <TableHead className="text-center">Чат</TableHead>
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
@@ -1287,30 +1755,72 @@ export default function EditGroupPage() {
                   return (
                     <TableRow key={student.id}>
                       <TableCell>
-                        <Link
-                          href={`/admin/users/${student.id}`}
-                          className="font-medium hover:underline"
-                        >
-                          {student.firstName} {student.lastName}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="font-mono text-sm text-muted-foreground">
-                        {student.phone}
+                        <div>
+                          <Link
+                            href={`/admin/users/${student.id}`}
+                            className="font-medium hover:underline"
+                          >
+                            {student.firstName} {student.lastName}
+                          </Link>
+                          <p className="text-xs text-muted-foreground font-mono">{student.phone}</p>
+                        </div>
                       </TableCell>
                       <TableCell>
-                        <div className="space-y-1.5">
-                          <div className="flex items-center gap-3 text-sm">
-                            <div className="flex items-center gap-1">
-                              <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-                              <span className="font-medium">{student.currentPage}-{student.currentLine}</span>
+                        <button
+                          onClick={() => openStatsDialog(student, 'memorization')}
+                          className="w-full text-left hover:bg-muted/50 rounded p-1 -m-1 transition-colors"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 text-sm">
+                              <BookOpen className="h-3.5 w-3.5 text-emerald-500" />
+                              <span className="font-medium">стр. {student.currentPage}, строка {student.currentLine}</span>
                             </div>
-                            <div className="flex items-center gap-1">
-                              <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
-                              <span className="font-medium">{activeTask?.passedCount || 0}/{activeTask?.requiredCount || 0}</span>
+                            <div className="text-xs text-muted-foreground">
+                              {getStageName(student.currentStage)}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Progress value={taskCompletion} className="h-1.5 w-16" />
+                              <span className="text-xs text-muted-foreground">
+                                {activeTask?.passedCount || 0}/{activeTask?.requiredCount || formData.repetitionCount}
+                              </span>
                             </div>
                           </div>
-                          <Progress value={taskCompletion} className="h-1.5 w-24" />
-                        </div>
+                        </button>
+                      </TableCell>
+                      <TableCell>
+                        <button
+                          onClick={() => openStatsDialog(student, 'revision')}
+                          className="w-full text-left hover:bg-muted/50 rounded p-1 -m-1 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 text-sm">
+                            <RefreshCw className="h-3.5 w-3.5 text-blue-500" />
+                            <span className="font-medium">{student.revisionsPassed || 0}</span>
+                            {(student.revisionsPending || 0) > 0 && (
+                              <Badge variant="secondary" className="text-xs">+{student.revisionsPending} на проверке</Badge>
+                            )}
+                          </div>
+                        </button>
+                      </TableCell>
+                      <TableCell>
+                        <button
+                          onClick={() => openStatsDialog(student, 'mufradat')}
+                          className="w-full text-left hover:bg-muted/50 rounded p-1 -m-1 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 text-sm">
+                            <Languages className="h-3.5 w-3.5 text-purple-500" />
+                            {student.mufradatToday ? (
+                              <span className="font-medium">
+                                {student.mufradatToday.passed ? '✅' : '❌'} {student.mufradatToday.wordsCorrect}/{student.mufradatToday.wordsTotal}
+                              </span>
+                            ) : student.mufradatWeekTotal && student.mufradatWeekTotal > 0 ? (
+                              <span className="text-muted-foreground">
+                                {student.mufradatWeekPassed}/{student.mufradatWeekTotal} дн.
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </div>
+                        </button>
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex items-center justify-center gap-1">
@@ -1339,14 +1849,26 @@ export default function EditGroupPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleRemoveStudent(student.id)}
-                          title="Удалить из группы"
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => openProgressDialog(student)}
+                            title="Редактировать прогресс"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleRemoveStudent(student.id)}
+                            title="Удалить из группы"
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   )
@@ -1356,6 +1878,26 @@ export default function EditGroupPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Progress Edit Dialog */}
+      <StudentProgressEditDialog
+        open={progressDialogOpen}
+        onOpenChange={setProgressDialogOpen}
+        student={editingStudent}
+        groupId={group.id}
+        defaultRepetitionCount={formData.repetitionCount}
+        onSuccess={handleProgressUpdate}
+      />
+
+      {/* Stats Detail Dialog */}
+      <StudentStatsDetailDialog
+        open={statsDialogOpen}
+        onOpenChange={setStatsDialogOpen}
+        studentId={statsStudent?.id || null}
+        studentName={statsStudent?.name || ''}
+        type={statsDialogType}
+        groupRepetitionCount={formData.repetitionCount}
+      />
     </div>
   )
 }

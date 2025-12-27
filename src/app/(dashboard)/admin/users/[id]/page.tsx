@@ -15,10 +15,19 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { ArrowLeft, Phone, User, BookOpen, Users, GraduationCap, Loader2, Calendar, Target, TrendingUp, Award } from 'lucide-react'
+import { ArrowLeft, Phone, User, BookOpen, Users, GraduationCap, Loader2, Calendar, Target, TrendingUp, Award, RefreshCw, Languages, ChevronDown } from 'lucide-react'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { RoleBadge } from '@/components/users/role-badge'
 import Link from 'next/link'
 import { UserRole, StageNumber } from '@prisma/client'
+import { format } from 'date-fns'
+import { ru } from 'date-fns/locale'
 
 interface Parent {
   id: string
@@ -59,6 +68,56 @@ interface Statistics {
   averagePagesPerWeek: number
 }
 
+interface MufradatStats {
+  summary: {
+    totalDays: number
+    passedDays: number
+    totalWords: number
+    correctWords: number
+    passRate: number
+    accuracy: number
+  }
+  week: {
+    totalDays: number
+    passedDays: number
+    totalWords: number
+    correctWords: number
+  }
+  daily: Array<{
+    date: string
+    wordsTotal: number
+    wordsCorrect: number
+    passed: boolean
+  }>
+}
+
+interface RevisionStats {
+  total: number
+  passed: number
+  pending: number
+  failed: number
+}
+
+interface DetailedStatsData {
+  period: {
+    start: string
+    end: string
+    label: string
+  }
+  summary: {
+    memorization: { totalTasks: number; passed: number; failed: number; inProgress: number }
+    revision: { totalSubmitted: number; passed: number; failed: number; pending: number; daysComplete: number; totalDays: number }
+    mufradat: { totalGames: number; passed: number; avgScore: number }
+  }
+  daily: Array<{
+    date: string
+    memorization: { tasks: number; passed: number; failed: number }
+    revision: { submitted: number; passed: number; failed: number; required: number }
+    mufradat: { games: number; passed: number; avgScore: number }
+  }>
+  availableMonths: string[]
+}
+
 interface UserDetail {
   id: string
   phone: string
@@ -66,6 +125,7 @@ interface UserDetail {
   lastName: string | null
   telegramUsername: string | null
   telegramId: string | null
+  gender: 'MALE' | 'FEMALE' | null
   role: UserRole
   isActive: boolean
   currentPage: number
@@ -84,15 +144,39 @@ export default function UserDetailPage() {
   const params = useParams()
   const router = useRouter()
   const [user, setUser] = useState<UserDetail | null>(null)
+  const [mufradatStats, setMufradatStats] = useState<MufradatStats | null>(null)
+  const [revisionStats, setRevisionStats] = useState<RevisionStats | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    async function fetchUser() {
+    async function fetchData() {
       try {
         const res = await fetch(`/api/users/${params.id}`)
         if (res.ok) {
           const data = await res.json()
           setUser(data)
+
+          // Fetch additional stats for students
+          if (data.role === 'STUDENT') {
+            // Fetch mufradat stats
+            const mufradatRes = await fetch(`/api/student/mufradat/stats?studentId=${params.id}&days=30`)
+            if (mufradatRes.ok) {
+              setMufradatStats(await mufradatRes.json())
+            }
+
+            // Fetch revision stats
+            const revisionRes = await fetch(`/api/student/revisions?studentId=${params.id}&limit=100`)
+            if (revisionRes.ok) {
+              const revData = await revisionRes.json()
+              const items = revData.items || []
+              setRevisionStats({
+                total: items.length,
+                passed: items.filter((r: any) => r.status === 'PASSED').length,
+                pending: items.filter((r: any) => r.status === 'PENDING').length,
+                failed: items.filter((r: any) => r.status === 'FAILED').length,
+              })
+            }
+          }
         }
       } catch (err) {
         console.error('Failed to fetch user:', err)
@@ -100,7 +184,7 @@ export default function UserDetailPage() {
         setLoading(false)
       }
     }
-    fetchUser()
+    fetchData()
   }, [params.id])
 
   if (loading) {
@@ -170,7 +254,13 @@ export default function UserDetailPage() {
 
       {/* Role-specific content */}
       {user.role === UserRole.STUDENT && (
-        <StudentView user={user} progressPercent={progressPercent} formatStageName={formatStageName} />
+        <StudentView
+          user={user}
+          progressPercent={progressPercent}
+          formatStageName={formatStageName}
+          mufradatStats={mufradatStats}
+          revisionStats={revisionStats}
+        />
       )}
       {user.role === UserRole.USTAZ && (
         <UstazView user={user} />
@@ -211,10 +301,12 @@ export default function UserDetailPage() {
   )
 }
 
-function StudentView({ user, progressPercent, formatStageName }: {
+function StudentView({ user, progressPercent, formatStageName, mufradatStats, revisionStats }: {
   user: UserDetail
   progressPercent: number
   formatStageName: (stage: StageNumber) => string
+  mufradatStats: MufradatStats | null
+  revisionStats: RevisionStats | null
 }) {
   const stats = user.statistics
 
@@ -245,12 +337,14 @@ function StudentView({ user, progressPercent, formatStageName }: {
 
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Всего заданий</CardDescription>
-            <CardTitle className="text-3xl">{user._count.tasks}</CardTitle>
+            <CardDescription>Пол</CardDescription>
+            <CardTitle className="text-3xl">
+              {user.gender === 'MALE' ? '👨' : user.gender === 'FEMALE' ? '🧕' : '—'}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-xs text-muted-foreground">
-              {stats?.totalTasksCompleted || 0} завершено
+              {user.gender === 'MALE' ? 'Мужской' : user.gender === 'FEMALE' ? 'Женский' : 'Не указан'}
             </p>
           </CardContent>
         </Card>
@@ -262,6 +356,93 @@ function StudentView({ user, progressPercent, formatStageName }: {
               {user.studentGroup?.name || 'Без группы'}
             </CardTitle>
           </CardHeader>
+        </Card>
+      </div>
+
+      {/* Lesson Type Statistics */}
+      <div className="grid gap-4 md:grid-cols-3">
+        {/* Memorization */}
+        <Card className="border-emerald-200 dark:border-emerald-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <BookOpen className="h-5 w-5 text-emerald-500" />
+              Заучивание
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Всего заданий:</span>
+              <span className="font-medium">{user._count.tasks}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Завершено:</span>
+              <span className="font-medium text-emerald-600">{stats?.totalTasksCompleted || 0}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Страниц пройдено:</span>
+              <span className="font-medium">{stats?.totalPagesCompleted || 0}</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Revision */}
+        <Card className="border-blue-200 dark:border-blue-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <RefreshCw className="h-5 w-5 text-blue-500" />
+              Повторение
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {revisionStats ? (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Всего сдано:</span>
+                  <span className="font-medium">{revisionStats.total}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Принято:</span>
+                  <span className="font-medium text-emerald-600">{revisionStats.passed}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">На проверке:</span>
+                  <span className="font-medium text-yellow-600">{revisionStats.pending}</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-muted-foreground text-sm">Нет данных</p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Mufradat */}
+        <Card className="border-purple-200 dark:border-purple-800">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Languages className="h-5 w-5 text-purple-500" />
+              Переводы
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {mufradatStats ? (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Дней сдано (30д):</span>
+                  <span className="font-medium">{mufradatStats.summary.passedDays}/{mufradatStats.summary.totalDays}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Слов выучено:</span>
+                  <span className="font-medium text-emerald-600">{mufradatStats.summary.correctWords}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Точность:</span>
+                  <span className="font-medium">{mufradatStats.summary.accuracy}%</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-muted-foreground text-sm">Нет данных</p>
+            )}
+          </CardContent>
         </Card>
       </div>
 
@@ -329,6 +510,9 @@ function StudentView({ user, progressPercent, formatStageName }: {
           </CardContent>
         </Card>
       )}
+
+      {/* Detailed KPI Statistics */}
+      <DetailedStatsSection userId={user.id} />
 
       {/* Parents */}
       {user.childOf && user.childOf.length > 0 && (
@@ -527,6 +711,189 @@ function AdminView({ user }: { user: UserDetail }) {
             <p className="font-medium">{user._count.tasks + user._count.submissions}</p>
           </div>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function DetailedStatsSection({ userId }: { userId: string }) {
+  const [period, setPeriod] = useState('week')
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
+  const [data, setData] = useState<DetailedStatsData | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    async function fetchStats() {
+      setLoading(true)
+      try {
+        let url = `/api/users/${userId}/stats?period=${period}`
+        if (selectedMonth) {
+          url = `/api/users/${userId}/stats?month=${selectedMonth}`
+        }
+        const res = await fetch(url)
+        if (res.ok) {
+          setData(await res.json())
+        }
+      } catch (err) {
+        console.error('Failed to fetch stats:', err)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchStats()
+  }, [userId, period, selectedMonth])
+
+  const periodOptions = [
+    { value: 'week', label: 'Эта неделя' },
+    { value: 'last_week', label: 'Прошлая неделя' },
+    { value: 'month', label: 'Этот месяц' },
+    { value: 'last_month', label: 'Прошлый месяц' },
+  ]
+
+  const formatMonthLabel = (m: string) => {
+    const [year, month] = m.split('-')
+    const months = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек']
+    return `${months[parseInt(month) - 1]} ${year}`
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Детальная статистика KPI
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            <Select
+              value={selectedMonth || period}
+              onValueChange={(v) => {
+                if (v.includes('-')) {
+                  setSelectedMonth(v)
+                  setPeriod('')
+                } else {
+                  setSelectedMonth(null)
+                  setPeriod(v)
+                }
+              }}
+            >
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Выберите период" />
+              </SelectTrigger>
+              <SelectContent>
+                {periodOptions.map(opt => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+                {data?.availableMonths && data.availableMonths.length > 0 && (
+                  <>
+                    <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                      По месяцам
+                    </div>
+                    {data.availableMonths.slice(-12).reverse().map(m => (
+                      <SelectItem key={m} value={m}>
+                        {formatMonthLabel(m)}
+                      </SelectItem>
+                    ))}
+                  </>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        {data && (
+          <CardDescription>
+            {format(new Date(data.period.start), 'dd.MM.yyyy')} - {format(new Date(data.period.end), 'dd.MM.yyyy')}
+          </CardDescription>
+        )}
+      </CardHeader>
+      <CardContent>
+        {loading ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="h-6 w-6 animate-spin" />
+          </div>
+        ) : data ? (
+          <div className="space-y-6">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="p-4 rounded-lg border bg-emerald-50 dark:bg-emerald-950">
+                <p className="text-sm text-muted-foreground">📖 Заучивание</p>
+                <p className="text-2xl font-bold text-emerald-600">{data.summary.memorization.passed}</p>
+                <p className="text-xs text-muted-foreground">заданий сдано из {data.summary.memorization.totalTasks}</p>
+              </div>
+              <div className="p-4 rounded-lg border bg-blue-50 dark:bg-blue-950">
+                <p className="text-sm text-muted-foreground">🔄 Повторение</p>
+                <p className="text-2xl font-bold text-blue-600">{data.summary.revision.passed}</p>
+                <p className="text-xs text-muted-foreground">страниц сдано из {data.summary.revision.totalSubmitted}</p>
+              </div>
+              <div className="p-4 rounded-lg border bg-purple-50 dark:bg-purple-950">
+                <p className="text-sm text-muted-foreground">📝 Переводы</p>
+                <p className="text-2xl font-bold text-purple-600">{data.summary.mufradat.avgScore}%</p>
+                <p className="text-xs text-muted-foreground">средний балл из {data.summary.mufradat.totalGames} игр</p>
+              </div>
+            </div>
+
+            {/* Daily Table */}
+            <div>
+              <h4 className="font-semibold mb-3">По дням:</h4>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Дата</TableHead>
+                      <TableHead className="text-center">📖 Заучивание</TableHead>
+                      <TableHead className="text-center">🔄 Повторение</TableHead>
+                      <TableHead className="text-center">📝 Переводы</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.daily.map(day => {
+                      const dateObj = new Date(day.date)
+                      const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6
+                      return (
+                        <TableRow key={day.date} className={isWeekend ? 'bg-muted/30' : ''}>
+                          <TableCell className="font-medium">
+                            {format(dateObj, 'dd.MM (EEE)', { locale: ru })}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {day.memorization.tasks > 0 ? (
+                              <span className={day.memorization.passed > 0 ? 'text-emerald-600' : 'text-yellow-600'}>
+                                {day.memorization.passed > 0 ? '✅' : '⏳'} {day.memorization.passed}/{day.memorization.tasks}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {day.revision.submitted > 0 ? (
+                              <span className={day.revision.passed >= day.revision.required ? 'text-emerald-600' : 'text-yellow-600'}>
+                                {day.revision.passed >= day.revision.required ? '✅' : '📝'} {day.revision.passed}/{day.revision.required || day.revision.submitted}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {day.mufradat.games > 0 ? (
+                              <span className={day.mufradat.avgScore >= 80 ? 'text-emerald-600' : 'text-yellow-600'}>
+                                {day.mufradat.avgScore}% ({day.mufradat.games})
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-center text-muted-foreground py-8">Нет данных</p>
+        )}
       </CardContent>
     </Card>
   )

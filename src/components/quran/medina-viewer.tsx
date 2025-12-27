@@ -127,6 +127,18 @@ const VERSES_AUDIO_BASE = 'https://verses.quran.com'
 
 const STORAGE_KEY = 'quran-viewer-settings'
 
+/**
+ * Remove Arabic digits and verse markers from text
+ */
+function hideArabicDigits(text: string): string {
+  return text
+    .replace(/[\u0660-\u0669]/g, '')    // Arabic-Indic digits ٠-٩
+    .replace(/[\u06F0-\u06F9]/g, '')    // Extended Arabic-Indic digits
+    .replace(/[\u06DD]/g, '')           // End of ayah mark ۝
+    .replace(/\s+/g, ' ')               // Normalize spaces
+    .trim()
+}
+
 interface ViewerSettings {
   showTranslation: boolean
   translationId: number
@@ -137,6 +149,7 @@ interface ViewerSettings {
   showMufradat: boolean
   showAudio: boolean
   reciterId: number
+  hideVerseNumbers: boolean  // Скрыть номера аятов (для тестирования студентов)
 }
 
 const DEFAULT_SETTINGS: ViewerSettings = {
@@ -149,6 +162,7 @@ const DEFAULT_SETTINGS: ViewerSettings = {
   showMufradat: true,
   showAudio: true,
   reciterId: 7,
+  hideVerseNumbers: false,
 }
 
 function loadSettings(): ViewerSettings {
@@ -179,11 +193,46 @@ interface MedinaMushhafViewerProps {
   showProgress?: {
     currentPage: number
     currentLine: number
+    currentStage: string
     stageName: string
+  }
+  highlightLines?: {
+    start: number
+    end: number
   }
 }
 
-export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress }: MedinaMushhafViewerProps) {
+/**
+ * Get the line range to highlight based on current stage
+ * - STAGE_1_1: only current line (lines 1-7)
+ * - STAGE_1_2: all lines 1-7
+ * - STAGE_2_1: only current line (lines 8-15)
+ * - STAGE_2_2: all lines 8-15
+ * - STAGE_3: all lines 1-15
+ */
+function getHighlightedLineRange(stage: string, currentLine: number): { start: number; end: number } {
+  switch (stage) {
+    case 'STAGE_1_1':
+      // Single line in first half (1-7)
+      return { start: currentLine, end: currentLine }
+    case 'STAGE_1_2':
+      // All lines 1-7
+      return { start: 1, end: 7 }
+    case 'STAGE_2_1':
+      // Single line in second half (8-15)
+      return { start: currentLine, end: currentLine }
+    case 'STAGE_2_2':
+      // All lines 8-15
+      return { start: 8, end: 15 }
+    case 'STAGE_3':
+      // Full page (all lines)
+      return { start: 1, end: 15 }
+    default:
+      return { start: currentLine, end: currentLine }
+  }
+}
+
+export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress, highlightLines }: MedinaMushhafViewerProps) {
   const [pageNumber, setPageNumber] = useState(initialPage)
   const [pageData, setPageData] = useState<MedinaPageData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -420,13 +469,17 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
 
   // Scroll to highlighted line
   useEffect(() => {
-    if (initialLine && pageData) {
-      const lineElement = document.getElementById(`line-${initialLine}`)
-      if (lineElement) {
-        lineElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (pageData) {
+      // Priority: initialLine, then highlightLines.start
+      const targetLine = initialLine || highlightLines?.start
+      if (targetLine) {
+        const lineElement = document.getElementById(`line-${targetLine}`)
+        if (lineElement) {
+          lineElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
       }
     }
-  }, [initialLine, pageData])
+  }, [initialLine, highlightLines, pageData])
 
   if (!settingsLoaded) {
     return (
@@ -492,7 +545,7 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
               )}
               {isOnProgressPage && (
                 <Badge className="bg-emerald-500 text-white text-xs">
-                  📍 Стр. {showProgress.currentPage}, строка {showProgress.currentLine}
+                  📍 {showProgress.stageName}
                 </Badge>
               )}
             </div>
@@ -596,6 +649,20 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                     <Label htmlFor="showChapters" className="flex items-center gap-1 cursor-pointer text-xs sm:text-sm">
                       <BookOpen className="h-3 w-3 sm:h-4 sm:w-4" />
                       Суры
+                    </Label>
+                  </div>
+
+                  {/* Hide verse numbers toggle */}
+                  <div className="flex items-center gap-1.5 sm:gap-2">
+                    <Switch
+                      id="hideVerseNumbers"
+                      className="scale-90 sm:scale-100"
+                      checked={settings.hideVerseNumbers}
+                      onCheckedChange={(v) => updateSetting('hideVerseNumbers', v)}
+                    />
+                    <Label htmlFor="hideVerseNumbers" className="flex items-center gap-1 cursor-pointer text-xs sm:text-sm">
+                      <Lock className="h-3 w-3 sm:h-4 sm:w-4" />
+                      Скрыть аяты
                     </Label>
                   </div>
               </div>
@@ -745,7 +812,24 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
             ) : pageData ? (
               <div className="space-y-2 sm:space-y-3">
                 {pageData.lines.map((line) => {
-                  const isProgressLine = showProgress &&
+                  // Calculate which lines to highlight based on stage or explicit highlightLines prop
+                  const highlightRange = highlightLines
+                    ? highlightLines
+                    : showProgress
+                    ? getHighlightedLineRange(showProgress.currentStage, showProgress.currentLine)
+                    : null
+
+                  const isProgressLine = (highlightLines &&
+                    line.lineNumber >= highlightLines.start &&
+                    line.lineNumber <= highlightLines.end) ||
+                    (showProgress &&
+                    showProgress.currentPage === pageNumber &&
+                    highlightRange &&
+                    line.lineNumber >= highlightRange.start &&
+                    line.lineNumber <= highlightRange.end)
+
+                  // Is this the exact current line (for special indicator) - only for progress
+                  const isCurrentLine = showProgress &&
                     showProgress.currentPage === pageNumber &&
                     showProgress.currentLine === line.lineNumber
 
@@ -754,13 +838,15 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                       key={line.lineNumber}
                       id={`line-${line.lineNumber}`}
                       className={`p-2 sm:p-3 border rounded-lg transition-colors ${
-                        isProgressLine
-                          ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 border-2 shadow-sm'
+                        isCurrentLine
+                          ? 'bg-emerald-100 dark:bg-emerald-950/50 border-emerald-500 border-2 shadow-md'
+                          : isProgressLine
+                          ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-300 border shadow-sm'
                           : 'bg-muted/30 hover:bg-muted/50'
                       }`}
                     >
-                      {/* Progress indicator badge */}
-                      {isProgressLine && (
+                      {/* Progress indicator badge - only on current line */}
+                      {isCurrentLine && (
                         <div className="flex items-center gap-2 mb-2 pb-2 border-b border-emerald-200 dark:border-emerald-800">
                           <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white text-[10px] sm:text-xs">
                             📍 Ваш прогресс
@@ -775,7 +861,11 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                           <Badge
                             variant={isProgressLine ? 'default' : 'outline'}
                             className={`min-w-[1.5rem] sm:min-w-[2rem] justify-center text-[10px] sm:text-xs ${
-                              isProgressLine ? 'bg-emerald-500 hover:bg-emerald-600' : ''
+                              isCurrentLine
+                                ? 'bg-emerald-500 hover:bg-emerald-600'
+                                : isProgressLine
+                                ? 'bg-emerald-300 hover:bg-emerald-400 text-emerald-900'
+                                : ''
                             }`}
                           >
                             {line.lineNumber}
@@ -806,16 +896,20 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                           {settings.showMufradat && line.words.length > 0 ? (
                             <div dir="rtl" className="flex flex-wrap gap-0.5 sm:gap-2 justify-end">
                               {line.words.map((word, idx) => (
-                                <div key={idx} className="flex flex-col items-center group">
+                                <div key={idx} className="flex flex-col items-center group min-w-0">
                                   {/* Arabic word */}
                                   <span
-                                    className="font-arabic text-lg sm:text-2xl leading-relaxed px-0.5 sm:px-1 rounded bg-muted/30 group-hover:bg-primary/10 transition-colors"
+                                    className="font-arabic text-lg sm:text-2xl leading-relaxed px-0.5 sm:px-1 rounded bg-muted/30 group-hover:bg-primary/10 transition-colors whitespace-nowrap"
                                   >
                                     {word.text_uthmani}
                                   </span>
                                   {/* Russian translation below - always visible */}
                                   {word.translation?.text && (
-                                    <span className="text-[8px] sm:text-xs text-muted-foreground mt-0.5 max-w-[50px] sm:max-w-[80px] text-center leading-tight line-clamp-2" title={word.translation.text}>
+                                    <span
+                                      className="text-[8px] sm:text-[10px] text-muted-foreground mt-0.5 text-center leading-tight break-words hyphens-auto"
+                                      style={{ maxWidth: 'max(60px, 100%)' }}
+                                      title={word.translation.text}
+                                    >
                                       {word.translation.text}
                                     </span>
                                   )}
@@ -826,19 +920,25 @@ export function MedinaMushhafViewer({ initialPage = 1, initialLine, showProgress
                             <p
                               dir="rtl"
                               className="font-arabic text-lg sm:text-2xl leading-loose text-right"
-                              dangerouslySetInnerHTML={{ __html: line.textTajweed }}
+                              dangerouslySetInnerHTML={{
+                                __html: settings.hideVerseNumbers
+                                  ? hideArabicDigits(line.textTajweed)
+                                  : line.textTajweed
+                              }}
                             />
                           ) : (
                             <p
                               dir="rtl"
                               className="font-arabic text-lg sm:text-2xl leading-loose text-right"
                             >
-                              {line.textArabic}
+                              {settings.hideVerseNumbers
+                                ? hideArabicDigits(line.textArabic)
+                                : line.textArabic}
                             </p>
                           )}
 
                           {/* Verse keys */}
-                          {line.verseKeys.length > 0 && (
+                          {!settings.hideVerseNumbers && line.verseKeys.length > 0 && (
                             <div className="flex gap-0.5 sm:gap-1 flex-wrap">
                               {line.verseKeys.map((key) => (
                                 <Badge

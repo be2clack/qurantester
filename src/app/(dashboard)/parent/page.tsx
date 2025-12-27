@@ -14,7 +14,7 @@ export default async function ParentDashboard() {
     redirect('/login')
   }
 
-  // Get children
+  // Get children (where current user is in their parent list)
   const children = await prisma.user.findMany({
     where: {
       childOf: { some: { id: user.id } }

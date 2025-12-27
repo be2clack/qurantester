@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
-import { UserRole, GroupLevel, LessonType, MushafType, AIProvider, VerificationMode } from '@prisma/client'
+import { UserRole, GroupLevel, LessonType, MushafType, AIProvider, VerificationMode, TaskStatus } from '@prisma/client'
 import { z } from 'zod'
 
 const updateGroupSchema = z.object({
@@ -9,13 +9,23 @@ const updateGroupSchema = z.object({
   description: z.string().nullable().optional(),
   ustazId: z.string().optional(),
   level: z.nativeEnum(GroupLevel).optional(),
+  gender: z.enum(['MALE', 'FEMALE']).optional(),
   lessonType: z.nativeEnum(LessonType).optional(),
   isActive: z.boolean().optional(),
-  // Lesson settings
+  // MEMORIZATION settings
   repetitionCount: z.number().min(1).max(200).optional(),
-  stage1Days: z.number().min(1).max(30).optional(),
-  stage2Days: z.number().min(1).max(30).optional(),
-  stage3Days: z.number().min(1).max(30).optional(),
+  stage1Hours: z.number().min(1).max(720).optional(),  // max 30 days
+  stage2Hours: z.number().min(1).max(720).optional(),
+  stage3Hours: z.number().min(1).max(720).optional(),
+  // REVISION settings
+  revisionPagesPerDay: z.number().min(1).max(20).optional(),
+  revisionAllPages: z.boolean().optional(),
+  revisionButtonOnly: z.boolean().optional(),
+  // TRANSLATION settings
+  wordsPerDay: z.number().min(1).max(50).optional(),
+  wordsPassThreshold: z.number().min(1).max(50).optional(),
+  mufradatTimeLimit: z.number().min(30).max(600).optional(),
+  // Content settings
   allowVoice: z.boolean().optional(),
   allowVideoNote: z.boolean().optional(),
   allowText: z.boolean().optional(),
@@ -35,6 +45,12 @@ const updateGroupSchema = z.object({
   verificationMode: z.nativeEnum(VerificationMode).optional(),
   aiAcceptThreshold: z.number().min(0).max(100).optional(),
   aiRejectThreshold: z.number().min(0).max(100).optional(),
+  // QRC Pre-check settings
+  qrcPreCheckEnabled: z.boolean().optional(),
+  qrcPreCheckProvider: z.nativeEnum(AIProvider).optional(),
+  qrcHafzLevel: z.number().min(1).max(3).optional(),
+  qrcTajweedLevel: z.number().min(1).max(3).optional(),
+  qrcPassThreshold: z.number().min(0).max(100).optional(),
 })
 
 export async function GET(
@@ -62,6 +78,7 @@ export async function GET(
         },
         students: {
           where: {
+            isActive: true,
             student: {
               isActive: true
             }
@@ -74,15 +91,43 @@ export async function GET(
                 lastName: true,
                 phone: true,
                 telegramId: true,
-                currentPage: true,
-                currentLine: true,
-                currentStage: true,
                 tasks: {
                   where: { status: 'IN_PROGRESS' },
                   take: 1,
                   select: {
                     passedCount: true,
                     requiredCount: true,
+                  }
+                },
+                // Revision submissions count
+                revisionSubmissions: {
+                  select: {
+                    id: true,
+                    status: true,
+                    pageNumber: true,
+                    createdAt: true,
+                  }
+                },
+                // Mufradat submissions (last 7 days)
+                mufradatSubmissions: {
+                  where: {
+                    date: {
+                      gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+                    }
+                  },
+                  select: {
+                    id: true,
+                    date: true,
+                    wordsTotal: true,
+                    wordsCorrect: true,
+                    passed: true,
+                  },
+                  orderBy: { date: 'desc' }
+                },
+                // Completed tasks count for memorization (PASSED = completed successfully)
+                _count: {
+                  select: {
+                    tasks: { where: { status: TaskStatus.PASSED } }
                   }
                 }
               }
@@ -101,9 +146,9 @@ export async function GET(
             id: true,
             type: true,
             repetitionCount: true,
-            stage1Days: true,
-            stage2Days: true,
-            stage3Days: true,
+            stage1Hours: true,
+            stage2Hours: true,
+            stage3Hours: true,
             isActive: true,
           }
         },
@@ -137,12 +182,46 @@ export async function GET(
     }
 
     // Serialize BigInt fields to strings for JSON compatibility
+    // IMPORTANT: Progress (currentPage, currentLine, currentStage) comes from StudentGroup, not User!
     const serializedGroup = {
       ...group,
-      students: group.students.map(sg => ({
-        ...sg.student,
-        telegramId: sg.student.telegramId?.toString() || null,
-      }))
+      students: group.students.map(sg => {
+        const revisions = sg.student.revisionSubmissions || []
+        const passedRevisions = revisions.filter(r => r.status === 'PASSED').length
+        const pendingRevisions = revisions.filter(r => r.status === 'PENDING').length
+
+        // Mufradat stats
+        const mufradatSubs = sg.student.mufradatSubmissions || []
+        const mufradatWeekPassed = mufradatSubs.filter(m => m.passed).length
+        const mufradatWeekTotal = mufradatSubs.length
+        const mufradatTodaySub = mufradatSubs.find(m => {
+          const subDate = new Date(m.date)
+          const today = new Date()
+          return subDate.toDateString() === today.toDateString()
+        })
+
+        return {
+          ...sg.student,
+          telegramId: sg.student.telegramId?.toString() || null,
+          // Progress from StudentGroup (not User!) - this is the authoritative source
+          currentPage: sg.currentPage,
+          currentLine: sg.currentLine,
+          currentStage: sg.currentStage,
+          // Progress stats
+          completedTasksCount: sg.student._count?.tasks || 0,
+          revisionsPassed: passedRevisions,
+          revisionsPending: pendingRevisions,
+          revisionsTotal: revisions.length,
+          // Mufradat stats
+          mufradatWeekPassed,
+          mufradatWeekTotal,
+          mufradatToday: mufradatTodaySub ? {
+            wordsCorrect: mufradatTodaySub.wordsCorrect,
+            wordsTotal: mufradatTodaySub.wordsTotal,
+            passed: mufradatTodaySub.passed
+          } : null,
+        }
+      })
     }
 
     return NextResponse.json(serializedGroup)
@@ -188,9 +267,36 @@ export async function PATCH(
       }
     }
 
+    // Check if we need to regenerate the group name (gender or level changed)
+    const newGender = validation.data.gender || existing.gender
+    const newLevel = validation.data.level || existing.level
+    const genderChanged = validation.data.gender && validation.data.gender !== existing.gender
+    const levelChanged = validation.data.level && validation.data.level !== existing.level
+
+    let updateData = { ...validation.data }
+
+    if (genderChanged || levelChanged) {
+      // Regenerate group name
+      const genderPrefix = newGender === 'MALE' ? 'М' : 'Ж'
+      const year = new Date().getFullYear().toString().slice(-2)
+      const levelNumber = newLevel.replace('LEVEL_', '')
+      const basePattern = `${genderPrefix}-${year}-${levelNumber}`
+
+      // Count existing groups with same base pattern to get next number
+      const existingGroups = await prisma.group.count({
+        where: {
+          name: { startsWith: basePattern },
+          id: { not: id } // Exclude current group
+        }
+      })
+
+      const groupNumber = existingGroups + 1
+      updateData.name = `${basePattern}-${groupNumber}`
+    }
+
     const group = await prisma.group.update({
       where: { id },
-      data: validation.data,
+      data: updateData,
       include: {
         ustaz: {
           select: { id: true, firstName: true, lastName: true }
@@ -198,6 +304,35 @@ export async function PATCH(
         _count: { select: { students: true } }
       }
     })
+
+    // If repetitionCount changed, sync all active tasks for this group
+    if (validation.data.repetitionCount !== undefined &&
+        validation.data.repetitionCount !== existing.repetitionCount) {
+      await prisma.task.updateMany({
+        where: {
+          groupId: id,
+          status: 'IN_PROGRESS',
+          // Only update if new count is different and task hasn't exceeded the new count
+          currentCount: { lt: validation.data.repetitionCount }
+        },
+        data: {
+          requiredCount: validation.data.repetitionCount
+        }
+      })
+
+      // For tasks where currentCount >= new requiredCount, mark them as ready
+      // (keep as IN_PROGRESS but with updated requiredCount so they complete on next check)
+      await prisma.task.updateMany({
+        where: {
+          groupId: id,
+          status: 'IN_PROGRESS',
+          currentCount: { gte: validation.data.repetitionCount }
+        },
+        data: {
+          requiredCount: validation.data.repetitionCount
+        }
+      })
+    }
 
     return NextResponse.json(group)
   } catch (error) {

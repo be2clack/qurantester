@@ -24,7 +24,9 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  Pencil,
 } from 'lucide-react'
+import { StudentProgressEditDialog } from '@/components/student-progress-edit-dialog'
 
 interface Student {
   id: string
@@ -57,6 +59,10 @@ export default function UstazStudentsPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
 
+  // Progress edit dialog
+  const [progressDialogOpen, setProgressDialogOpen] = useState(false)
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null)
+
   useEffect(() => {
     fetchStudents()
   }, [])
@@ -71,6 +77,11 @@ export default function UstazStudentsPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const openProgressDialog = (student: Student) => {
+    setEditingStudent(student)
+    setProgressDialogOpen(true)
   }
 
   const getStageLabel = (stage: string) => {
@@ -119,12 +130,76 @@ export default function UstazStudentsPage() {
     )
   }
 
+  // Mobile Card Component
+  const StudentCard = ({ student }: { student: Student }) => {
+    const taskProgress = getTaskProgress(student)
+    return (
+      <Card className="overflow-hidden">
+        <CardContent className="p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                <span className="text-sm font-medium">
+                  {student.firstName?.[0]}{student.lastName?.[0]}
+                </span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="font-medium truncate">
+                  {student.firstName} {student.lastName}
+                </div>
+                <div className="text-sm text-muted-foreground flex items-center gap-1">
+                  <Phone className="h-3 w-3" />
+                  {student.phone}
+                </div>
+              </div>
+            </div>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openProgressDialog(student)}>
+              <Pencil className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Progress */}
+          <div className="mt-3 flex items-center gap-3 text-sm">
+            <div className="flex items-center gap-1.5">
+              <BookOpen className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium">{student.currentPage}-{student.currentLine}</span>
+            </div>
+            <Badge className={getStageBadgeColor(student.currentStage)}>
+              {getStageLabel(student.currentStage)}
+            </Badge>
+            {student.group && (
+              <Badge variant="outline">{student.group.name}</Badge>
+            )}
+          </div>
+
+          {/* Task Progress */}
+          {taskProgress && (
+            <div className="mt-3 space-y-1">
+              <div className="flex items-center gap-2 text-xs">
+                <CheckCircle className="h-3 w-3 text-green-500" />
+                <span>{taskProgress.passed}</span>
+                {taskProgress.failed > 0 && (
+                  <>
+                    <XCircle className="h-3 w-3 text-red-500 ml-2" />
+                    <span>{taskProgress.failed}</span>
+                  </>
+                )}
+                <span className="text-muted-foreground">/ {taskProgress.required}</span>
+              </div>
+              <Progress value={taskProgress.percent} className="h-1.5" />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    )
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Мои студенты</h1>
-          <p className="text-muted-foreground">Всего: {students.length} студентов</p>
+          <h1 className="text-xl md:text-2xl font-bold">Мои студенты</h1>
+          <p className="text-sm text-muted-foreground">Всего: {students.length} студентов</p>
         </div>
       </div>
 
@@ -148,93 +223,123 @@ export default function UstazStudentsPage() {
           </CardContent>
         </Card>
       ) : (
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Студент</TableHead>
-                  <TableHead>Группа</TableHead>
-                  <TableHead className="text-center">Страница</TableHead>
-                  <TableHead className="text-center">Этап</TableHead>
-                  <TableHead>Прогресс задания</TableHead>
-                  <TableHead className="text-center">Сдачи</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredStudents.map((student) => {
-                  const taskProgress = getTaskProgress(student)
-                  return (
-                    <TableRow key={student.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
-                            <span className="text-sm font-medium">
-                              {student.firstName?.[0]}{student.lastName?.[0]}
-                            </span>
-                          </div>
-                          <div>
-                            <p className="font-medium">
-                              {student.firstName} {student.lastName}
-                            </p>
-                            <p className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Phone className="h-3 w-3" />
-                              {student.phone}
-                            </p>
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {student.group ? (
-                          <Badge variant="outline">{student.group.name}</Badge>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <div className="flex items-center justify-center gap-1">
-                          <BookOpen className="h-4 w-4 text-muted-foreground" />
-                          <span className="font-medium">{student.currentPage}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge className={getStageBadgeColor(student.currentStage)}>
-                          {getStageLabel(student.currentStage)}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {taskProgress ? (
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2 text-xs">
-                              <CheckCircle className="h-3 w-3 text-green-500" />
-                              <span>{taskProgress.passed}</span>
-                              {taskProgress.failed > 0 && (
-                                <>
-                                  <XCircle className="h-3 w-3 text-red-500 ml-2" />
-                                  <span>{taskProgress.failed}</span>
-                                </>
-                              )}
-                              <span className="text-muted-foreground">/ {taskProgress.required}</span>
+        <>
+          {/* Mobile: Cards */}
+          <div className="md:hidden space-y-3">
+            {filteredStudents.map((student) => (
+              <StudentCard key={student.id} student={student} />
+            ))}
+          </div>
+
+          {/* Desktop: Table */}
+          <Card className="hidden md:block">
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Студент</TableHead>
+                    <TableHead>Группа</TableHead>
+                    <TableHead className="text-center">Страница</TableHead>
+                    <TableHead className="text-center">Этап</TableHead>
+                    <TableHead>Прогресс задания</TableHead>
+                    <TableHead className="text-center">Сдачи</TableHead>
+                    <TableHead className="text-right">Действия</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredStudents.map((student) => {
+                    const taskProgress = getTaskProgress(student)
+                    return (
+                      <TableRow key={student.id}>
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
+                              <span className="text-sm font-medium">
+                                {student.firstName?.[0]}{student.lastName?.[0]}
+                              </span>
                             </div>
-                            <Progress value={taskProgress.percent} className="h-1.5" />
+                            <div>
+                              <p className="font-medium">
+                                {student.firstName} {student.lastName}
+                              </p>
+                              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Phone className="h-3 w-3" />
+                                {student.phone}
+                              </p>
+                            </div>
                           </div>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">Нет активного</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge variant="secondary">
-                          {student._count.submissions}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+                        </TableCell>
+                        <TableCell>
+                          {student.group ? (
+                            <Badge variant="outline">{student.group.name}</Badge>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <BookOpen className="h-4 w-4 text-muted-foreground" />
+                            <span className="font-medium">{student.currentPage}-{student.currentLine}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge className={getStageBadgeColor(student.currentStage)}>
+                            {getStageLabel(student.currentStage)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          {taskProgress ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 text-xs">
+                                <CheckCircle className="h-3 w-3 text-green-500" />
+                                <span>{taskProgress.passed}</span>
+                                {taskProgress.failed > 0 && (
+                                  <>
+                                    <XCircle className="h-3 w-3 text-red-500 ml-2" />
+                                    <span>{taskProgress.failed}</span>
+                                  </>
+                                )}
+                                <span className="text-muted-foreground">/ {taskProgress.required}</span>
+                              </div>
+                              <Progress value={taskProgress.percent} className="h-1.5" />
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">Нет активного</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="secondary">
+                            {student._count.submissions}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => openProgressDialog(student)}
+                            title="Редактировать прогресс"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </>
       )}
+
+      {/* Progress Edit Dialog */}
+      <StudentProgressEditDialog
+        open={progressDialogOpen}
+        onOpenChange={setProgressDialogOpen}
+        student={editingStudent}
+        onSuccess={fetchStudents}
+      />
     </div>
   )
 }

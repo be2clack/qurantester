@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Plus, Search, Users, Loader2, MoreHorizontal, Pencil, Trash2, Power, PowerOff, Eye, ChevronLeft, ChevronRight, Filter, BookText, RefreshCw, Languages } from 'lucide-react'
+import { Plus, Search, Users, Loader2, MoreHorizontal, Pencil, Trash2, Power, PowerOff, Eye, ChevronLeft, ChevronRight, GraduationCap } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,28 +55,16 @@ interface Ustaz {
   lastName: string | null
 }
 
-const LEVEL_LABELS: Record<string, string> = {
-  LEVEL_1: 'Уровень 1',
-  LEVEL_2: 'Уровень 2',
-  LEVEL_3: 'Уровень 3',
+const LEVEL_LABELS: Record<string, { label: string; lines: string }> = {
+  LEVEL_1: { label: 'Уровень 1', lines: '1 строка' },
+  LEVEL_2: { label: 'Уровень 2', lines: '3 строки' },
+  LEVEL_3: { label: 'Уровень 3', lines: '7 строк' },
 }
 
 const LEVEL_COLORS: Record<string, string> = {
   LEVEL_1: 'bg-emerald-100 text-emerald-800 border-emerald-200',
   LEVEL_2: 'bg-blue-100 text-blue-800 border-blue-200',
   LEVEL_3: 'bg-purple-100 text-purple-800 border-purple-200',
-}
-
-const LESSON_TYPE_LABELS: Record<string, string> = {
-  MEMORIZATION: 'Заучивание',
-  REVISION: 'Повторение',
-  TRANSLATION: 'Перевод',
-}
-
-const LESSON_TYPE_ICONS: Record<string, React.ReactNode> = {
-  MEMORIZATION: <BookText className="h-3 w-3" />,
-  REVISION: <RefreshCw className="h-3 w-3" />,
-  TRANSLATION: <Languages className="h-3 w-3" />,
 }
 
 export default function GroupsPage() {
@@ -88,7 +76,6 @@ export default function GroupsPage() {
   const [ustazList, setUstazList] = useState<Ustaz[]>([])
   const [filterUstaz, setFilterUstaz] = useState<string>('all')
   const [filterLevel, setFilterLevel] = useState<string>('all')
-  const [filterType, setFilterType] = useState<string>('all')
 
   useEffect(() => {
     fetchGroups()
@@ -126,8 +113,7 @@ export default function GroupsPage() {
       group.ustaz?.lastName?.toLowerCase().includes(search.toLowerCase())
     const matchesUstaz = filterUstaz === 'all' || group.ustaz?.id === filterUstaz
     const matchesLevel = filterLevel === 'all' || group.level === filterLevel
-    const matchesType = filterType === 'all' || group.lessonType === filterType
-    return matchesSearch && matchesUstaz && matchesLevel && matchesType
+    return matchesSearch && matchesUstaz && matchesLevel
   })
 
   const handleDelete = async (id: string) => {
@@ -221,15 +207,12 @@ export default function GroupsPage() {
             {group.isActive ? 'Активна' : 'Неактивна'}
           </Badge>
           <Badge className={`${LEVEL_COLORS[group.level]} border`}>
-            {LEVEL_LABELS[group.level] || group.level}
-          </Badge>
-          <Badge variant="outline">
-            {LESSON_TYPE_ICONS[group.lessonType]}
-            <span className="ml-1">{LESSON_TYPE_LABELS[group.lessonType]}</span>
+            <GraduationCap className="mr-1 h-3 w-3" />
+            {LEVEL_LABELS[group.level]?.lines || group.level}
           </Badge>
           <Badge variant="outline">
             <Users className="mr-1 h-3 w-3" />
-            {group._count.students}
+            {group._count.students} студ.
           </Badge>
         </div>
 
@@ -288,53 +271,40 @@ export default function GroupsPage() {
       {/* Search and Filters */}
       <Card>
         <CardContent className="p-4">
-          <div className="flex flex-col gap-3">
-            <div className="relative">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Поиск..."
+                placeholder="Поиск по названию или устазу..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-10"
               />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <Select value={filterUstaz} onValueChange={setFilterUstaz}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Устаз" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Все устазы</SelectItem>
-                  {ustazList.map((ustaz) => (
-                    <SelectItem key={ustaz.id} value={ustaz.id}>
-                      {ustaz.firstName} {ustaz.lastName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={filterLevel} onValueChange={setFilterLevel}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Уровень" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Все уровни</SelectItem>
-                  <SelectItem value="LEVEL_1">Уровень 1</SelectItem>
-                  <SelectItem value="LEVEL_2">Уровень 2</SelectItem>
-                  <SelectItem value="LEVEL_3">Уровень 3</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={filterType} onValueChange={setFilterType}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Тип урока" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Все типы</SelectItem>
-                  <SelectItem value="MEMORIZATION">Заучивание</SelectItem>
-                  <SelectItem value="REVISION">Повторение</SelectItem>
-                  <SelectItem value="TRANSLATION">Перевод</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <Select value={filterUstaz} onValueChange={setFilterUstaz}>
+              <SelectTrigger className="w-full sm:w-[180px]">
+                <SelectValue placeholder="Устаз" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все устазы</SelectItem>
+                {ustazList.map((ustaz) => (
+                  <SelectItem key={ustaz.id} value={ustaz.id}>
+                    {ustaz.firstName} {ustaz.lastName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={filterLevel} onValueChange={setFilterLevel}>
+              <SelectTrigger className="w-full sm:w-[150px]">
+                <SelectValue placeholder="Уровень" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все уровни</SelectItem>
+                <SelectItem value="LEVEL_1">1 строка</SelectItem>
+                <SelectItem value="LEVEL_2">3 строки</SelectItem>
+                <SelectItem value="LEVEL_3">7 строк</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>
@@ -367,7 +337,6 @@ export default function GroupsPage() {
                   <TableHead>Название</TableHead>
                   <TableHead>Устаз</TableHead>
                   <TableHead className="text-center">Уровень</TableHead>
-                  <TableHead className="text-center">Тип урока</TableHead>
                   <TableHead className="text-center">Студенты</TableHead>
                   <TableHead>Статус</TableHead>
                   <TableHead className="w-[80px]"></TableHead>
@@ -403,13 +372,8 @@ export default function GroupsPage() {
                     </TableCell>
                     <TableCell className="text-center">
                       <Badge className={`${LEVEL_COLORS[group.level]} border`}>
-                        {LEVEL_LABELS[group.level] || group.level}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="outline">
-                        {LESSON_TYPE_ICONS[group.lessonType]}
-                        <span className="ml-1">{LESSON_TYPE_LABELS[group.lessonType]}</span>
+                        <GraduationCap className="mr-1 h-3 w-3" />
+                        {LEVEL_LABELS[group.level]?.lines || group.level}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-center">

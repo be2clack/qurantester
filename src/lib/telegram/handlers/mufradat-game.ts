@@ -2,23 +2,13 @@ import type { BotContext } from '../bot'
 import { InlineKeyboard } from 'grammy'
 import { prisma } from '@/lib/prisma'
 import { TaskStatus, SubmissionStatus } from '@prisma/client'
-import OpenAI from 'openai'
-
-// Game state stored in memory (per user)
-interface GameState {
-  groupId: string
-  taskId: string
-  words: GameWord[]
-  currentIndex: number
-  correctCount: number
-  startTime: number
-  results: GameResult[]
-}
+import { getSurahsByPage } from '@/lib/constants/surahs'
 
 interface GameWord {
   wordKey: string
   textArabic: string
   translationRu: string
+  translationEn: string | null
   direction: 'ar_to_ru' | 'ru_to_ar'
   options: string[]
   correctIndex: number
@@ -32,149 +22,208 @@ interface GameResult {
   direction: 'ar_to_ru' | 'ru_to_ar'
 }
 
-// Simple in-memory game state store
-const gameStates = new Map<string, GameState>()
-
 const WORDS_PER_GAME = 10
-const PASS_THRESHOLD = 80
+const DEFAULT_TIME_LIMIT = 180 // 3 minutes in seconds
 
 /**
- * Get OpenAI client
+ * Get active game session from database
  */
-async function getOpenAIClient(): Promise<{ client: OpenAI; model: string } | null> {
-  try {
-    const settings = await prisma.systemSettings.findMany({
-      where: { key: { in: ['OPENAI_API_KEY', 'OPENAI_MODEL'] } }
-    })
-    const apiKey = settings.find(s => s.key === 'OPENAI_API_KEY')?.value || process.env.OPENAI_API_KEY
-    const model = settings.find(s => s.key === 'OPENAI_MODEL')?.value || 'gpt-4o-mini'
-
-    if (!apiKey) return null
-    return { client: new OpenAI({ apiKey }), model }
-  } catch {
-    return null
-  }
+async function getActiveSession(userId: string) {
+  return prisma.mufradatGameSession.findFirst({
+    where: { studentId: userId, isActive: true }
+  })
 }
 
 /**
- * Generate game words using ChatGPT based on student's progress
+ * Create new game session in database
  */
-async function generateGameWords(
+async function createSession(
+  userId: string,
+  groupId: string,
+  taskId: string,
+  words: GameWord[],
+  timeLimit: number
+) {
+  // Deactivate any existing sessions
+  await prisma.mufradatGameSession.updateMany({
+    where: { studentId: userId, isActive: true },
+    data: { isActive: false }
+  })
+
+  return prisma.mufradatGameSession.create({
+    data: {
+      studentId: userId,
+      groupId,
+      taskId,
+      words: JSON.stringify(words),
+      timeLimit,
+      results: JSON.stringify([]),
+      isActive: true
+    }
+  })
+}
+
+/**
+ * Update game session
+ */
+async function updateSession(
+  sessionId: string,
+  data: { currentIndex?: number; correctCount?: number; results?: GameResult[] }
+) {
+  const updateData: Record<string, unknown> = {}
+  if (data.currentIndex !== undefined) updateData.currentIndex = data.currentIndex
+  if (data.correctCount !== undefined) updateData.correctCount = data.correctCount
+  if (data.results !== undefined) updateData.results = JSON.stringify(data.results)
+
+  return prisma.mufradatGameSession.update({
+    where: { id: sessionId },
+    data: updateData
+  })
+}
+
+/**
+ * Deactivate game session
+ */
+async function deactivateSession(sessionId: string) {
+  return prisma.mufradatGameSession.update({
+    where: { id: sessionId },
+    data: { isActive: false }
+  })
+}
+
+/**
+ * Get words from database based on student's current page and line
+ * Only returns words from pages that the student has already completed
+ * (pages before current page, since current page is still being learned)
+ */
+async function getWordsForStudentProgress(
   pageNumber: number,
-  startLine: number,
-  endLine: number,
+  lineNumber: number,
   count: number
 ): Promise<GameWord[]> {
-  const openai = await getOpenAIClient()
-  if (!openai) {
-    throw new Error('OpenAI not configured')
-  }
+  // Use pages before current page (already completed)
+  // If on page 1, use at least page 1
+  // If line >= 8 (second half of page), we can include current page too
+  const maxPage = lineNumber >= 8 ? pageNumber : Math.max(1, pageNumber - 1)
 
-  // First, try to get existing words from DB for this page range
-  const existingWords = await prisma.wordTranslation.findMany({
-    where: {
-      surahNumber: { gte: 1 }, // Get words we have
-      translationRu: { not: null }
-    },
-    take: 100,
-    orderBy: { id: 'desc' }
-  })
+  const surahs = getSurahsByPage(maxPage)
 
-  // If we have enough words, use them
-  if (existingWords.length >= count * 2) {
-    return createGameFromExistingWords(existingWords, count)
-  }
-
-  // Otherwise, ask ChatGPT to generate Quran vocabulary for practice
-  const prompt = `Сгенерируй ${count * 2} часто встречающихся слов из Корана для изучения.
-Для каждого слова дай:
-- Арабский текст (без харакатов для простоты)
-- Русский перевод (краткий, 1-2 слова)
-
-Включи базовые слова как: الله، رب، يوم، قال، أرض، سماء، نار، جنة، صلاة، كتاب и подобные.
-
-Ответ в JSON формате:
-{
-  "words": [
-    {"arabic": "الله", "russian": "Аллах"},
-    {"arabic": "رب", "russian": "Господь"}
-  ]
-}
-`
-
-  const response = await openai.client.chat.completions.create({
-    model: openai.model,
-    messages: [
-      { role: 'system', content: 'Ты помощник для изучения арабского языка Корана.' },
-      { role: 'user', content: prompt }
-    ],
-    temperature: 0.7,
-    max_tokens: 2000,
-    response_format: { type: 'json_object' }
-  })
-
-  const content = response.choices[0]?.message?.content
-  if (!content) throw new Error('Empty response from ChatGPT')
-
-  const parsed = JSON.parse(content)
-  const rawWords = parsed.words || []
-
-  // Create game words with alternating directions
-  const gameWords: GameWord[] = []
-  const shuffledWords = rawWords.sort(() => Math.random() - 0.5)
-
-  for (let i = 0; i < Math.min(count, shuffledWords.length); i++) {
-    const word = shuffledWords[i]
-    const direction: 'ar_to_ru' | 'ru_to_ar' = i % 2 === 0 ? 'ar_to_ru' : 'ru_to_ar'
-
-    // Get 3 wrong options
-    const otherWords = shuffledWords.filter((_: any, idx: number) => idx !== i)
-    const wrongOptions = otherWords
-      .slice(0, 3)
-      .map((w: any) => direction === 'ar_to_ru' ? w.russian : w.arabic)
-
-    const correctAnswer = direction === 'ar_to_ru' ? word.russian : word.arabic
-    const allOptions = [correctAnswer, ...wrongOptions].sort(() => Math.random() - 0.5)
-    const correctIndex = allOptions.indexOf(correctAnswer)
-
-    gameWords.push({
-      wordKey: `gen:${i}`,
-      textArabic: word.arabic,
-      translationRu: word.russian,
-      direction,
-      options: allOptions,
-      correctIndex
+  if (surahs.length === 0) {
+    surahs.push({
+      number: 1,
+      nameArabic: 'الفاتحة',
+      nameEnglish: 'Al-Fatihah',
+      nameRussian: 'Аль-Фатиха',
+      meaningEnglish: 'The Opening',
+      meaningRussian: 'Открывающая',
+      versesCount: 7,
+      startPage: 1,
+      endPage: 1,
+      revelationType: 'meccan' as const
     })
   }
 
-  return gameWords
+  // Get surah numbers for all pages up to maxPage
+  const allSurahNumbers: number[] = []
+  for (let page = 1; page <= maxPage; page++) {
+    const pageSurahs = getSurahsByPage(page)
+    for (const surah of pageSurahs) {
+      if (!allSurahNumbers.includes(surah.number)) {
+        allSurahNumbers.push(surah.number)
+      }
+    }
+  }
+
+  const words = await prisma.wordTranslation.findMany({
+    where: {
+      surahNumber: { in: allSurahNumbers },
+      OR: [
+        { translationRu: { not: null } },
+        { translationEn: { not: null } }
+      ]
+    },
+    orderBy: [
+      { surahNumber: 'desc' },
+      { ayahNumber: 'desc' }
+    ],
+    take: count * 4
+  })
+
+  if (words.length < count) {
+    const fallbackWords = await prisma.wordTranslation.findMany({
+      where: {
+        OR: [
+          { translationRu: { not: null } },
+          { translationEn: { not: null } }
+        ]
+      },
+      orderBy: { id: 'desc' },
+      take: count * 4
+    })
+
+    if (fallbackWords.length >= count) {
+      return createGameFromExistingWords(fallbackWords, count)
+    }
+
+    return []
+  }
+
+  return createGameFromExistingWords(words, count)
 }
 
 /**
  * Create game from existing DB words
  */
 function createGameFromExistingWords(words: any[], count: number): GameWord[] {
-  const shuffled = words.filter(w => w.translationRu).sort(() => Math.random() - 0.5)
+  const validWords = words.filter(w => w.translationRu || w.translationEn)
+
+  if (validWords.length < count) {
+    return []
+  }
+
+  const shuffled = validWords.sort(() => Math.random() - 0.5)
   const gameWords: GameWord[] = []
 
   for (let i = 0; i < Math.min(count, shuffled.length); i++) {
     const word = shuffled[i]
+    const translation = word.translationRu || word.translationEn
+
+    if (!translation) continue
+
     const direction: 'ar_to_ru' | 'ru_to_ar' = i % 2 === 0 ? 'ar_to_ru' : 'ru_to_ar'
 
-    // Get wrong options
     const otherWords = shuffled.filter((_: any, idx: number) => idx !== i)
     const wrongOptions = otherWords
       .slice(0, 3)
-      .map((w: any) => direction === 'ar_to_ru' ? w.translationRu : w.textArabic)
+      .map((w: any) => {
+        const trans = w.translationRu || w.translationEn
+        return direction === 'ar_to_ru' ? trans : w.textArabic
+      })
+      .filter((opt: string | null) => opt !== null)
 
-    const correctAnswer = direction === 'ar_to_ru' ? word.translationRu : word.textArabic
+    while (wrongOptions.length < 3 && otherWords.length > wrongOptions.length) {
+      const idx = wrongOptions.length + 3
+      if (idx < otherWords.length) {
+        const w = otherWords[idx]
+        const trans = w.translationRu || w.translationEn
+        const opt = direction === 'ar_to_ru' ? trans : w.textArabic
+        if (opt && !wrongOptions.includes(opt)) {
+          wrongOptions.push(opt)
+        }
+      } else {
+        break
+      }
+    }
+
+    const correctAnswer = direction === 'ar_to_ru' ? translation : word.textArabic
     const allOptions = [correctAnswer, ...wrongOptions].sort(() => Math.random() - 0.5)
     const correctIndex = allOptions.indexOf(correctAnswer)
 
     gameWords.push({
       wordKey: word.wordKey,
       textArabic: word.textArabic,
-      translationRu: word.translationRu,
+      translationRu: word.translationRu || word.translationEn,
+      translationEn: word.translationEn,
       direction,
       options: allOptions,
       correctIndex
@@ -195,21 +244,20 @@ export async function startMufradatGame(
 ): Promise<void> {
   const userId = user.id
 
-  // Get student's progress for this group
   const studentGroup = await prisma.studentGroup.findFirst({
     where: { studentId: userId, groupId, isActive: true },
     include: { group: true }
   })
 
   if (!studentGroup) {
-    await ctx.answerCallbackQuery({ text: 'Группа не найдена', show_alert: true })
+    try {
+      await ctx.answerCallbackQuery({ text: 'Группа не найдена', show_alert: true })
+    } catch {}
     return
   }
 
-  // Create task if not exists
   let actualTaskId = taskId
   if (!actualTaskId) {
-    // Check for existing task
     const existingTask = await prisma.task.findFirst({
       where: {
         studentId: userId,
@@ -221,7 +269,6 @@ export async function startMufradatGame(
     if (existingTask) {
       actualTaskId = existingTask.id
     } else {
-      // Create new task for mufradat game
       let page = await prisma.quranPage.findUnique({
         where: { pageNumber: studentGroup.currentPage }
       })
@@ -253,76 +300,82 @@ export async function startMufradatGame(
   }
 
   try {
-    // Generate game words
-    const words = await generateGameWords(
+    const wordsCount = studentGroup.group.wordsPerDay || WORDS_PER_GAME
+    const timeLimit = studentGroup.group.mufradatTimeLimit || DEFAULT_TIME_LIMIT
+
+    const words = await getWordsForStudentProgress(
       studentGroup.currentPage,
       studentGroup.currentLine,
-      Math.min(studentGroup.currentLine + 5, 15),
-      WORDS_PER_GAME
+      wordsCount
     )
 
     if (words.length === 0) {
       await ctx.editMessageText(
-        '❌ Не удалось сгенерировать слова для игры.\n\nПопробуйте позже или обратитесь к устазу.',
+        '❌ Недостаточно слов для игры.\n\nАдмин должен импортировать слова для вашей страницы.',
         { reply_markup: new InlineKeyboard().text('◀️ Назад', 'student:menu') }
       )
       return
     }
 
-    // Store game state
-    const gameState: GameState = {
-      groupId,
-      taskId: actualTaskId!,
-      words,
-      currentIndex: 0,
-      correctCount: 0,
-      startTime: Date.now(),
-      results: []
-    }
-    gameStates.set(userId, gameState)
+    // Create session in database
+    await createSession(userId, groupId, actualTaskId!, words, timeLimit)
 
     // Show first question
     await showGameQuestion(ctx, userId)
   } catch (error) {
     console.error('Failed to start mufradat game:', error)
     await ctx.editMessageText(
-      '❌ Ошибка при запуске игры.\n\nУбедитесь, что настроен OpenAI API ключ.',
+      '❌ Ошибка при запуске игры.\n\nПопробуйте позже.',
       { reply_markup: new InlineKeyboard().text('◀️ Назад', 'student:menu') }
     )
   }
 }
 
 /**
- * Show current game question
+ * Show current game question with timer
  */
 async function showGameQuestion(ctx: BotContext, userId: string): Promise<void> {
-  const state = gameStates.get(userId)
-  if (!state) return
+  const session = await getActiveSession(userId)
+  if (!session) return
 
-  const word = state.words[state.currentIndex]
-  const questionNum = state.currentIndex + 1
-  const total = state.words.length
+  const words: GameWord[] = JSON.parse(session.words)
+  const startTime = new Date(session.startTime).getTime()
+  const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000)
+  const remainingSeconds = session.timeLimit - elapsedSeconds
 
-  // Progress bar
-  const progressPercent = Math.round((state.currentIndex / total) * 100)
+  if (remainingSeconds <= 0) {
+    await finishGame(ctx, { id: userId }, session, true)
+    return
+  }
+
+  const word = words[session.currentIndex]
+  const questionNum = session.currentIndex + 1
+  const total = words.length
+
+  const progressPercent = Math.round((session.currentIndex / total) * 100)
   const filled = Math.round(progressPercent / 10)
   const progressBar = '▓'.repeat(filled) + '░'.repeat(10 - filled)
 
-  // Build question based on direction
+  const minutes = Math.floor(remainingSeconds / 60)
+  const seconds = remainingSeconds % 60
+  const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`
+  const timeEmoji = remainingSeconds <= 30 ? '🔴' : remainingSeconds <= 60 ? '🟡' : '🟢'
+
   let question: string
   if (word.direction === 'ar_to_ru') {
     question = `🎮 <b>Муфрадат</b> — ${questionNum}/${total}\n\n`
-    question += `${progressBar} ${progressPercent}%\n\n`
+    question += `${progressBar} ${progressPercent}%\n`
+    question += `${timeEmoji} Осталось: <b>${timeStr}</b>\n\n`
     question += `📝 Переведите на русский:\n\n`
     question += `<b style="font-size: 32px;">${word.textArabic}</b>`
   } else {
     question = `🎮 <b>Муфрадат</b> — ${questionNum}/${total}\n\n`
-    question += `${progressBar} ${progressPercent}%\n\n`
+    question += `${progressBar} ${progressPercent}%\n`
+    question += `${timeEmoji} Осталось: <b>${timeStr}</b>\n\n`
     question += `📝 Выберите арабское слово:\n\n`
     question += `🇷🇺 <b>${word.translationRu}</b>`
   }
 
-  // Build keyboard with options
   const keyboard = new InlineKeyboard()
   word.options.forEach((option, index) => {
     keyboard.text(option, `mufradat:answer:${index}`).row()
@@ -351,20 +404,35 @@ export async function handleMufradatAnswer(
   answerIndex: number
 ): Promise<void> {
   const userId = user.id
-  const state = gameStates.get(userId)
+  const session = await getActiveSession(userId)
 
-  if (!state) {
-    await ctx.answerCallbackQuery({ text: 'Игра не найдена. Начните заново.', show_alert: true })
+  if (!session) {
+    try {
+      await ctx.answerCallbackQuery({ text: 'Игра не найдена. Начните заново.', show_alert: true })
+    } catch {}
     return
   }
 
-  const word = state.words[state.currentIndex]
+  const words: GameWord[] = JSON.parse(session.words)
+  const results: GameResult[] = JSON.parse(session.results || '[]')
+
+  const startTime = new Date(session.startTime).getTime()
+  const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000)
+
+  if (elapsedSeconds >= session.timeLimit) {
+    try {
+      await ctx.answerCallbackQuery({ text: '⏱️ Время вышло!', show_alert: true })
+    } catch {}
+    await finishGame(ctx, user, session, true)
+    return
+  }
+
+  const word = words[session.currentIndex]
   const isCorrect = answerIndex === word.correctIndex
   const userAnswer = word.options[answerIndex]
   const correctAnswer = word.options[word.correctIndex]
 
-  // Record result
-  state.results.push({
+  results.push({
     wordKey: word.wordKey,
     correct: isCorrect,
     userAnswer,
@@ -372,24 +440,36 @@ export async function handleMufradatAnswer(
     direction: word.direction
   })
 
+  const newCorrectCount = session.correctCount + (isCorrect ? 1 : 0)
+  const newIndex = session.currentIndex + 1
+
+  // Update session in database
+  await updateSession(session.id, {
+    currentIndex: newIndex,
+    correctCount: newCorrectCount,
+    results
+  })
+
   if (isCorrect) {
-    state.correctCount++
-    await ctx.answerCallbackQuery({ text: '✅ Правильно!', show_alert: false })
+    try {
+      await ctx.answerCallbackQuery({ text: '✅ Правильно!', show_alert: false })
+    } catch {}
   } else {
-    await ctx.answerCallbackQuery({
-      text: `❌ Неправильно! Правильный ответ: ${correctAnswer}`,
-      show_alert: true
-    })
+    try {
+      await ctx.answerCallbackQuery({
+        text: `❌ Неправильно! Правильный ответ: ${correctAnswer}`,
+        show_alert: true
+      })
+    } catch {}
   }
 
-  // Move to next question or finish
-  state.currentIndex++
-
-  if (state.currentIndex >= state.words.length) {
-    // Game finished
-    await finishGame(ctx, user)
+  if (newIndex >= words.length) {
+    // Reload session with updated data
+    const updatedSession = await getActiveSession(userId)
+    if (updatedSession) {
+      await finishGame(ctx, user, updatedSession, false)
+    }
   } else {
-    // Show next question
     await showGameQuestion(ctx, userId)
   }
 }
@@ -397,50 +477,94 @@ export async function handleMufradatAnswer(
 /**
  * Finish game and save results
  */
-async function finishGame(ctx: BotContext, user: any): Promise<void> {
+async function finishGame(
+  ctx: BotContext,
+  user: any,
+  session: any,
+  timeExpired: boolean = false
+): Promise<void> {
   const userId = user.id
-  const state = gameStates.get(userId)
+  const words: GameWord[] = JSON.parse(session.words)
+  const results: GameResult[] = JSON.parse(session.results || '[]')
 
-  if (!state) return
+  const startTime = new Date(session.startTime).getTime()
+  const totalTime = Math.round((Date.now() - startTime) / 1000)
+  const score = Math.round((session.correctCount / words.length) * 100)
 
-  const totalTime = Math.round((Date.now() - state.startTime) / 1000)
-  const score = Math.round((state.correctCount / state.words.length) * 100)
-  const passed = score >= PASS_THRESHOLD
+  const group = await prisma.group.findUnique({
+    where: { id: session.groupId }
+  })
+  const passThreshold = group?.wordsPassThreshold || 8
+  const passed = !timeExpired && session.correctCount >= passThreshold
 
-  // Save submission
+  // Deactivate session
+  await deactivateSession(session.id)
+
   try {
     const submission = await prisma.submission.create({
       data: {
-        taskId: state.taskId,
+        taskId: session.taskId,
         studentId: userId,
         submissionType: 'MUFRADAT_GAME',
         gameScore: score,
-        gameCorrect: state.correctCount,
-        gameTotal: state.words.length,
-        gameData: JSON.stringify({ results: state.results, totalTime }),
+        gameCorrect: session.correctCount,
+        gameTotal: words.length,
+        gameData: JSON.stringify({
+          results,
+          totalTime,
+          timeExpired,
+          timeLimit: session.timeLimit
+        }),
         status: passed ? SubmissionStatus.PASSED : SubmissionStatus.PENDING,
-        feedback: `Муфрадат: ${state.correctCount}/${state.words.length} (${score}%)`,
+        feedback: timeExpired
+          ? `Муфрадат: ${session.correctCount}/${words.length} (⏱️ время вышло)`
+          : `Муфрадат: ${session.correctCount}/${words.length} (${score}%)`,
         reviewedAt: passed ? new Date() : null
       }
     })
 
-    // If passed, update task
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    await prisma.mufradatSubmission.upsert({
+      where: {
+        studentId_date: {
+          studentId: userId,
+          date: today
+        }
+      },
+      create: {
+        studentId: userId,
+        date: today,
+        wordsTotal: words.length,
+        wordsCorrect: session.correctCount,
+        wordsMistakes: words.length - session.correctCount,
+        passed,
+        details: JSON.stringify(results)
+      },
+      update: {
+        wordsTotal: words.length,
+        wordsCorrect: session.correctCount,
+        wordsMistakes: words.length - session.correctCount,
+        passed,
+        details: JSON.stringify(results)
+      }
+    })
+
     if (passed) {
       await prisma.task.update({
-        where: { id: state.taskId },
+        where: { id: session.taskId },
         data: {
           status: TaskStatus.PASSED,
           currentCount: 1
         }
       })
 
-      // Update student progress
       const studentGroup = await prisma.studentGroup.findFirst({
-        where: { studentId: userId, groupId: state.groupId }
+        where: { studentId: userId, groupId: session.groupId }
       })
 
       if (studentGroup) {
-        // Simple progression: move to next line or page
         let newLine = studentGroup.currentLine + 1
         let newPage = studentGroup.currentPage
 
@@ -457,7 +581,6 @@ async function finishGame(ctx: BotContext, user: any): Promise<void> {
           }
         })
 
-        // Update user's global progress too
         await prisma.user.update({
           where: { id: userId },
           data: {
@@ -467,40 +590,49 @@ async function finishGame(ctx: BotContext, user: any): Promise<void> {
         })
       }
 
-      // Update statistics
       await prisma.userStatistics.upsert({
         where: { userId },
         create: { userId, totalTasksCompleted: 1 },
         update: { totalTasksCompleted: { increment: 1 } }
       })
+    } else {
+      await notifyUstazAboutMufradatGame(user, session, submission, score, timeExpired)
     }
   } catch (error) {
     console.error('Failed to save game results:', error)
   }
 
-  // Clear game state
-  gameStates.delete(userId)
-
-  // Show results
-  const emoji = passed ? '🎉' : '📊'
-  const statusText = passed ? 'Отлично! Задание выполнено!' : 'Попробуйте ещё раз'
+  const emoji = passed ? '🎉' : timeExpired ? '⏱️' : '📊'
+  const statusText = passed
+    ? 'Отлично! Задание выполнено!'
+    : timeExpired
+      ? 'Время вышло!'
+      : 'Попробуйте ещё раз'
 
   let message = `${emoji} <b>Результат игры</b>\n\n`
-  message += `✅ Правильно: <b>${state.correctCount}/${state.words.length}</b>\n`
+  message += `✅ Правильно: <b>${session.correctCount}/${words.length}</b>\n`
   message += `📊 Результат: <b>${score}%</b>\n`
-  message += `⏱ Время: <b>${Math.floor(totalTime / 60)}:${(totalTime % 60).toString().padStart(2, '0')}</b>\n\n`
+  message += `⏱ Время: <b>${Math.floor(totalTime / 60)}:${(totalTime % 60).toString().padStart(2, '0')}</b>`
+
+  if (timeExpired) {
+    message += ` <i>(лимит: ${Math.floor(session.timeLimit / 60)}:${(session.timeLimit % 60).toString().padStart(2, '0')})</i>`
+  }
+  message += `\n\n`
 
   if (passed) {
     message += `🏆 <b>${statusText}</b>\n`
-    message += `Минимум для прохождения: ${PASS_THRESHOLD}%`
+    message += `Минимум для прохождения: ${passThreshold}/${words.length} слов`
+  } else if (timeExpired) {
+    message += `⚠️ <b>${statusText}</b>\n`
+    message += `Нужно было ответить за ${Math.floor(session.timeLimit / 60)} мин. ${session.timeLimit % 60} сек.`
   } else {
     message += `⚠️ <b>${statusText}</b>\n`
-    message += `Для прохождения нужно набрать минимум ${PASS_THRESHOLD}%`
+    message += `Для прохождения нужно ${passThreshold}/${words.length} правильных ответов`
   }
 
   const keyboard = new InlineKeyboard()
   if (!passed) {
-    keyboard.text('🔄 Играть снова', `mufradat:start:${state.groupId}`).row()
+    keyboard.text('🔄 Играть снова', `mufradat:start:${session.groupId}`).row()
   }
   keyboard.text('◀️ В меню', 'student:menu')
 
@@ -521,7 +653,10 @@ async function finishGame(ctx: BotContext, user: any): Promise<void> {
  * Handle quit game
  */
 export async function handleMufradatQuit(ctx: BotContext, user: any): Promise<void> {
-  gameStates.delete(user.id)
+  const session = await getActiveSession(user.id)
+  if (session) {
+    await deactivateSession(session.id)
+  }
 
   await ctx.editMessageText(
     '🚪 Вы вышли из игры.\n\nРезультат не сохранён.',
@@ -538,18 +673,49 @@ export async function showMufradatGameMenu(
   studentGroup: any
 ): Promise<void> {
   const group = studentGroup.group
+  const wordsCount = group.wordsPerDay || WORDS_PER_GAME
+  const passThreshold = group.wordsPassThreshold || 8
+  const timeLimit = group.mufradatTimeLimit || DEFAULT_TIME_LIMIT
+  const timeLimitMinutes = Math.floor(timeLimit / 60)
+  const timeLimitSeconds = timeLimit % 60
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const todaySubmission = await prisma.mufradatSubmission.findUnique({
+    where: {
+      studentId_date: {
+        studentId: user.id,
+        date: today
+      }
+    }
+  })
+
+  const surahs = getSurahsByPage(studentGroup.currentPage)
+  const surahNames = surahs.map(s => s.nameRussian).join(', ')
 
   let message = `🎮 <b>Муфрадат (Перевод)</b>\n\n`
   message += `📚 Группа: <b>${group.name}</b>\n`
-  message += `📖 Страница: <b>${studentGroup.currentPage}</b>\n\n`
+  message += `📖 Страница: <b>${studentGroup.currentPage}</b>\n`
+  if (surahNames) {
+    message += `📜 Сура: <b>${surahNames}</b>\n`
+  }
+  message += `\n`
+
+  if (todaySubmission) {
+    const statusEmoji = todaySubmission.passed ? '✅' : '❌'
+    message += `📅 <b>Сегодня:</b> ${statusEmoji} ${todaySubmission.wordsCorrect}/${todaySubmission.wordsTotal}\n\n`
+  }
+
   message += `Игра «Угадай слово»:\n`
-  message += `• ${WORDS_PER_GAME} вопросов\n`
+  message += `• ${wordsCount} вопросов\n`
+  message += `• ⏱️ Время: ${timeLimitMinutes > 0 ? `${timeLimitMinutes} мин.` : ''} ${timeLimitSeconds > 0 ? `${timeLimitSeconds} сек.` : ''}\n`
   message += `• Направление чередуется (🇸🇦→🇷🇺 и 🇷🇺→🇸🇦)\n`
-  message += `• Для прохождения нужно ${PASS_THRESHOLD}%\n\n`
+  message += `• Для прохождения нужно ${passThreshold}/${wordsCount} правильных\n\n`
   message += `Готовы начать?`
 
   const keyboard = new InlineKeyboard()
     .text('▶️ Начать игру', `mufradat:start:${group.id}`).row()
+    .text('📊 Статистика', `mufradat:stats:${group.id}`).row()
     .text('◀️ В меню', 'student:menu')
 
   try {
@@ -562,5 +728,180 @@ export async function showMufradatGameMenu(
       parse_mode: 'HTML',
       reply_markup: keyboard
     })
+  }
+}
+
+/**
+ * Show mufradat statistics
+ */
+export async function showMufradatStats(
+  ctx: BotContext,
+  user: any,
+  groupId: string
+): Promise<void> {
+  const sevenDaysAgo = new Date()
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+  sevenDaysAgo.setHours(0, 0, 0, 0)
+
+  const thirtyDaysAgo = new Date()
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+  thirtyDaysAgo.setHours(0, 0, 0, 0)
+
+  const [weekStats, monthStats] = await Promise.all([
+    prisma.mufradatSubmission.findMany({
+      where: {
+        studentId: user.id,
+        date: { gte: sevenDaysAgo }
+      },
+      orderBy: { date: 'desc' }
+    }),
+    prisma.mufradatSubmission.findMany({
+      where: {
+        studentId: user.id,
+        date: { gte: thirtyDaysAgo }
+      },
+      orderBy: { date: 'desc' }
+    })
+  ])
+
+  const weekPassed = weekStats.filter(s => s.passed).length
+  const weekTotal = weekStats.length
+  const weekWordsCorrect = weekStats.reduce((sum, s) => sum + s.wordsCorrect, 0)
+  const weekWordsTotal = weekStats.reduce((sum, s) => sum + s.wordsTotal, 0)
+
+  const monthPassed = monthStats.filter(s => s.passed).length
+  const monthTotal = monthStats.length
+  const monthWordsCorrect = monthStats.reduce((sum, s) => sum + s.wordsCorrect, 0)
+  const monthWordsTotal = monthStats.reduce((sum, s) => sum + s.wordsTotal, 0)
+
+  let message = `📊 <b>Статистика Муфрадат</b>\n\n`
+
+  message += `📅 <b>За неделю:</b>\n`
+  if (weekTotal > 0) {
+    const weekPercent = Math.round((weekWordsCorrect / weekWordsTotal) * 100)
+    message += `   Дней сдано: ${weekPassed}/${weekTotal}\n`
+    message += `   Слов: ${weekWordsCorrect}/${weekWordsTotal} (${weekPercent}%)\n`
+  } else {
+    message += `   Нет данных\n`
+  }
+
+  message += `\n`
+
+  message += `📆 <b>За месяц:</b>\n`
+  if (monthTotal > 0) {
+    const monthPercent = Math.round((monthWordsCorrect / monthWordsTotal) * 100)
+    message += `   Дней сдано: ${monthPassed}/${monthTotal}\n`
+    message += `   Слов: ${monthWordsCorrect}/${monthWordsTotal} (${monthPercent}%)\n`
+  } else {
+    message += `   Нет данных\n`
+  }
+
+  message += `\n`
+
+  message += `<b>Последние 7 дней:</b>\n`
+  const today = new Date()
+  for (let i = 0; i < 7; i++) {
+    const date = new Date(today)
+    date.setDate(date.getDate() - i)
+    date.setHours(0, 0, 0, 0)
+
+    const daySubmission = weekStats.find(s => {
+      const subDate = new Date(s.date)
+      return subDate.toDateString() === date.toDateString()
+    })
+
+    const dateStr = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+    if (daySubmission) {
+      const emoji = daySubmission.passed ? '✅' : '❌'
+      message += `${dateStr}: ${emoji} ${daySubmission.wordsCorrect}/${daySubmission.wordsTotal}\n`
+    } else {
+      message += `${dateStr}: ⬜ не сдано\n`
+    }
+  }
+
+  const keyboard = new InlineKeyboard()
+    .text('🎮 Играть', `mufradat:start:${groupId}`).row()
+    .text('◀️ Назад', `lesson:${groupId}`)
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch {
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  }
+}
+
+/**
+ * Notify ustaz about mufradat game submission for review
+ */
+async function notifyUstazAboutMufradatGame(
+  student: any,
+  session: any,
+  submission: any,
+  score: number,
+  timeExpired: boolean = false
+): Promise<void> {
+  try {
+    const group = await prisma.group.findUnique({
+      where: { id: session.groupId },
+      include: { ustaz: true }
+    })
+
+    if (!group?.ustaz?.telegramId) return
+
+    const task = await prisma.task.findUnique({
+      where: { id: session.taskId },
+      include: { page: true }
+    })
+
+    if (!task) return
+
+    const { bot } = await import('../bot')
+    const { InlineKeyboard } = await import('grammy')
+
+    const ustazChatId = Number(group.ustaz.telegramId)
+    const studentName = student.firstName?.trim() || 'Студент'
+    const groupName = group.name
+    const words: GameWord[] = JSON.parse(session.words)
+
+    let caption = `📥 <b>Муфрадат - требует проверки</b>\n\n`
+    caption += `📚 <b>${groupName}</b>\n`
+    caption += `👤 ${studentName}\n`
+    caption += `📖 Стр. ${task.page.pageNumber}\n\n`
+    caption += `🎮 <b>Результат игры:</b>\n`
+    caption += `   ✅ Правильно: ${session.correctCount}/${words.length}\n`
+    caption += `   📊 Балл: <b>${score}%</b>\n\n`
+
+    if (timeExpired) {
+      caption += `⏱️ Время вышло (лимит: ${Math.floor(session.timeLimit / 60)}:${(session.timeLimit % 60).toString().padStart(2, '0')})`
+    } else {
+      const passThreshold = group.wordsPassThreshold || 8
+      caption += `⚠️ Не набран минимум (${passThreshold} слов)`
+    }
+
+    const reviewKeyboard = new InlineKeyboard()
+      .text('✅ Засчитать', `review:pass:${submission.id}`)
+      .text('❌ Не сдал', `review:fail:${submission.id}`)
+
+    if (student.telegramUsername) {
+      reviewKeyboard.row().url(`💬 Написать студенту`, `https://t.me/${student.telegramUsername}`)
+    }
+
+    await bot.api.sendMessage(ustazChatId, caption, {
+      parse_mode: 'HTML',
+      reply_markup: reviewKeyboard
+    })
+
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: { sentToUstazAt: new Date() }
+    })
+  } catch (error) {
+    console.error('Failed to notify ustaz about mufradat game:', error)
   }
 }

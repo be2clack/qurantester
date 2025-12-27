@@ -16,17 +16,22 @@ interface Ustaz {
   phone: string
 }
 
-const LESSON_TYPES = [
-  { value: 'MEMORIZATION', label: 'Заучивание', prefix: 'ЗА' },
-  { value: 'REVISION', label: 'Повторение', prefix: 'ПО' },
-  { value: 'TRANSLATION', label: 'Перевод', prefix: 'ПЕ' },
+const GROUP_LEVELS = [
+  { value: 'LEVEL_1', label: 'Уровень 1', description: 'Начальный - студент сдаёт по 1 строке за раз', linesPerBatch: 1 },
+  { value: 'LEVEL_2', label: 'Уровень 2', description: 'Средний - студент сдаёт по 3 строки за раз', linesPerBatch: 3 },
+  { value: 'LEVEL_3', label: 'Уровень 3', description: 'Продвинутый - студент сдаёт по 7 строк за раз', linesPerBatch: 7 },
 ]
 
-const GROUP_LEVELS = [
-  { value: 'LEVEL_1', label: 'Уровень 1', description: '1 строка за 12ч' },
-  { value: 'LEVEL_2', label: 'Уровень 2', description: '3 строки за 12ч' },
-  { value: 'LEVEL_3', label: 'Уровень 3', description: '7 строк за 12ч' },
+const GROUP_GENDERS = [
+  { value: 'MALE', label: 'Мужская', prefix: 'М', icon: '👨' },
+  { value: 'FEMALE', label: 'Женская', prefix: 'Ж', icon: '🧕' },
 ]
+
+const LEVEL_COLORS: Record<string, string> = {
+  LEVEL_1: 'bg-emerald-100 text-emerald-800',
+  LEVEL_2: 'bg-blue-100 text-blue-800',
+  LEVEL_3: 'bg-purple-100 text-purple-800',
+}
 
 export default function NewGroupPage() {
   const router = useRouter()
@@ -39,18 +44,16 @@ export default function NewGroupPage() {
     description: '',
     ustazId: '',
     level: 'LEVEL_1',
-    lessonType: 'MEMORIZATION',
+    gender: 'MALE',
   })
 
-  // Генерация превью имени: ЗА-25-1-X
+  // Генерация превью имени: [ПОЛ]-[год]-[уровень]-X (например М-25-3-X)
   const getAutoName = () => {
-    const typePrefix = LESSON_TYPES.find(t => t.value === formData.lessonType)?.prefix || 'ЗА'
+    const genderPrefix = GROUP_GENDERS.find(g => g.value === formData.gender)?.prefix || 'М'
     const levelNumber = formData.level.replace('LEVEL_', '')
     const year = new Date().getFullYear().toString().slice(-2)
-    return `${typePrefix}-${year}-${levelNumber}`
+    return `${genderPrefix}-${year}-${levelNumber}`
   }
-
-  const getTypeName = (value: string) => LESSON_TYPES.find(t => t.value === value)?.label || value
 
   useEffect(() => {
     async function fetchUstazs() {
@@ -87,7 +90,7 @@ export default function NewGroupPage() {
           description: formData.description || undefined,
           ustazId: formData.ustazId,
           level: formData.level,
-          lessonType: formData.lessonType,
+          gender: formData.gender,
         }),
       })
 
@@ -128,45 +131,55 @@ export default function NewGroupPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Gender Selection */}
             <div className="space-y-2">
-              <Label htmlFor="lessonType">Тип урока *</Label>
-              <Select
-                value={formData.lessonType}
-                onValueChange={(value) => setFormData({ ...formData, lessonType: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LESSON_TYPES.map((type) => (
-                    <SelectItem key={type.value} value={type.value}>
-                      {type.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Пол группы *</Label>
+              <div className="grid grid-cols-2 gap-3">
+                {GROUP_GENDERS.map((gender) => (
+                  <button
+                    key={gender.value}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, gender: gender.value })}
+                    className={`p-4 rounded-lg border-2 text-center transition-all ${
+                      formData.gender === gender.value
+                        ? 'border-primary bg-primary/5'
+                        : 'border-muted hover:border-muted-foreground/30'
+                    }`}
+                  >
+                    <span className="text-3xl block mb-1">{gender.icon}</span>
+                    <span className="font-semibold">{gender.label}</span>
+                    <span className="block text-sm text-muted-foreground">({gender.prefix})</span>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="level">Уровень группы *</Label>
-              <Select
-                value={formData.level}
-                onValueChange={(value) => setFormData({ ...formData, level: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {GROUP_LEVELS.map((level) => (
-                    <SelectItem key={level.value} value={level.value}>
-                      {level.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Определяет скорость прохождения материала
-              </p>
+              <Label htmlFor="level">Уровень сложности *</Label>
+              <div className="grid gap-3">
+                {GROUP_LEVELS.map((level) => (
+                  <button
+                    key={level.value}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, level: level.value })}
+                    className={`p-4 rounded-lg border-2 text-left transition-all ${
+                      formData.level === level.value
+                        ? `${LEVEL_COLORS[level.value]} border-current`
+                        : 'border-muted hover:border-muted-foreground/30'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={`font-bold text-2xl w-10 h-10 flex items-center justify-center rounded-full ${LEVEL_COLORS[level.value]}`}>
+                        {level.linesPerBatch}
+                      </span>
+                      <div>
+                        <p className="font-semibold">{level.label}</p>
+                        <p className="text-sm text-muted-foreground">{level.description}</p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -194,13 +207,14 @@ export default function NewGroupPage() {
               )}
             </div>
 
-            <div className="p-4 bg-muted rounded-lg space-y-2">
-              <p className="text-sm text-muted-foreground">Название группы (генерируется автоматически)</p>
-              <p className="text-2xl font-bold">{getAutoName()}-<span className="text-muted-foreground">X</span></p>
-              <div className="text-xs text-muted-foreground space-y-1">
-                <p>• {getTypeName(formData.lessonType)} → <span className="font-mono">{LESSON_TYPES.find(t => t.value === formData.lessonType)?.prefix}</span></p>
-                <p>• {GROUP_LEVELS.find(l => l.value === formData.level)?.label} → <span className="font-mono">{formData.level.replace('LEVEL_', '')}</span></p>
-                <p>• X = порядковый номер группы</p>
+            <div className="p-4 bg-emerald-50 dark:bg-emerald-950/30 rounded-lg border border-emerald-200 dark:border-emerald-800">
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">Название группы</p>
+              <p className="text-2xl font-mono font-bold mt-1">{getAutoName()}-<span className="text-muted-foreground">X</span></p>
+              <div className="text-xs text-muted-foreground mt-2 space-y-1">
+                <p><strong>{GROUP_GENDERS.find(g => g.value === formData.gender)?.prefix}</strong> — {GROUP_GENDERS.find(g => g.value === formData.gender)?.label.toLowerCase()} группа</p>
+                <p><strong>{new Date().getFullYear().toString().slice(-2)}</strong> — год создания</p>
+                <p><strong>{formData.level.replace('LEVEL_', '')}</strong> — {GROUP_LEVELS.find(l => l.value === formData.level)?.linesPerBatch} {GROUP_LEVELS.find(l => l.value === formData.level)?.linesPerBatch === 1 ? 'строка' : 'строки'} за раз</p>
+                <p><strong>X</strong> — порядковый номер группы</p>
               </div>
             </div>
 

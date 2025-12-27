@@ -30,7 +30,7 @@ export default async function StudentDashboard() {
 
   // Get student groups with progress
   const studentGroups = await prisma.studentGroup.findMany({
-    where: { studentId: user.id },
+    where: { studentId: user.id, isActive: true },
     include: {
       group: {
         include: {
@@ -43,11 +43,8 @@ export default async function StudentDashboard() {
     }
   })
 
-  // Get ustaz info
-  const ustaz = user.ustazId ? await prisma.user.findUnique({
-    where: { id: user.ustazId },
-    select: { id: true, firstName: true, lastName: true, phone: true }
-  }) : null
+  // Get ustaz info from primary group (not from legacy user.ustazId field)
+  const ustaz = studentGroups[0]?.group?.ustaz || null
 
   // Get all active tasks
   const activeTasks = await prisma.task.findMany({

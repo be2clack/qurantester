@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
 import { UserRole } from '@prisma/client'
+import { translateWordsBatch, isOpenAIConfigured } from '@/lib/openai'
 
 const QURAN_API_BASE = 'https://api.quran.com/api/v4'
-const BATCH_SIZE = 30 // Words per batch
+const BATCH_SIZE = 20 // Words per batch (reduced for GPT translation)
 
 interface QuranWord {
   id: number
@@ -42,9 +43,9 @@ const SURAH_VERSE_COUNTS: Record<number, number> = {
 }
 
 /**
- * POST: Import words in batches
- * Request body: { surah: number, fromAyah?: number }
- * Response: { imported, updated, nextSurah, nextAyah, isComplete, progress }
+ * POST: Import words in batches with optional GPT translation
+ * Request body: { surah: number, fromAyah?: number, withTranslation?: boolean }
+ * Response: { imported, updated, translated, nextSurah, nextAyah, isComplete, progress }
  */
 export async function POST(request: NextRequest) {
   const user = await getCurrentUser()
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    const { surah, fromAyah = 1, fromPosition = 0 } = body
+    const { surah, fromAyah = 1, fromPosition = 0, withTranslation = false } = body
 
     if (!surah || surah < 1 || surah > 114) {
       return NextResponse.json(
@@ -63,6 +64,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+
+    // Check if GPT is available when translation is requested
+    const gptAvailable = withTranslation ? await isOpenAIConfigured() : false
 
     // Fetch verses for this surah
     const url = `${QURAN_API_BASE}/verses/by_chapter/${surah}?language=en&words=true&word_translation_language=en&word_fields=text_uthmani,text,text_simple&per_page=300`
@@ -78,10 +82,18 @@ export async function POST(request: NextRequest) {
     let imported = 0
     let updated = 0
     let skipped = 0
+    let translated = 0
     let processed = 0
     let lastAyah = fromAyah
     let lastPosition = fromPosition
     let reachedBatchLimit = false
+
+    // Collect words for batch translation
+    const wordsToTranslate: Array<{
+      wordKey: string
+      textArabic: string
+      translationEn?: string
+    }> = []
 
     // Process verses starting from fromAyah
     for (const verse of verses) {
@@ -128,6 +140,15 @@ export async function POST(request: NextRequest) {
           } else {
             skipped++
           }
+
+          // Add to translation queue if no Russian translation
+          if (withTranslation && gptAvailable && !existing.translationRu) {
+            wordsToTranslate.push({
+              wordKey,
+              textArabic: existing.textArabic,
+              translationEn: existing.translationEn || word.translation?.text
+            })
+          }
         } else {
           await prisma.wordTranslation.create({
             data: {
@@ -141,6 +162,15 @@ export async function POST(request: NextRequest) {
             }
           })
           imported++
+
+          // Add new word to translation queue
+          if (withTranslation && gptAvailable) {
+            wordsToTranslate.push({
+              wordKey,
+              textArabic,
+              translationEn: word.translation?.text
+            })
+          }
         }
       }
 
@@ -148,6 +178,27 @@ export async function POST(request: NextRequest) {
 
       // Finished this ayah, reset position for next ayah
       lastPosition = 0
+    }
+
+    // Batch translate all collected words
+    if (wordsToTranslate.length > 0 && gptAvailable) {
+      try {
+        const translations = await translateWordsBatch(wordsToTranslate)
+
+        // Update database with translations
+        for (const t of translations) {
+          if (t.translationRu) {
+            await prisma.wordTranslation.update({
+              where: { wordKey: t.wordKey },
+              data: { translationRu: t.translationRu }
+            })
+            translated++
+          }
+        }
+      } catch (gptError) {
+        console.error('GPT translation error:', gptError)
+        // Continue without translations
+      }
     }
 
     // Determine next position
@@ -176,6 +227,7 @@ export async function POST(request: NextRequest) {
       imported,
       updated,
       skipped,
+      translated,
       processed,
       currentSurah: surah,
       currentAyah: lastAyah,
@@ -185,7 +237,8 @@ export async function POST(request: NextRequest) {
       nextPosition,
       isComplete,
       progress,
-      message: `Сура ${surah}:${lastAyah} — +${imported} новых${updated > 0 ? `, ${updated} обн.` : ''}${skipped > 0 ? `, ${skipped} уже есть` : ''}`
+      gptEnabled: gptAvailable,
+      message: `Сура ${surah}:${lastAyah} — +${imported} новых${updated > 0 ? `, ${updated} обн.` : ''}${translated > 0 ? `, ${translated} переведено` : ''}${skipped > 0 ? `, ${skipped} уже есть` : ''}`
     })
   } catch (error) {
     console.error('Error in batch import:', error)

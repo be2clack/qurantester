@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
-import { UserRole, StageNumber } from '@prisma/client'
+import { UserRole, StageNumber, Gender } from '@prisma/client'
 import { z } from 'zod'
 
 const updateUserSchema = z.object({
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
+  firstName: z.string().nullable().optional(),
+  lastName: z.string().nullable().optional(),
+  gender: z.nativeEnum(Gender).nullable().optional(),
   birthDate: z.string().optional().transform((val) => val ? new Date(val) : undefined),
   role: z.nativeEnum(UserRole).optional(),
   groupId: z.string().nullable().optional(),
@@ -92,12 +93,43 @@ export async function PATCH(
 ) {
   try {
     const currentUser = await getCurrentUser()
-    if (!currentUser || currentUser.role !== UserRole.ADMIN) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    if (!currentUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const { id } = await params
     const body = await req.json()
+
+    // Ustaz can only update progress fields for their students
+    const isUstaz = currentUser.role === UserRole.USTAZ
+    const isAdmin = currentUser.role === UserRole.ADMIN
+
+    if (!isAdmin && !isUstaz) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Check if ustaz owns this student
+    if (isUstaz) {
+      const studentGroup = await prisma.studentGroup.findFirst({
+        where: {
+          studentId: id,
+          group: { ustazId: currentUser.id },
+          isActive: true
+        }
+      })
+      if (!studentGroup) {
+        return NextResponse.json({ error: 'Forbidden - not your student' }, { status: 403 })
+      }
+
+      // Ustaz can only update progress fields
+      const allowedFields = ['currentPage', 'currentLine', 'currentStage']
+      const requestedFields = Object.keys(body)
+      const hasDisallowedFields = requestedFields.some(f => !allowedFields.includes(f))
+      if (hasDisallowedFields) {
+        return NextResponse.json({ error: 'Ustaz can only update progress fields' }, { status: 403 })
+      }
+    }
+
     const validation = updateUserSchema.safeParse(body)
 
     if (!validation.success) {
@@ -137,8 +169,10 @@ export async function PATCH(
       data: updateData,
       include: {
         studentGroups: {
+          where: { isActive: true },
           select: {
-            group: { select: { id: true, name: true } }
+            id: true,
+            group: { select: { id: true, name: true, lessonType: true } }
           }
         },
         childOf: {
@@ -146,6 +180,67 @@ export async function PATCH(
         }
       }
     })
+
+    // Also update StudentGroup progress if progress fields were changed
+    const progressUpdated = data.currentPage !== undefined || data.currentLine !== undefined || data.currentStage !== undefined
+    if (progressUpdated) {
+      const progressData = {
+        ...(data.currentPage !== undefined && { currentPage: data.currentPage }),
+        ...(data.currentLine !== undefined && { currentLine: data.currentLine }),
+        ...(data.currentStage !== undefined && { currentStage: data.currentStage }),
+      }
+
+      // If specific groupId provided, update only that StudentGroup
+      if (body.groupId) {
+        await prisma.studentGroup.updateMany({
+          where: {
+            studentId: id,
+            groupId: body.groupId,
+            isActive: true,
+          },
+          data: progressData
+        })
+
+        // Cancel any active tasks in this group that don't match the new progress
+        // This prevents old tasks with wrong page/line from being shown
+        await prisma.task.updateMany({
+          where: {
+            studentId: id,
+            groupId: body.groupId,
+            status: 'IN_PROGRESS',
+          },
+          data: {
+            status: 'CANCELLED',
+          }
+        })
+      } else if (user.studentGroups.length > 0) {
+        // Otherwise, update all active MEMORIZATION groups
+        const memorizationGroups = user.studentGroups.filter(sg => sg.group.lessonType === 'MEMORIZATION')
+        if (memorizationGroups.length > 0) {
+          await prisma.studentGroup.updateMany({
+            where: {
+              studentId: id,
+              isActive: true,
+              group: { lessonType: 'MEMORIZATION' }
+            },
+            data: progressData
+          })
+
+          // Cancel active tasks in all MEMORIZATION groups
+          const groupIds = memorizationGroups.map(sg => sg.group.id)
+          await prisma.task.updateMany({
+            where: {
+              studentId: id,
+              groupId: { in: groupIds },
+              status: 'IN_PROGRESS',
+            },
+            data: {
+              status: 'CANCELLED',
+            }
+          })
+        }
+      }
+    }
 
     // If role changed from PENDING to active role, notify user via Telegram
     if (existing.role === UserRole.PENDING && data.role && data.role !== UserRole.PENDING) {

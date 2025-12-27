@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { TaskStatus, StageNumber } from '@prisma/client'
-import { addDays } from 'date-fns'
+import { addHours } from 'date-fns'
 
 // Verify cron secret
 const CRON_SECRET = process.env.CRON_SECRET || 'hlDGk9eyARRBgZb4UVqPb7x4mjH/nes66Nl0wM053Cc='
@@ -109,16 +109,16 @@ export async function POST(req: NextRequest) {
           endLine = startLine
       }
 
-      // Calculate deadline based on stage
-      const stageDays: Record<StageNumber, number> = {
-        STAGE_1_1: lesson.stage1Days,
-        STAGE_1_2: lesson.stage2Days,
-        STAGE_2_1: lesson.stage1Days,
-        STAGE_2_2: lesson.stage2Days,
-        STAGE_3: lesson.stage3Days,
+      // Calculate deadline based on stage (in hours)
+      const stageHours: Record<StageNumber, number> = {
+        STAGE_1_1: lesson.stage1Hours,
+        STAGE_1_2: lesson.stage2Hours,
+        STAGE_2_1: lesson.stage1Hours,
+        STAGE_2_2: lesson.stage2Hours,
+        STAGE_3: lesson.stage3Hours,
       }
 
-      const deadline = addDays(new Date(), stageDays[student.currentStage])
+      const deadline = addHours(new Date(), stageHours[student.currentStage])
 
       // Create task
       await prisma.task.create({

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
 
-// GET: Получить список слов с переводами
+// GET: Получить список слов с переводами (с пагинацией)
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser()
 
@@ -13,13 +13,19 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const surah = searchParams.get('surah')
   const ayah = searchParams.get('ayah')
+  const page = parseInt(searchParams.get('page') || '1')
+  const limit = parseInt(searchParams.get('limit') || '100')
 
   // Build where clause
   const where: Record<string, unknown> = {}
   if (surah) where.surahNumber = parseInt(surah)
   if (ayah) where.ayahNumber = parseInt(ayah)
 
-  // Get words
+  // Get total count for this filter
+  const totalWords = await prisma.wordTranslation.count({ where })
+  const totalPages = Math.ceil(totalWords / limit)
+
+  // Get words with pagination
   const words = await prisma.wordTranslation.findMany({
     where,
     orderBy: [
@@ -27,7 +33,8 @@ export async function GET(request: NextRequest) {
       { ayahNumber: 'asc' },
       { position: 'asc' },
     ],
-    take: 200, // Limit for performance
+    skip: (page - 1) * limit,
+    take: limit,
   })
 
   // Get stats
@@ -44,5 +51,15 @@ export async function GET(request: NextRequest) {
     }),
   }
 
-  return NextResponse.json({ words, stats })
+  return NextResponse.json({
+    words,
+    stats,
+    pagination: {
+      page,
+      limit,
+      totalWords,
+      totalPages,
+      hasMore: page < totalPages
+    }
+  })
 }

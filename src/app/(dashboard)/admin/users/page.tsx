@@ -14,7 +14,6 @@ import {
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Progress } from '@/components/ui/progress'
 import {
   Select,
   SelectContent,
@@ -29,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Search, Phone, Loader2, Check, X, Pencil, Eye, Users, Calendar, ChevronLeft, ChevronRight, BookOpen, CheckCircle2 } from 'lucide-react'
+import { Search, Phone, Loader2, Check, X, Pencil, Eye, Users, Calendar, ChevronLeft, ChevronRight } from 'lucide-react'
 import { RoleBadge } from '@/components/users/role-badge'
 import Link from 'next/link'
 import { UserRole, StageNumber } from '@prisma/client'
@@ -266,26 +265,7 @@ export default function UsersPage() {
           <Badge variant={user.isActive ? 'default' : 'secondary'}>
             {user.isActive ? 'Активен' : 'Неактивен'}
           </Badge>
-          {user.studentGroup && (
-            <Badge variant="outline">{user.studentGroup.name}</Badge>
-          )}
         </div>
-
-        {user.role === 'STUDENT' && (
-          <div className="mt-3 space-y-2">
-            <div className="flex items-center gap-4 text-sm">
-              <div className="flex items-center gap-1.5">
-                <BookOpen className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium">{user.currentPage}-{user.currentLine}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-                <span className="font-medium">{user.taskPassedCount}/{user.taskRequiredCount}</span>
-              </div>
-            </div>
-            <Progress value={user.taskCompletion} className="h-2" />
-          </div>
-        )}
 
         {user.role === 'STUDENT' && user.childOf && user.childOf.length > 0 && (
           <div className="mt-3">
@@ -374,9 +354,7 @@ export default function UsersPage() {
                   <TableHead>Пользователь</TableHead>
                   <TableHead>Телефон</TableHead>
                   <TableHead>Роль</TableHead>
-                  <TableHead>Группа</TableHead>
                   <TableHead>Родители</TableHead>
-                  <TableHead>Прогресс</TableHead>
                   <TableHead>Статус</TableHead>
                   <TableHead className="text-right">Действия</TableHead>
                 </TableRow>
@@ -384,7 +362,7 @@ export default function UsersPage() {
               <TableBody>
                 {users.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                       Пользователи не найдены
                     </TableCell>
                   </TableRow>
@@ -472,26 +450,6 @@ export default function UsersPage() {
                         </TableCell>
                         <TableCell>
                           {isEditing && editData.role === 'STUDENT' ? (
-                            <Select
-                              value={editData.groupId || 'none'}
-                              onValueChange={(v) => setEditData({ ...editData, groupId: v === 'none' ? null : v })}
-                            >
-                              <SelectTrigger className="w-[150px] h-8">
-                                <SelectValue placeholder="Без группы" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="none">Без группы</SelectItem>
-                                {groups.map((g) => (
-                                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            user.studentGroup?.name || '-'
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {isEditing && editData.role === 'STUDENT' ? (
                             <div className="space-y-1">
                               <div className="flex flex-wrap gap-1">
                                 {selectedParents.map(p => (
@@ -525,43 +483,6 @@ export default function UsersPage() {
                                   {formatParentName(p)}
                                 </Badge>
                               ))}
-                            </div>
-                          ) : '-'}
-                        </TableCell>
-                        <TableCell>
-                          {isEditing && editData.role === 'STUDENT' ? (
-                            <div className="flex items-center gap-1">
-                              <Input
-                                type="number"
-                                min={1}
-                                max={602}
-                                className="w-16 h-8"
-                                value={editData.currentPage || 1}
-                                onChange={(e) => setEditData({ ...editData, currentPage: parseInt(e.target.value) || 1 })}
-                              />
-                              <span className="text-muted-foreground">-</span>
-                              <Input
-                                type="number"
-                                min={1}
-                                max={15}
-                                className="w-14 h-8"
-                                value={editData.currentLine || 1}
-                                onChange={(e) => setEditData({ ...editData, currentLine: parseInt(e.target.value) || 1 })}
-                              />
-                            </div>
-                          ) : user.role === 'STUDENT' ? (
-                            <div className="space-y-1.5">
-                              <div className="flex items-center gap-3 text-sm">
-                                <div className="flex items-center gap-1">
-                                  <BookOpen className="h-3.5 w-3.5 text-muted-foreground" />
-                                  <span className="font-medium">{user.currentPage}-{user.currentLine}</span>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
-                                  <span className="font-medium">{user.taskPassedCount}/{user.taskRequiredCount}</span>
-                                </div>
-                              </div>
-                              <Progress value={user.taskCompletion} className="h-1.5 w-24" />
                             </div>
                           ) : '-'}
                         </TableCell>

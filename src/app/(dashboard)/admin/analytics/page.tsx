@@ -19,7 +19,11 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  Loader2
+  Loader2,
+  Bot,
+  Sparkles,
+  DollarSign,
+  Mic,
 } from 'lucide-react'
 
 interface Stats {
@@ -55,12 +59,33 @@ interface Stats {
   }[]
 }
 
+interface AIUsageStats {
+  totalRequests: number
+  successfulRequests: number
+  failedRequests: number
+  totalCost: number
+  totalAudioMinutes: number
+  byProvider: {
+    provider: string
+    requests: number
+    cost: number
+    successRate: number
+  }[]
+  dailyStats: {
+    date: string
+    requests: number
+    cost: number
+  }[]
+}
+
 export default function AnalyticsPage() {
   const [stats, setStats] = useState<Stats | null>(null)
+  const [aiStats, setAiStats] = useState<AIUsageStats | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     fetchStats()
+    fetchAIStats()
   }, [])
 
   async function fetchStats() {
@@ -77,6 +102,18 @@ export default function AnalyticsPage() {
       console.error('Failed to fetch stats:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function fetchAIStats() {
+    try {
+      const res = await fetch('/api/stats/ai-usage')
+      if (res.ok) {
+        const data = await res.json()
+        setAiStats(data.data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch AI stats:', err)
     }
   }
 
@@ -297,6 +334,81 @@ export default function AnalyticsPage() {
               <span>Активных групп</span>
               <Badge variant="default">{stats?.groups.active || 0}</Badge>
             </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* AI Usage Statistics */}
+      <div className="mt-6">
+        <Card className="border-purple-200 bg-purple-50/50 dark:bg-purple-950/20 dark:border-purple-800">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Bot className="h-5 w-5 text-purple-600" />
+                  AI Использование
+                </CardTitle>
+                <CardDescription>Статистика использования AI моделей за 30 дней</CardDescription>
+              </div>
+              <Badge variant="outline" className="text-lg px-3 py-1">
+                <DollarSign className="h-4 w-4 mr-1" />
+                ${aiStats?.totalCost.toFixed(4) || '0.0000'}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-4 mb-6">
+              <div className="text-center p-4 bg-white/50 dark:bg-black/20 rounded-lg">
+                <div className="text-3xl font-bold">{aiStats?.totalRequests || 0}</div>
+                <p className="text-sm text-muted-foreground">Всего запросов</p>
+              </div>
+              <div className="text-center p-4 bg-white/50 dark:bg-black/20 rounded-lg">
+                <div className="text-3xl font-bold text-green-600">{aiStats?.successfulRequests || 0}</div>
+                <p className="text-sm text-muted-foreground">Успешных</p>
+              </div>
+              <div className="text-center p-4 bg-white/50 dark:bg-black/20 rounded-lg">
+                <div className="text-3xl font-bold text-red-600">{aiStats?.failedRequests || 0}</div>
+                <p className="text-sm text-muted-foreground">Ошибок</p>
+              </div>
+              <div className="text-center p-4 bg-white/50 dark:bg-black/20 rounded-lg">
+                <div className="text-3xl font-bold">{aiStats?.totalAudioMinutes.toFixed(1) || '0.0'}</div>
+                <p className="text-sm text-muted-foreground">Минут аудио</p>
+              </div>
+            </div>
+
+            {/* By Provider */}
+            {aiStats?.byProvider && aiStats.byProvider.length > 0 && (
+              <div className="space-y-4">
+                <h4 className="font-semibold text-sm">По провайдерам</h4>
+                <div className="grid gap-3">
+                  {aiStats.byProvider.map((provider) => (
+                    <div key={provider.provider} className="flex items-center justify-between p-3 bg-white/50 dark:bg-black/20 rounded-lg">
+                      <div className="flex items-center gap-2">
+                        {provider.provider === 'WHISPER' ? (
+                          <Mic className="h-4 w-4 text-emerald-600" />
+                        ) : (
+                          <Sparkles className="h-4 w-4 text-amber-600" />
+                        )}
+                        <span className="font-medium">
+                          {provider.provider === 'WHISPER' ? 'OpenAI Whisper' : 'Qurani.ai QRC'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4 text-sm">
+                        <span>{provider.requests} запросов</span>
+                        <span className="text-green-600">{provider.successRate.toFixed(0)}% успех</span>
+                        <Badge variant="outline">${provider.cost.toFixed(4)}</Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(!aiStats || aiStats.totalRequests === 0) && (
+              <div className="text-center py-8 text-muted-foreground">
+                Нет данных об использовании AI
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

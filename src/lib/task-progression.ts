@@ -1,9 +1,88 @@
 import { StageNumber, GroupLevel } from '@prisma/client'
+import { prisma } from '@/lib/prisma'
 
-// Page line counts
+// ============ ASYNC FUNCTIONS (Database-backed - preferred) ============
+
+/**
+ * Get line count from database (source of truth)
+ * Falls back to standard values if page not in DB
+ */
+export async function getPageLineCountFromDB(pageNumber: number): Promise<number> {
+  const page = await prisma.quranPage.findUnique({
+    where: { pageNumber },
+    select: { totalLines: true }
+  })
+
+  if (page) {
+    return page.totalLines
+  }
+
+  // Fallback: standard Medina Mushaf values
+  if (pageNumber === 1) return 7  // Fatiha - 7 lines
+  if (pageNumber === 2) return 6  // Second page - 6 lines
+  return 15  // All other pages - 15 lines
+}
+
+/**
+ * Get stage order based on actual page line count from database
+ */
+export async function getStageOrderFromDB(pageNumber: number): Promise<StageNumber[]> {
+  const lineCount = await getPageLineCountFromDB(pageNumber)
+  return lineCount > 7 ? STAGE_ORDER : SIMPLE_STAGE_ORDER
+}
+
+/**
+ * Get next stage based on database line count
+ */
+export async function getNextStageFromDB(currentStage: StageNumber, pageNumber: number): Promise<StageNumber | null> {
+  const stages = await getStageOrderFromDB(pageNumber)
+  const currentIndex = stages.indexOf(currentStage)
+
+  if (currentIndex === -1 || currentIndex >= stages.length - 1) {
+    return null // No next stage, move to next page
+  }
+
+  return stages[currentIndex + 1]
+}
+
+/**
+ * Get line range for a stage based on database line count
+ */
+export async function getStageLineRangeFromDB(
+  stage: StageNumber,
+  pageNumber: number
+): Promise<{ startLine: number; endLine: number }> {
+  const lineCount = await getPageLineCountFromDB(pageNumber)
+
+  // For simple pages (<=7 lines)
+  if (lineCount <= 7) {
+    return { startLine: 1, endLine: lineCount }
+  }
+
+  // For regular pages (15 lines)
+  switch (stage) {
+    case 'STAGE_1_1':
+    case 'STAGE_1_2':
+      return { startLine: 1, endLine: 7 }
+    case 'STAGE_2_1':
+    case 'STAGE_2_2':
+      return { startLine: 8, endLine: lineCount }
+    case 'STAGE_3':
+      return { startLine: 1, endLine: lineCount }
+    default:
+      return { startLine: 1, endLine: lineCount }
+  }
+}
+
+// ============ SYNC FUNCTIONS (Fallback with correct standard values) ============
+
+// Standard Medina Mushaf line counts (used as fallback)
+// Page 1 (Fatiha): 7 lines
+// Page 2: 6 lines
+// All other pages: 15 lines
 const PAGE_LINE_COUNTS: Record<number, number> = {
-  1: 5,   // First page has 5 lines
-  2: 6,   // Second page has 6 lines
+  1: 7,   // Fatiha - 7 lines
+  2: 6,   // Second page - 6 lines
 }
 
 export function getPageLineCount(pageNumber: number): number {
@@ -43,23 +122,23 @@ export function getStageOrder(pageNumber: number): StageNumber[] {
 export function getNextStage(currentStage: StageNumber, pageNumber: number): StageNumber | null {
   const stages = getStageOrder(pageNumber)
   const currentIndex = stages.indexOf(currentStage)
-  
+
   if (currentIndex === -1 || currentIndex >= stages.length - 1) {
     return null // No next stage, move to next page
   }
-  
+
   return stages[currentIndex + 1]
 }
 
 // Get line range for a stage
 export function getStageLineRange(stage: StageNumber, pageNumber: number): { startLine: number; endLine: number } {
   const lineCount = getPageLineCount(pageNumber)
-  
+
   // For simple pages (<=7 lines)
   if (lineCount <= 7) {
     return { startLine: 1, endLine: lineCount }
   }
-  
+
   // For regular pages (15 lines)
   switch (stage) {
     case 'STAGE_1_1':
@@ -67,9 +146,9 @@ export function getStageLineRange(stage: StageNumber, pageNumber: number): { sta
       return { startLine: 1, endLine: 7 }
     case 'STAGE_2_1':
     case 'STAGE_2_2':
-      return { startLine: 8, endLine: 15 }
+      return { startLine: 8, endLine: lineCount }
     case 'STAGE_3':
-      return { startLine: 1, endLine: 15 }
+      return { startLine: 1, endLine: lineCount }
     default:
       return { startLine: 1, endLine: lineCount }
   }
@@ -84,30 +163,30 @@ export function isLearningStage(stage: StageNumber): boolean {
 export function getStageName(stage: StageNumber): string {
   const names: Record<StageNumber, string> = {
     STAGE_1_1: 'Этап 1.1 - Изучение строк 1-7',
-    STAGE_1_2: 'Этап 1.2 - Повторение строк 1-7',
+    STAGE_1_2: 'Этап 1.2 - Соединение строк 1-7',
     STAGE_2_1: 'Этап 2.1 - Изучение строк 8-15',
-    STAGE_2_2: 'Этап 2.2 - Повторение строк 8-15',
+    STAGE_2_2: 'Этап 2.2 - Соединение строк 8-15',
     STAGE_3: 'Этап 3 - Вся страница',
   }
   return names[stage] || stage
 }
 
-// Calculate deadline based on stage and level
+// Calculate deadline based on stage and level (in hours)
 export function calculateDeadline(
   stage: StageNumber,
   level: GroupLevel,
-  stageDays: { stage1: number; stage2: number; stage3: number }
+  stageHours: { stage1: number; stage2: number; stage3: number }
 ): Date {
-  let days = stageDays.stage1
-  
+  let hours = stageHours.stage1
+
   if (stage === 'STAGE_1_2' || stage === 'STAGE_2_1' || stage === 'STAGE_2_2') {
-    days = stageDays.stage2
+    hours = stageHours.stage2
   } else if (stage === 'STAGE_3') {
-    days = stageDays.stage3
+    hours = stageHours.stage3
   }
-  
+
   const deadline = new Date()
-  deadline.setDate(deadline.getDate() + days)
+  deadline.setTime(deadline.getTime() + hours * 60 * 60 * 1000)
   return deadline
 }
 
@@ -127,7 +206,7 @@ export function checkTaskProgress(
   currentPage: number
 ): TaskProgressResult {
   const totalSubmitted = passedCount + failedCount
-  
+
   // Not enough submissions yet
   if (totalSubmitted < requiredCount) {
     return {
@@ -137,11 +216,11 @@ export function checkTaskProgress(
       remainingCount: requiredCount - totalSubmitted,
     }
   }
-  
+
   // All passed - can progress
   if (passedCount >= requiredCount && failedCount === 0) {
     const nextStage = getNextStage(currentStage, currentPage)
-    
+
     if (nextStage) {
       return {
         shouldProgress: true,
@@ -160,7 +239,7 @@ export function checkTaskProgress(
       }
     }
   }
-  
+
   // Has failures - need to resubmit failed ones
   return {
     shouldProgress: false,
@@ -181,13 +260,13 @@ export function getCurrentLearningLine(
     // Review stages - return full range
     return getStageLineRange(stage, pageNumber)
   }
-  
+
   const linesPerBatch = getLinesPerBatch(level)
   const { startLine, endLine: maxLine } = getStageLineRange(stage, pageNumber)
-  
+
   // Calculate current batch
   const batchStartLine = currentLine
   const batchEndLine = Math.min(batchStartLine + linesPerBatch - 1, maxLine)
-  
+
   return { startLine: batchStartLine, endLine: batchEndLine }
 }

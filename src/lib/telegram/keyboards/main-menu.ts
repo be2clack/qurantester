@@ -1,5 +1,5 @@
 import { InlineKeyboard, Keyboard } from 'grammy'
-import { UserRole, LessonType } from '@prisma/client'
+import { UserRole, LessonType, GroupLevel } from '@prisma/client'
 
 /**
  * Contact request keyboard (one-time, resized)
@@ -18,11 +18,28 @@ export interface LessonTypeInfo {
   type: LessonType
   groupId: string
   groupName: string
+  groupLevel?: GroupLevel
   currentPage: number
   currentLine: number
   currentStage: string
   hasActiveTask: boolean
-  taskProgress?: { current: number; required: number }
+  taskProgress?: { current: number; required: number; passed: number; pending: number }
+}
+
+/**
+ * Get lines per task for a level
+ */
+export function getLinesForLevelName(level: GroupLevel): string {
+  switch (level) {
+    case GroupLevel.LEVEL_1:
+      return '1 строка'
+    case GroupLevel.LEVEL_2:
+      return '3 строки'
+    case GroupLevel.LEVEL_3:
+      return '7 строк'
+    default:
+      return '1 строка'
+  }
 }
 
 /**
@@ -41,6 +58,26 @@ export interface StudentMenuInfo {
   totalTasksCompleted?: number
   // New: lesson types available to student
   lessonTypes?: LessonTypeInfo[]
+}
+
+/**
+ * Group info for ustaz menu
+ */
+export interface UstazGroupInfo {
+  id: string
+  name: string
+  gender?: string
+  studentCount: number
+}
+
+/**
+ * Full menu info for ustaz
+ */
+export interface UstazMenuInfo {
+  groups: UstazGroupInfo[]
+  totalStudents: number
+  pendingMemorizationCount: number
+  pendingRevisionCount: number
 }
 
 // Web App URL for Telegram Mini App
@@ -87,17 +124,28 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         for (const lesson of menuInfo.lessonTypes) {
           const typeName = getLessonTypeName(lesson.type)
           const stageShort = lesson.currentStage.replace('STAGE_', '').replace('_', '.')
-          const progress = `${stageShort}`
 
           // Show task progress if has active task
           if (lesson.hasActiveTask && lesson.taskProgress) {
+            const { passed, required, pending } = lesson.taskProgress
+            const remaining = required - passed - pending
+
+            let statusIcon: string
+            if (passed >= required) {
+              statusIcon = '✅' // Complete
+            } else if (remaining === 0 && pending > 0) {
+              statusIcon = '⏳' // Waiting review
+            } else {
+              statusIcon = '📝' // In progress
+            }
+
             keyboard.text(
-              `📖 ${typeName} (${progress}) [${lesson.taskProgress.current}/${lesson.taskProgress.required}]`,
+              `${statusIcon} ${typeName} (${stageShort}) ${passed}/${required}`,
               `lesson_type:${lesson.type}:${lesson.groupId}`
             ).row()
           } else {
             keyboard.text(
-              `📖 ${typeName} (${progress})`,
+              `📖 ${typeName} (${stageShort})`,
               `lesson_type:${lesson.type}:${lesson.groupId}`
             ).row()
           }
@@ -115,6 +163,12 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
       if (menuInfo?.ustazUsername) {
         keyboard.url(`💬 Написать устазу`, `https://t.me/${menuInfo.ustazUsername}`).row()
       }
+
+      // Revision button - shows learned pages for review
+      keyboard.text('🔄 Повторение', 'student:revision').row()
+
+      // Translations (Mufradat) button - shows word translation game
+      keyboard.text('📝 Переводы', 'student:mufradat').row()
 
       keyboard
         .text('📚 Мои группы', 'student:groups').row()
@@ -144,8 +198,17 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
 /**
  * Task menu for students - simplified
  */
-export function getStudentTaskKeyboard(taskId: string, canSubmit: boolean = true): InlineKeyboard {
+export function getStudentTaskKeyboard(
+  taskId: string,
+  canSubmit: boolean = true,
+  isLastSubmission: boolean = false
+): InlineKeyboard {
   const keyboard = new InlineKeyboard()
+
+  // Show confirm button for the last submission (when requiredCount reached)
+  if (isLastSubmission) {
+    keyboard.text('✅ Подтвердить работу', `task:confirm:${taskId}`).row()
+  }
 
   if (canSubmit) {
     keyboard.text('↩️ Отменить последнюю запись', `task:cancel_last:${taskId}`).row()
@@ -229,14 +292,27 @@ export function getStartStageKeyboard(): InlineKeyboard {
 /**
  * Active task keyboard - simplified, just back to menu
  */
-export function getActiveTaskKeyboard(taskId: string, hasPendingSubmission: boolean = false): InlineKeyboard {
+export function getActiveTaskKeyboard(
+  taskId: string,
+  hasPendingSubmission: boolean = false,
+  isTaskComplete: boolean = false,
+  allSentWaitingReview: boolean = false
+): InlineKeyboard {
   const keyboard = new InlineKeyboard()
 
-  if (hasPendingSubmission) {
+  if (isTaskComplete) {
+    // Task is complete - show button to advance to next stage
+    keyboard.text('▶️ Перейти к следующему этапу', `task:advance:${taskId}`).row()
+    keyboard.text('◀️ В меню', 'student:menu')
+  } else if (allSentWaitingReview) {
+    // All submissions sent, waiting for ustaz review - just close button
+    keyboard.text('✖️ Закрыть', 'close_notification')
+  } else if (hasPendingSubmission) {
     keyboard.text('↩️ Отменить последнюю запись', `task:cancel_last:${taskId}`).row()
+    keyboard.text('◀️ В меню', 'student:menu')
+  } else {
+    keyboard.text('◀️ В меню', 'student:menu')
   }
-
-  keyboard.text('◀️ В меню', 'student:menu')
 
   return keyboard
 }
@@ -276,6 +352,15 @@ export function getQuranNavigationKeyboard(
 /**
  * Role selection keyboard for registration
  */
+/**
+ * Gender selection keyboard for registration
+ */
+export function getGenderSelectionKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('👨 Мужской', 'reg:gender:MALE').row()
+    .text('🧕 Женский', 'reg:gender:FEMALE')
+}
+
 export function getRoleSelectionKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('📚 Студент', 'reg:role:STUDENT').row()
@@ -284,23 +369,34 @@ export function getRoleSelectionKeyboard(): InlineKeyboard {
 }
 
 /**
- * Ustaz list keyboard for student registration
+ * Group list keyboard for student registration
  */
-export function getUstazListKeyboard(
-  ustazList: Array<{
+export function getGroupListKeyboard(
+  groups: Array<{
     id: string
-    firstName: string | null
-    lastName: string | null
-    phone: string
-    _count: { ustazGroups: number }
+    name: string
+    lessonType: LessonType
+    ustaz: { firstName: string | null; lastName: string | null } | null
+    _count: { students: number }
   }>
 ): InlineKeyboard {
   const keyboard = new InlineKeyboard()
 
-  for (const ustaz of ustazList) {
-    const name = [ustaz.firstName, ustaz.lastName].filter(Boolean).join(' ') || 'Устаз'
-    const groupCount = ustaz._count.ustazGroups
-    keyboard.text(`${name} (${groupCount} групп)`, `reg:ustaz:${ustaz.id}`).row()
+  const lessonTypeNames: Record<LessonType, string> = {
+    [LessonType.MEMORIZATION]: 'Хифз',
+    [LessonType.REVISION]: 'Муража',
+    [LessonType.TRANSLATION]: 'Перевод',
+  }
+
+  for (const group of groups) {
+    const ustazName = group.ustaz
+      ? [group.ustaz.firstName, group.ustaz.lastName].filter(Boolean).join(' ')
+      : ''
+    const typeName = lessonTypeNames[group.lessonType]
+    const label = ustazName
+      ? `${group.name} (${typeName}) - ${ustazName}`
+      : `${group.name} (${typeName})`
+    keyboard.text(label, `reg:group:${group.id}`).row()
   }
 
   keyboard.text('◀️ Назад', 'reg:back_to_role')
@@ -309,12 +405,12 @@ export function getUstazListKeyboard(
 }
 
 /**
- * Ustaz confirmation keyboard
+ * Group confirmation keyboard
  */
-export function getUstazConfirmKeyboard(ustazId: string): InlineKeyboard {
+export function getGroupConfirmKeyboard(groupId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text('✅ Подтвердить', `reg:confirm_ustaz:${ustazId}`).row()
-    .text('◀️ Выбрать другого', 'reg:back_to_ustaz_list')
+    .text('✅ Подтвердить', `reg:confirm_group:${groupId}`).row()
+    .text('◀️ Выбрать другую', 'reg:back_to_group_list')
 }
 
 /**
@@ -323,6 +419,178 @@ export function getUstazConfirmKeyboard(ustazId: string): InlineKeyboard {
 export function getBackToRoleKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('◀️ Назад к выбору роли', 'reg:back_to_role')
+}
+
+/**
+ * Progress selection keyboard - page number pagination
+ * Shows pages 1-604 in pages of 40 (8 rows x 5 buttons)
+ */
+export function getProgressPageKeyboard(currentOffset: number = 0): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+  const totalPages = 604
+  const pageSize = 40
+
+  // Generate page buttons
+  const startPage = currentOffset + 1
+  const endPage = Math.min(currentOffset + pageSize, totalPages)
+
+  let row: number[] = []
+  for (let page = startPage; page <= endPage; page++) {
+    row.push(page)
+    if (row.length === 5) {
+      for (const p of row) {
+        keyboard.text(String(p), `reg:progress_page:${p}`)
+      }
+      keyboard.row()
+      row = []
+    }
+  }
+  // Add remaining buttons
+  if (row.length > 0) {
+    for (const p of row) {
+      keyboard.text(String(p), `reg:progress_page:${p}`)
+    }
+    keyboard.row()
+  }
+
+  // Navigation buttons
+  const hasPrev = currentOffset > 0
+  const hasNext = currentOffset + pageSize < totalPages
+
+  if (hasPrev || hasNext) {
+    if (hasPrev) {
+      keyboard.text('⬅️ Пред.', `reg:progress_offset:${currentOffset - pageSize}`)
+    }
+    if (hasNext) {
+      keyboard.text('След. ➡️', `reg:progress_offset:${currentOffset + pageSize}`)
+    }
+    keyboard.row()
+  }
+
+  keyboard.text('◀️ Назад к группе', 'reg:back_to_group_confirm')
+
+  return keyboard
+}
+
+/**
+ * Line selection keyboard (1-15)
+ */
+export function getProgressLineKeyboard(selectedPage: number): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  // 3 rows of 5 lines each
+  for (let row = 0; row < 3; row++) {
+    for (let col = 1; col <= 5; col++) {
+      const line = row * 5 + col
+      keyboard.text(String(line), `reg:progress_line:${selectedPage}:${line}`)
+    }
+    keyboard.row()
+  }
+
+  keyboard.text('◀️ Назад к странице', 'reg:back_to_progress_page')
+
+  return keyboard
+}
+
+/**
+ * Stage selection keyboard
+ */
+export function getProgressStageKeyboard(selectedPage: number, selectedLine: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('1.1', `reg:progress_stage:${selectedPage}:${selectedLine}:STAGE_1_1`)
+    .text('1.2', `reg:progress_stage:${selectedPage}:${selectedLine}:STAGE_1_2`)
+    .row()
+    .text('2.1', `reg:progress_stage:${selectedPage}:${selectedLine}:STAGE_2_1`)
+    .text('2.2', `reg:progress_stage:${selectedPage}:${selectedLine}:STAGE_2_2`)
+    .row()
+    .text('3', `reg:progress_stage:${selectedPage}:${selectedLine}:STAGE_3`)
+    .row()
+    .text('◀️ Назад к строке', `reg:back_to_progress_line:${selectedPage}`)
+}
+
+// ============== REVISION KEYBOARDS ==============
+
+/**
+ * Keyboard for selecting a page to review
+ * Shows pages in rows of 5 buttons each
+ * @param markedPages - pages already marked today (will show with checkmark)
+ */
+export function getRevisionPageSelectKeyboard(
+  learnedPages: number[],
+  currentOffset: number = 0,
+  pageSize: number = 15,
+  markedPages: number[] = []
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  // Get slice of pages to show
+  const pagesToShow = learnedPages.slice(currentOffset, currentOffset + pageSize)
+
+  // Create rows of 5 buttons
+  let row: { text: string; callback: string }[] = []
+  for (const page of pagesToShow) {
+    const isMarked = markedPages.includes(page)
+    const text = isMarked ? `✅${page}` : String(page)
+    row.push({ text, callback: `revision:page:${page}` })
+    if (row.length === 5) {
+      for (const btn of row) {
+        keyboard.text(btn.text, btn.callback)
+      }
+      keyboard.row()
+      row = []
+    }
+  }
+  // Add remaining buttons
+  if (row.length > 0) {
+    for (const btn of row) {
+      keyboard.text(btn.text, btn.callback)
+    }
+    keyboard.row()
+  }
+
+  // Pagination
+  const hasMore = learnedPages.length > currentOffset + pageSize
+  const hasPrev = currentOffset > 0
+
+  if (hasPrev || hasMore) {
+    if (hasPrev) {
+      keyboard.text('◀️', `revision:offset:${currentOffset - pageSize}`)
+    }
+    keyboard.text(`${Math.floor(currentOffset / pageSize) + 1}/${Math.ceil(learnedPages.length / pageSize)}`, 'noop')
+    if (hasMore) {
+      keyboard.text('▶️', `revision:offset:${currentOffset + pageSize}`)
+    }
+    keyboard.row()
+  }
+
+  keyboard.text('◀️ Назад', 'student:menu')
+
+  return keyboard
+}
+
+/**
+ * Keyboard for revision submission mode
+ */
+export function getRevisionSubmitKeyboard(pageNumber: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('↩️ Выбрать другую страницу', 'student:revision').row()
+    .text('◀️ В меню', 'student:menu')
+}
+
+/**
+ * Keyboard for ustaz to review revision submissions
+ */
+export function getRevisionReviewKeyboard(revisionId: string, studentUsername?: string): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+    .text('✅ Сдал', `revision_review:pass:${revisionId}`)
+    .text('❌ Не сдал', `revision_review:fail:${revisionId}`)
+
+  // Add chat button if student has username
+  if (studentUsername) {
+    keyboard.row().url(`💬 Написать студенту`, `https://t.me/${studentUsername}`)
+  }
+
+  return keyboard
 }
 
 // ============== HELPER FUNCTIONS ==============

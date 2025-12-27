@@ -353,11 +353,14 @@ export function organizeVersesByLine(verses: QuranVerse[]): Map<number, { words:
     }
   }
 
-  // Convert Sets to arrays and sort words by position
+  // Convert Sets to arrays and sort words by ID (not position!)
+  // Position is per-verse, so when multiple verses are on one line,
+  // sorting by position alone will interleave words incorrectly.
+  // Word ID is sequential across the entire Quran, so it gives correct order.
   const result = new Map<number, { words: QuranWord[]; verseKeys: string[] }>()
   lineMap.forEach((value, key) => {
     result.set(key, {
-      words: value.words.sort((a, b) => a.position - b.position),
+      words: value.words.sort((a, b) => a.id - b.id),
       verseKeys: Array.from(value.verseKeys),
     })
   })

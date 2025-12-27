@@ -42,6 +42,9 @@ export async function GET(req: NextRequest) {
       })
       const groupIds = ustazGroups.map(g => g.id)
 
+      // Only show submissions that were sent to ustaz for review
+      where.sentToUstazAt = { not: null }
+
       // Filter submissions by: student in ustaz's groups OR task in ustaz's groups
       where.OR = [
         { student: { studentGroups: { some: { groupId: { in: groupIds } } } } },
@@ -101,9 +104,18 @@ export async function GET(req: NextRequest) {
     ])
 
     // Map to frontend format with additional fields
+    // Convert BigInt to Number for JSON serialization
     const mappedSubmissions = submissions.map(s => ({
       ...s,
+      // Convert BigInt fields to Number
+      telegramMsgId: s.telegramMsgId ? Number(s.telegramMsgId) : null,
+      studentMsgId: s.studentMsgId ? Number(s.studentMsgId) : null,
       telegramFileId: s.fileId, // Alias for compatibility
+      // Map studentGroup from nested array
+      student: {
+        ...s.student,
+        studentGroup: s.student.studentGroups?.[0]?.group || null
+      }
     }))
 
     return NextResponse.json({

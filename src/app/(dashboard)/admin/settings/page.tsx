@@ -7,7 +7,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { Settings, Save, Loader2, Phone, MessageSquare, BookOpen, Layers, GraduationCap, Key, ChevronRight } from 'lucide-react'
+import { Settings, Save, Loader2, Phone, MessageSquare, BookOpen, Layers, GraduationCap, Key, ChevronRight, AlertTriangle, RotateCcw } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import Link from 'next/link'
 
 interface Setting {
@@ -95,6 +106,8 @@ export default function AdminSettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [modified, setModified] = useState<Record<string, string>>({})
+  const [resetting, setResetting] = useState(false)
+  const [resetResult, setResetResult] = useState<{ success: boolean; stats?: any; error?: string } | null>(null)
 
   useEffect(() => {
     fetchSettings()
@@ -111,6 +124,24 @@ export default function AdminSettingsPage() {
       console.error('Failed to fetch settings:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleResetProgress() {
+    setResetting(true)
+    setResetResult(null)
+    try {
+      const res = await fetch('/api/admin/reset-progress', { method: 'POST' })
+      const data = await res.json()
+      if (res.ok) {
+        setResetResult({ success: true, stats: data.stats })
+      } else {
+        setResetResult({ success: false, error: data.error || 'Ошибка сброса' })
+      }
+    } catch (error) {
+      setResetResult({ success: false, error: 'Сетевая ошибка' })
+    } finally {
+      setResetting(false)
     }
   }
 
@@ -333,6 +364,94 @@ export default function AdminSettingsPage() {
           </CardContent>
         </Card>
       ))}
+
+      {/* Danger Zone */}
+      <Card className="border-destructive">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <AlertTriangle className="h-5 w-5" />
+            Опасная зона
+          </CardTitle>
+          <CardDescription>
+            Необратимые действия для тестирования
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="p-4 border border-destructive/50 rounded-lg bg-destructive/5">
+            <h4 className="font-medium mb-2">Сбросить весь прогресс</h4>
+            <p className="text-sm text-muted-foreground mb-4">
+              Удаляет все задания, сдачи, статистику и сбрасывает прогресс всех студентов на страницу 1.
+              <br />
+              <strong className="text-destructive">Это действие нельзя отменить!</strong>
+            </p>
+
+            {resetResult && (
+              <div className={`mb-4 p-3 rounded-lg text-sm ${resetResult.success ? 'bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-200' : 'bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-200'}`}>
+                {resetResult.success ? (
+                  <div>
+                    <strong>✅ Прогресс сброшен!</strong>
+                    <ul className="mt-2 space-y-1">
+                      <li>StudentGroup сброшено: {resetResult.stats?.studentGroupsReset}</li>
+                      <li>Пользователей сброшено: {resetResult.stats?.usersReset}</li>
+                      <li>Заданий удалено: {resetResult.stats?.tasksDeleted}</li>
+                      <li>Сдач удалено: {resetResult.stats?.submissionsDeleted}</li>
+                      <li>Повторений удалено: {resetResult.stats?.revisionSubmissionsDeleted}</li>
+                      <li>AI предпроверок удалено: {resetResult.stats?.qrcPreChecksDeleted}</li>
+                      <li>Муфрадат сдач удалено: {resetResult.stats?.mufradatSubmissionsDeleted}</li>
+                      <li>Муфрадат сессий удалено: {resetResult.stats?.mufradatSessionsDeleted}</li>
+                      <li>Ежедневных прогрессов удалено: {resetResult.stats?.dailyRevisionDeleted}</li>
+                    </ul>
+                  </div>
+                ) : (
+                  <span>❌ Ошибка: {resetResult.error}</span>
+                )}
+              </div>
+            )}
+
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" disabled={resetting}>
+                  {resetting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RotateCcw className="mr-2 h-4 w-4" />
+                  )}
+                  Сбросить весь прогресс
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Вы уверены?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Это действие удалит ВСЕ данные о прогрессе студентов:
+                    <ul className="list-disc list-inside mt-2 space-y-1">
+                      <li>Все задания (tasks)</li>
+                      <li>Все сдачи работ (submissions)</li>
+                      <li>Все повторения (revisionSubmissions)</li>
+                      <li>Все AI предпроверки (qrcPreChecks)</li>
+                      <li>Все муфрадат сдачи и сессии</li>
+                      <li>Ежедневный прогресс повторений</li>
+                      <li>Вся статистика (statistics)</li>
+                      <li>Прогресс студентов (сброс на стр. 1)</li>
+                    </ul>
+                    <br />
+                    <strong>Это нельзя отменить!</strong>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Отмена</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={handleResetProgress}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Да, сбросить всё
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

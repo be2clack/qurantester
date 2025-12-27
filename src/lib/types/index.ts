@@ -169,9 +169,9 @@ export interface CreateLessonInput {
   type: LessonType
   groupId: string
   repetitionCount?: number
-  stage1Days?: number
-  stage2Days?: number
-  stage3Days?: number
+  stage1Hours?: number
+  stage2Hours?: number
+  stage3Hours?: number
   showText?: boolean
   showImage?: boolean
   showAudio?: boolean

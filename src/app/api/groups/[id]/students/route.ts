@@ -6,6 +6,9 @@ import { z } from 'zod'
 
 const addStudentSchema = z.object({
   studentId: z.string(),
+  currentPage: z.number().min(1).max(604).optional(),
+  currentLine: z.number().min(1).max(15).optional(),
+  currentStage: z.enum(['STAGE_1_1', 'STAGE_1_2', 'STAGE_2_1', 'STAGE_2_2', 'STAGE_3']).optional(),
 })
 
 export async function GET(
@@ -127,13 +130,65 @@ export async function POST(
       )
     }
 
-    // Add student to group
-    await prisma.studentGroup.create({
-      data: {
+    // Student can only be in ONE group - remove from all other groups first
+    await prisma.studentGroup.deleteMany({
+      where: {
         studentId: validation.data.studentId,
-        groupId: id
+        groupId: { not: id } // Remove from all groups except target
       }
     })
+
+    // Also cancel any active tasks from other groups
+    await prisma.task.updateMany({
+      where: {
+        studentId: validation.data.studentId,
+        groupId: { not: id },
+        status: 'IN_PROGRESS'
+      },
+      data: {
+        status: 'CANCELLED'
+      }
+    })
+
+    // Check if already in this group
+    const existingMembership = await prisma.studentGroup.findUnique({
+      where: {
+        studentId_groupId: {
+          studentId: validation.data.studentId,
+          groupId: id
+        }
+      }
+    })
+
+    if (existingMembership) {
+      // Update existing membership with new progress if provided
+      if (validation.data.currentPage || validation.data.currentLine || validation.data.currentStage) {
+        await prisma.studentGroup.update({
+          where: {
+            studentId_groupId: {
+              studentId: validation.data.studentId,
+              groupId: id
+            }
+          },
+          data: {
+            ...(validation.data.currentPage && { currentPage: validation.data.currentPage }),
+            ...(validation.data.currentLine && { currentLine: validation.data.currentLine }),
+            ...(validation.data.currentStage && { currentStage: validation.data.currentStage }),
+          }
+        })
+      }
+    } else {
+      // Add student to group with optional progress
+      await prisma.studentGroup.create({
+        data: {
+          studentId: validation.data.studentId,
+          groupId: id,
+          currentPage: validation.data.currentPage || student.currentPage,
+          currentLine: validation.data.currentLine || student.currentLine,
+          currentStage: validation.data.currentStage || student.currentStage,
+        }
+      })
+    }
 
     const updated = await prisma.user.findUnique({
       where: { id: student.id },

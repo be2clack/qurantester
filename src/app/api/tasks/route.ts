@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
 import { UserRole, TaskStatus, StageNumber } from '@prisma/client'
 import { z } from 'zod'
-import { addDays } from 'date-fns'
+import { addHours } from 'date-fns'
 
 const createTaskSchema = z.object({
   studentId: z.string(),
@@ -199,16 +199,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Calculate deadline
-    const stageDays: Record<StageNumber, number> = {
-      STAGE_1_1: lesson.stage1Days,
-      STAGE_1_2: lesson.stage2Days,
-      STAGE_2_1: lesson.stage1Days,
-      STAGE_2_2: lesson.stage2Days,
-      STAGE_3: lesson.stage3Days,
+    // Calculate deadline (using hours)
+    const stageHours: Record<StageNumber, number> = {
+      STAGE_1_1: lesson.stage1Hours,
+      STAGE_1_2: lesson.stage2Hours,
+      STAGE_2_1: lesson.stage1Hours,
+      STAGE_2_2: lesson.stage2Hours,
+      STAGE_3: lesson.stage3Hours,
     }
-    const days = deadlineDays || stageDays[actualStage]
-    const deadline = addDays(new Date(), days)
+    const hours = deadlineDays ? deadlineDays * 24 : stageHours[actualStage]
+    const deadline = addHours(new Date(), hours)
 
     // Create task
     const task = await prisma.task.create({

@@ -1,6 +1,7 @@
 import { AppSidebar } from '@/components/app-sidebar'
 import { Header } from '@/components/layouts/header'
 import { StudentBottomNav } from '@/components/student-bottom-nav'
+import { TelegramFullscreen } from '@/components/telegram-fullscreen'
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar'
 import { getCurrentUser } from '@/lib/auth'
 import { UserRole } from '@prisma/client'
@@ -25,6 +26,7 @@ export default async function StudentLayout({
 
   return (
     <SidebarProvider>
+      <TelegramFullscreen />
       {/* Sidebar hidden on mobile, visible on md+ */}
       <div className="hidden md:block">
         <AppSidebar

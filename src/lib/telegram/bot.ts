@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma'
 
 // Session data interface
 export interface SessionData {
-  step: 'idle' | 'awaiting_contact' | 'awaiting_name' | 'awaiting_birthdate' | 'awaiting_role' | 'awaiting_ustaz_selection' | 'awaiting_ustaz_confirm' | 'awaiting_child_phone' | 'awaiting_submission' | 'browsing_menu'
+  step: 'idle' | 'awaiting_contact' | 'awaiting_name' | 'awaiting_birthdate' | 'awaiting_gender' | 'awaiting_role' | 'awaiting_group_selection' | 'awaiting_group_confirm' | 'awaiting_child_phone' | 'awaiting_submission' | 'awaiting_revision' | 'browsing_menu' | 'awaiting_progress_page' | 'awaiting_progress_line' | 'awaiting_progress_stage'
   messageIds: number[]
   pendingTaskId?: string
   currentMenuPath?: string
@@ -11,7 +11,14 @@ export interface SessionData {
   registrationPhone?: string
   registrationName?: string
   registrationBirthDate?: string
-  selectedUstazId?: string
+  registrationGender?: 'MALE' | 'FEMALE'
+  selectedGroupId?: string
+  // Progress selection during registration
+  registrationPage?: number
+  registrationLine?: number
+  progressPageOffset?: number
+  // Revision data
+  revisionPageNumber?: number
 }
 
 // Bot context with session

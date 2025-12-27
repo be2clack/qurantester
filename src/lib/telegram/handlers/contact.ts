@@ -5,7 +5,7 @@ import { getMainMenuKeyboard } from '../keyboards/main-menu'
 import { cleanupAllMessages, sendAndTrack } from '../utils/message-cleaner'
 import { UserRole } from '@prisma/client'
 import { getRoleLabel } from '@/lib/constants/roles'
-import { showRoleSelection } from './registration'
+import { showGenderSelection } from './registration'
 
 /**
  * Handle contact message (phone number)
@@ -259,8 +259,8 @@ export async function handleBirthDateInput(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Show role selection screen (date will be saved in session)
-  await showRoleSelection(ctx, text)
+  // Show gender selection screen (date will be saved in session)
+  await showGenderSelection(ctx, text)
 }
 
 /**

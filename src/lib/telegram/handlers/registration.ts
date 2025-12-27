@@ -1,23 +1,65 @@
 import type { BotContext } from '../bot'
 import { prisma } from '@/lib/prisma'
-import { UserRole, LessonType } from '@prisma/client'
+import { UserRole, LessonType, Gender } from '@prisma/client'
 import { cleanupAllMessages, sendAndTrack, deleteMessagesByType } from '../utils/message-cleaner'
 import {
+  getGenderSelectionKeyboard,
   getRoleSelectionKeyboard,
-  getUstazListKeyboard,
-  getUstazConfirmKeyboard,
+  getGroupListKeyboard,
+  getGroupConfirmKeyboard,
   getBackToRoleKeyboard,
-  getMainMenuKeyboard
+  getMainMenuKeyboard,
+  getProgressPageKeyboard,
+  getProgressLineKeyboard,
+  getProgressStageKeyboard,
 } from '../keyboards/main-menu'
+
+/**
+ * Show gender selection screen
+ */
+export async function showGenderSelection(ctx: BotContext, birthDateStr: string): Promise<void> {
+  ctx.session.registrationBirthDate = birthDateStr
+  ctx.session.step = 'awaiting_gender'
+
+  await deleteMessagesByType(ctx, 'registration')
+
+  const message = `<b>👤 Укажите ваш пол</b>
+
+Выберите один из вариантов:`
+
+  await sendAndTrack(
+    ctx,
+    message,
+    {
+      reply_markup: getGenderSelectionKeyboard(),
+      parse_mode: 'HTML'
+    },
+    undefined,
+    'registration'
+  )
+}
+
+/**
+ * Handle gender selection callback
+ */
+export async function handleGenderSelection(ctx: BotContext): Promise<void> {
+  const data = ctx.callbackQuery?.data
+  if (!data?.startsWith('reg:gender:')) return
+
+  const gender = data.replace('reg:gender:', '') as 'MALE' | 'FEMALE'
+  await ctx.answerCallbackQuery()
+
+  ctx.session.registrationGender = gender
+
+  // Show role selection
+  await showRoleSelection(ctx)
+}
 
 /**
  * Show role selection screen
  */
-export async function showRoleSelection(ctx: BotContext, birthDateStr: string): Promise<void> {
-  ctx.session.registrationBirthDate = birthDateStr
+export async function showRoleSelection(ctx: BotContext): Promise<void> {
   ctx.session.step = 'awaiting_role'
-
-  await deleteMessagesByType(ctx, 'registration')
 
   const message = `<b>👤 Выберите вашу роль</b>
 
@@ -27,16 +69,10 @@ export async function showRoleSelection(ctx: BotContext, birthDateStr: string): 
 👨‍🏫 <b>Устаз</b> - если вы преподаватель
 👨‍👩‍👧 <b>Родитель</b> - если вы родитель ученика`
 
-  await sendAndTrack(
-    ctx,
-    message,
-    {
-      reply_markup: getRoleSelectionKeyboard(),
-      parse_mode: 'HTML'
-    },
-    undefined,
-    'registration'
-  )
+  await ctx.editMessageText(message, {
+    reply_markup: getRoleSelectionKeyboard(),
+    parse_mode: 'HTML'
+  })
 }
 
 /**
@@ -50,8 +86,8 @@ export async function handleRoleSelection(ctx: BotContext): Promise<void> {
   await ctx.answerCallbackQuery()
 
   if (role === 'STUDENT') {
-    // Show list of ustaz to choose from
-    await showUstazList(ctx)
+    // Show list of groups to choose from
+    await showGroupList(ctx)
   } else if (role === 'PARENT') {
     // Ask for child's phone number
     await showChildPhoneInput(ctx)
@@ -62,36 +98,37 @@ export async function handleRoleSelection(ctx: BotContext): Promise<void> {
 }
 
 /**
- * Show list of ustaz for student to choose
+ * Show list of groups for student to choose
  */
-async function showUstazList(ctx: BotContext): Promise<void> {
-  ctx.session.step = 'awaiting_ustaz_selection'
+async function showGroupList(ctx: BotContext): Promise<void> {
+  ctx.session.step = 'awaiting_group_selection'
 
-  // Get all active ustaz with their groups count
-  const ustazList = await prisma.user.findMany({
+  // Get all active groups with their ustaz
+  const groups = await prisma.group.findMany({
     where: {
-      role: UserRole.USTAZ,
       isActive: true,
-      ustazGroups: {
-        some: { isActive: true }
-      }
     },
     select: {
       id: true,
-      firstName: true,
-      lastName: true,
-      phone: true,
+      name: true,
+      lessonType: true,
+      ustaz: {
+        select: {
+          firstName: true,
+          lastName: true,
+        }
+      },
       _count: {
-        select: { ustazGroups: true }
+        select: { students: true }
       }
     },
-    orderBy: { firstName: 'asc' }
+    orderBy: [{ name: 'asc' }]
   })
 
-  if (ustazList.length === 0) {
-    const message = `<b>⚠️ Нет доступных устазов</b>
+  if (groups.length === 0) {
+    const message = `<b>⚠️ Нет доступных групп</b>
 
-К сожалению, в системе пока нет активных устазов.
+К сожалению, в системе пока нет активных групп.
 
 Пожалуйста, свяжитесь с администратором для регистрации.`
 
@@ -102,106 +139,219 @@ async function showUstazList(ctx: BotContext): Promise<void> {
     return
   }
 
-  const message = `<b>👨‍🏫 Выберите вашего устаза</b>
+  const message = `<b>📚 Выберите группу</b>
 
-Выберите устаза, у которого хотите обучаться:
-
-<i>Вы будете добавлены во все группы выбранного устаза.</i>`
+Выберите группу, в которую хотите записаться:`
 
   await ctx.editMessageText(message, {
-    reply_markup: getUstazListKeyboard(ustazList),
+    reply_markup: getGroupListKeyboard(groups),
     parse_mode: 'HTML'
   })
 }
 
 /**
- * Handle ustaz selection callback
+ * Handle group selection callback
  */
-export async function handleUstazSelection(ctx: BotContext): Promise<void> {
+export async function handleGroupSelection(ctx: BotContext): Promise<void> {
   const data = ctx.callbackQuery?.data
-  if (!data?.startsWith('reg:ustaz:')) return
+  if (!data?.startsWith('reg:group:')) return
 
-  const ustazId = data.replace('reg:ustaz:', '')
+  const groupId = data.replace('reg:group:', '')
   await ctx.answerCallbackQuery()
 
-  // Get ustaz details with their groups
-  const ustaz = await prisma.user.findUnique({
-    where: { id: ustazId },
+  // Get group details
+  const group = await prisma.group.findUnique({
+    where: { id: groupId },
     select: {
       id: true,
-      firstName: true,
-      lastName: true,
-      phone: true,
-      ustazGroups: {
-        where: { isActive: true },
+      name: true,
+      lessonType: true,
+      ustaz: {
         select: {
           id: true,
-          name: true,
-          lessonType: true,
-          _count: {
-            select: { students: true }
-          }
+          firstName: true,
+          lastName: true,
+          phone: true,
         }
+      },
+      _count: {
+        select: { students: true }
       }
     }
   })
 
-  if (!ustaz || ustaz.ustazGroups.length === 0) {
-    await ctx.answerCallbackQuery({ text: 'Устаз не найден или нет групп', show_alert: true })
+  if (!group) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена', show_alert: true })
     return
   }
 
-  ctx.session.selectedUstazId = ustazId
-  ctx.session.step = 'awaiting_ustaz_confirm'
+  ctx.session.selectedGroupId = groupId
+  ctx.session.step = 'awaiting_group_confirm'
 
-  const ustazName = [ustaz.firstName, ustaz.lastName].filter(Boolean).join(' ') || 'Устаз'
+  const ustazName = group.ustaz
+    ? [group.ustaz.firstName, group.ustaz.lastName].filter(Boolean).join(' ')
+    : 'Не назначен'
 
-  // Group by lesson type
   const lessonTypeNames: Record<LessonType, string> = {
     [LessonType.MEMORIZATION]: 'Заучивание',
     [LessonType.REVISION]: 'Повторение',
     [LessonType.TRANSLATION]: 'Перевод',
   }
 
-  const groupsList = ustaz.ustazGroups
-    .map(g => `• ${g.name} (${lessonTypeNames[g.lessonType]}) - ${g._count.students} студентов`)
-    .join('\n')
+  const message = `<b>✅ Подтвердите выбор группы</b>
 
-  const message = `<b>✅ Подтвердите выбор устаза</b>
-
+📚 <b>Группа:</b> ${group.name}
+📖 <b>Тип:</b> ${lessonTypeNames[group.lessonType]}
 👨‍🏫 <b>Устаз:</b> ${ustazName}
-📱 <b>Телефон:</b> ${ustaz.phone}
+👥 <b>Студентов:</b> ${group._count.students}
 
-<b>Группы устаза:</b>
-${groupsList}
-
-<i>Вы будете добавлены во все ${ustaz.ustazGroups.length} групп(ы) этого устаза.</i>`
+<i>Вы будете добавлены в эту группу.</i>`
 
   await ctx.editMessageText(message, {
-    reply_markup: getUstazConfirmKeyboard(ustazId),
+    reply_markup: getGroupConfirmKeyboard(groupId),
     parse_mode: 'HTML'
   })
 }
 
 /**
- * Handle ustaz confirmation callback
+ * Handle group confirmation callback - now shows progress selection
  */
-export async function handleUstazConfirm(ctx: BotContext): Promise<void> {
+export async function handleGroupConfirm(ctx: BotContext): Promise<void> {
   const data = ctx.callbackQuery?.data
-  if (!data?.startsWith('reg:confirm_ustaz:')) return
+  if (!data?.startsWith('reg:confirm_group:')) return
 
-  const ustazId = data.replace('reg:confirm_ustaz:', '')
+  const groupId = data.replace('reg:confirm_group:', '')
+  await ctx.answerCallbackQuery()
+
+  // Store selected group ID and show progress selection
+  ctx.session.selectedGroupId = groupId
+  ctx.session.step = 'awaiting_progress_page'
+  ctx.session.progressPageOffset = 0
+
+  const message = `<b>📖 Укажите ваш текущий прогресс</b>
+
+Выберите страницу Мусхафа, на которой вы сейчас находитесь:
+
+<i>Если вы только начинаете - выберите страницу 1</i>`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getProgressPageKeyboard(0),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle progress page offset navigation
+ */
+export async function handleProgressPageOffset(ctx: BotContext): Promise<void> {
+  const data = ctx.callbackQuery?.data
+  if (!data?.startsWith('reg:progress_offset:')) return
+
+  const offset = parseInt(data.replace('reg:progress_offset:', ''))
+  await ctx.answerCallbackQuery()
+
+  ctx.session.progressPageOffset = offset
+
+  const message = `<b>📖 Укажите ваш текущий прогресс</b>
+
+Выберите страницу Мусхафа, на которой вы сейчас находитесь:
+
+<i>Страницы ${offset + 1}-${Math.min(offset + 40, 604)}</i>`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getProgressPageKeyboard(offset),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle progress page selection
+ */
+export async function handleProgressPageSelection(ctx: BotContext): Promise<void> {
+  const data = ctx.callbackQuery?.data
+  if (!data?.startsWith('reg:progress_page:')) return
+
+  const page = parseInt(data.replace('reg:progress_page:', ''))
+  await ctx.answerCallbackQuery()
+
+  ctx.session.registrationPage = page
+  ctx.session.step = 'awaiting_progress_line'
+
+  const message = `<b>📖 Страница ${page}</b>
+
+Выберите строку, на которой вы остановились:
+
+<i>Строки нумеруются сверху вниз (1-15)</i>`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getProgressLineKeyboard(page),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle progress line selection
+ */
+export async function handleProgressLineSelection(ctx: BotContext): Promise<void> {
+  const data = ctx.callbackQuery?.data
+  if (!data?.startsWith('reg:progress_line:')) return
+
+  const parts = data.replace('reg:progress_line:', '').split(':')
+  const page = parseInt(parts[0])
+  const line = parseInt(parts[1])
+  await ctx.answerCallbackQuery()
+
+  ctx.session.registrationPage = page
+  ctx.session.registrationLine = line
+  ctx.session.step = 'awaiting_progress_stage'
+
+  const message = `<b>📖 Страница ${page}, строка ${line}</b>
+
+Выберите этап заучивания:
+
+<b>1.1</b> - Чтение с листа
+<b>1.2</b> - Проверка чтения
+<b>2.1</b> - Заучивание наизусть
+<b>2.2</b> - Проверка заучивания
+<b>3</b> - Закрепление`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getProgressStageKeyboard(page, line),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle progress stage selection - completes registration
+ */
+export async function handleProgressStageSelection(ctx: BotContext): Promise<void> {
+  const data = ctx.callbackQuery?.data
+  if (!data?.startsWith('reg:progress_stage:')) return
+
+  const parts = data.replace('reg:progress_stage:', '').split(':')
+  const page = parseInt(parts[0])
+  const line = parseInt(parts[1])
+  const stage = parts[2] as 'STAGE_1_1' | 'STAGE_1_2' | 'STAGE_2_1' | 'STAGE_2_2' | 'STAGE_3'
   await ctx.answerCallbackQuery()
 
   const telegramId = ctx.from?.id
   if (!telegramId) return
 
+  const groupId = ctx.session.selectedGroupId
+  if (!groupId) {
+    await ctx.editMessageText(
+      'Ошибка: группа не выбрана. Попробуйте /start',
+      { parse_mode: 'HTML' }
+    )
+    return
+  }
+
   // Parse saved data from session
   const fullName = ctx.session.registrationName || ''
   const birthDateStr = ctx.session.registrationBirthDate || ''
-  const parts = fullName.split(/\s+/)
-  const lastName = parts[0] || ''
-  const firstName = parts.slice(1).join(' ') || parts[0]
+  const parts2 = fullName.split(/\s+/)
+  const lastName = parts2[0] || ''
+  const firstName = parts2.slice(1).join(' ') || parts2[0]
 
   // Parse birth date
   const dateMatch = birthDateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/)
@@ -211,70 +361,95 @@ export async function handleUstazConfirm(ctx: BotContext): Promise<void> {
     birthDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
   }
 
-  // Get ustaz and their groups
-  const ustaz = await prisma.user.findUnique({
-    where: { id: ustazId },
+  // Get group with ustaz
+  const group = await prisma.group.findUnique({
+    where: { id: groupId },
     select: {
       id: true,
-      firstName: true,
-      lastName: true,
-      ustazGroups: {
-        where: { isActive: true },
-        select: { id: true, name: true, lessonType: true }
+      name: true,
+      lessonType: true,
+      ustaz: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+        }
       }
     }
   })
 
-  if (!ustaz || ustaz.ustazGroups.length === 0) {
+  if (!group) {
     await ctx.editMessageText(
-      'Устаз или группы не найдены. Попробуйте /start',
+      'Группа не найдена. Попробуйте /start',
       { parse_mode: 'HTML' }
     )
     return
   }
 
   try {
-    // Update user with role and ustaz
+    // Get gender from session
+    const gender = ctx.session.registrationGender as Gender | undefined
+
+    // Update user with role, progress, and ustaz (if group has ustaz)
     const user = await prisma.user.update({
       where: { telegramId: BigInt(telegramId) },
       data: {
         firstName,
         lastName,
         birthDate,
+        gender,
         role: UserRole.STUDENT,
-        ustazId: ustaz.id,
+        ustazId: group.ustaz?.id || null,
+        currentPage: page,
+        currentLine: line,
+        currentStage: stage,
       }
     })
 
-    // Create StudentGroup entries for all ustaz's groups
-    for (const group of ustaz.ustazGroups) {
-      await prisma.studentGroup.create({
-        data: {
-          studentId: user.id,
-          groupId: group.id,
-        }
-      })
-    }
+    // Create StudentGroup entry with progress
+    await prisma.studentGroup.create({
+      data: {
+        studentId: user.id,
+        groupId: group.id,
+        currentPage: page,
+        currentLine: line,
+        currentStage: stage,
+      }
+    })
 
     // Clear registration data from session
     ctx.session.registrationPhone = undefined
     ctx.session.registrationName = undefined
     ctx.session.registrationBirthDate = undefined
-    ctx.session.selectedUstazId = undefined
+    ctx.session.registrationGender = undefined
+    ctx.session.selectedGroupId = undefined
+    ctx.session.registrationPage = undefined
+    ctx.session.registrationLine = undefined
+    ctx.session.progressPageOffset = undefined
     ctx.session.step = 'browsing_menu'
     ctx.session.currentMenuPath = 'main'
 
     await cleanupAllMessages(ctx)
 
-    const ustazName = [ustaz.firstName, ustaz.lastName].filter(Boolean).join(' ') || 'Устаз'
-    const groupNames = ustaz.ustazGroups.map(g => g.name).join(', ')
+    const ustazName = group.ustaz
+      ? [group.ustaz.firstName, group.ustaz.lastName].filter(Boolean).join(' ')
+      : 'Не назначен'
+    const genderIcon = gender === 'FEMALE' ? '🧕' : '👨'
+    const stageNames: Record<string, string> = {
+      'STAGE_1_1': '1.1',
+      'STAGE_1_2': '1.2',
+      'STAGE_2_1': '2.1',
+      'STAGE_2_2': '2.2',
+      'STAGE_3': '3',
+    }
 
     const message = `<b>✅ Регистрация завершена!</b>
 
-<b>ФИО:</b> ${lastName} ${firstName}
+${genderIcon} <b>ФИО:</b> ${lastName} ${firstName}
 <b>Роль:</b> Студент
+<b>Группа:</b> ${group.name}
 <b>Устаз:</b> ${ustazName}
-<b>Группы:</b> ${groupNames}
+<b>Прогресс:</b> стр. ${page}, строка ${line}, этап ${stageNames[stage]}
 
 <b>Добро пожаловать!</b> Выберите действие:`
 
@@ -298,11 +473,121 @@ export async function handleUstazConfirm(ctx: BotContext): Promise<void> {
 }
 
 /**
- * Handle back to ustaz list
+ * Handle back to progress page selection
  */
-export async function handleBackToUstazList(ctx: BotContext): Promise<void> {
+export async function handleBackToProgressPage(ctx: BotContext): Promise<void> {
   await ctx.answerCallbackQuery()
-  await showUstazList(ctx)
+
+  ctx.session.step = 'awaiting_progress_page'
+  const offset = ctx.session.progressPageOffset || 0
+
+  const message = `<b>📖 Укажите ваш текущий прогресс</b>
+
+Выберите страницу Мусхафа, на которой вы сейчас находитесь:
+
+<i>Страницы ${offset + 1}-${Math.min(offset + 40, 604)}</i>`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getProgressPageKeyboard(offset),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle back to progress line selection
+ */
+export async function handleBackToProgressLine(ctx: BotContext): Promise<void> {
+  const data = ctx.callbackQuery?.data
+  if (!data?.startsWith('reg:back_to_progress_line:')) return
+
+  const page = parseInt(data.replace('reg:back_to_progress_line:', ''))
+  await ctx.answerCallbackQuery()
+
+  ctx.session.step = 'awaiting_progress_line'
+
+  const message = `<b>📖 Страница ${page}</b>
+
+Выберите строку, на которой вы остановились:
+
+<i>Строки нумеруются сверху вниз (1-15)</i>`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getProgressLineKeyboard(page),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle back to group confirm from progress selection
+ */
+export async function handleBackToGroupConfirmFromProgress(ctx: BotContext): Promise<void> {
+  await ctx.answerCallbackQuery()
+
+  const groupId = ctx.session.selectedGroupId
+  if (!groupId) {
+    await showGroupList(ctx)
+    return
+  }
+
+  // Get group details
+  const group = await prisma.group.findUnique({
+    where: { id: groupId },
+    select: {
+      id: true,
+      name: true,
+      lessonType: true,
+      ustaz: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+        }
+      },
+      _count: {
+        select: { students: true }
+      }
+    }
+  })
+
+  if (!group) {
+    await showGroupList(ctx)
+    return
+  }
+
+  ctx.session.step = 'awaiting_group_confirm'
+
+  const ustazName = group.ustaz
+    ? [group.ustaz.firstName, group.ustaz.lastName].filter(Boolean).join(' ')
+    : 'Не назначен'
+
+  const lessonTypeNames: Record<LessonType, string> = {
+    [LessonType.MEMORIZATION]: 'Заучивание',
+    [LessonType.REVISION]: 'Повторение',
+    [LessonType.TRANSLATION]: 'Перевод',
+  }
+
+  const message = `<b>✅ Подтвердите выбор группы</b>
+
+📚 <b>Группа:</b> ${group.name}
+📖 <b>Тип:</b> ${lessonTypeNames[group.lessonType]}
+👨‍🏫 <b>Устаз:</b> ${ustazName}
+👥 <b>Студентов:</b> ${group._count.students}
+
+<i>Вы будете добавлены в эту группу.</i>`
+
+  await ctx.editMessageText(message, {
+    reply_markup: getGroupConfirmKeyboard(groupId),
+    parse_mode: 'HTML'
+  })
+}
+
+/**
+ * Handle back to group list
+ */
+export async function handleBackToGroupList(ctx: BotContext): Promise<void> {
+  await ctx.answerCallbackQuery()
+  await showGroupList(ctx)
 }
 
 /**
@@ -444,6 +729,9 @@ export async function handleChildPhoneInput(ctx: BotContext): Promise<void> {
   }
 
   try {
+    // Get gender from session
+    const gender = ctx.session.registrationGender as Gender | undefined
+
     // Update parent user with role and link to child
     const parent = await prisma.user.update({
       where: { telegramId: BigInt(telegramId) },
@@ -451,6 +739,7 @@ export async function handleChildPhoneInput(ctx: BotContext): Promise<void> {
         firstName,
         lastName,
         birthDate,
+        gender,
         role: UserRole.PARENT,
         parentOf: {
           connect: { id: child.id }
@@ -462,16 +751,18 @@ export async function handleChildPhoneInput(ctx: BotContext): Promise<void> {
     ctx.session.registrationPhone = undefined
     ctx.session.registrationName = undefined
     ctx.session.registrationBirthDate = undefined
+    ctx.session.registrationGender = undefined
     ctx.session.step = 'browsing_menu'
     ctx.session.currentMenuPath = 'main'
 
     await cleanupAllMessages(ctx)
 
     const childName = [child.firstName, child.lastName].filter(Boolean).join(' ') || 'Студент'
+    const genderIcon = gender === 'FEMALE' ? '🧕' : '👨'
 
     const message = `<b>✅ Регистрация завершена!</b>
 
-<b>ФИО:</b> ${lastName} ${firstName}
+${genderIcon} <b>ФИО:</b> ${lastName} ${firstName}
 <b>Роль:</b> Родитель
 <b>Ребенок:</b> ${childName}
 
@@ -522,6 +813,9 @@ async function completeUstazRegistration(ctx: BotContext): Promise<void> {
   }
 
   try {
+    // Get gender from session
+    const gender = ctx.session.registrationGender as Gender | undefined
+
     // Update user with ustaz role but inactive until admin approves
     const user = await prisma.user.update({
       where: { telegramId: BigInt(telegramId) },
@@ -529,6 +823,7 @@ async function completeUstazRegistration(ctx: BotContext): Promise<void> {
         firstName,
         lastName,
         birthDate,
+        gender,
         role: UserRole.USTAZ,
         isActive: false, // Needs admin approval
       }
@@ -538,13 +833,16 @@ async function completeUstazRegistration(ctx: BotContext): Promise<void> {
     ctx.session.registrationPhone = undefined
     ctx.session.registrationName = undefined
     ctx.session.registrationBirthDate = undefined
+    ctx.session.registrationGender = undefined
     ctx.session.step = 'idle'
 
     await cleanupAllMessages(ctx)
 
+    const genderIcon = gender === 'FEMALE' ? '🧕' : '👨'
+
     const message = `<b>📝 Заявка отправлена!</b>
 
-<b>ФИО:</b> ${lastName} ${firstName}
+${genderIcon} <b>ФИО:</b> ${lastName} ${firstName}
 <b>Роль:</b> Устаз
 
 <b>⏳ Ожидайте подтверждения</b>

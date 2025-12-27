@@ -2,7 +2,7 @@ import type { BotContext } from '../bot'
 import { prisma } from '@/lib/prisma'
 import { TaskStatus, SubmissionStatus } from '@prisma/client'
 import { sendAndTrack, deleteUserMessage, deleteMessagesByType, deleteMessagesByTypeForChat } from '../utils/message-cleaner'
-import { getStudentTaskKeyboard, getBackKeyboard } from '../keyboards/main-menu'
+import { getStudentTaskKeyboard, getBackKeyboard, getRevisionSubmitKeyboard, getRevisionReviewKeyboard } from '../keyboards/main-menu'
 
 // Note: submission_confirm messages are NOT auto-deleted by cron
 // They are deleted when student sends next submission or navigates away
@@ -31,6 +31,12 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
       undefined,
       'error'
     )
+    return
+  }
+
+  // Check if in revision mode
+  if (ctx.session.step === 'awaiting_revision' && ctx.session.revisionPageNumber) {
+    await handleRevisionSubmission(ctx, user, 'voice', voice.file_id, voice.duration)
     return
   }
 
@@ -67,12 +73,16 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Use group settings (primary) or lesson settings (fallback)
-  const settings = task.group || task.lesson
+  // Use group settings (primary) or lesson's group (fallback) or lesson itself
+  // task.group - if task was created directly for a group
+  // task.lesson?.group - if task was created through a lesson, get the lesson's group settings
+  // task.lesson - fallback to lesson settings if no group
+  const settings = task.group || task.lesson?.group || task.lesson
 
   // Check if lesson allows voice
   if (!settings?.allowVoice) {
     await deleteUserMessage(ctx)
+    await deleteMessagesByType(ctx, 'menu')
     await sendAndTrack(
       ctx,
       '❌ <b>Неверный формат!</b>\n\nОтправьте 📹 видео-кружок.',
@@ -83,13 +93,59 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Check if task is already complete
-  if (task.currentCount >= task.requiredCount) {
+  // Check QRC pre-check for learning stages (1.1 and 2.1)
+  const group = task.group
+  if (group?.qrcPreCheckEnabled) {
+    const isLearningStage = task.stage === 'STAGE_1_1' || task.stage === 'STAGE_2_1'
+
+    if (isLearningStage) {
+      // Check if pre-check is passed
+      const preCheck = await prisma.qRCPreCheck.findUnique({
+        where: {
+          studentId_groupId_pageNumber_startLine_endLine_stage: {
+            studentId: user.id,
+            groupId: group.id,
+            pageNumber: task.page?.pageNumber || 1,
+            startLine: task.startLine,
+            endLine: task.endLine,
+            stage: task.stage,
+          }
+        }
+      })
+
+      if (!preCheck?.passed) {
+        await deleteUserMessage(ctx)
+        await sendAndTrack(
+          ctx,
+          '🤖 <b>Требуется AI предпроверка</b>\n\n' +
+          'Перед отправкой работ на проверку устазу, необходимо пройти AI проверку чтения.\n\n' +
+          '<i>Откройте меню и нажмите "🎙 Пройти AI проверку".</i>',
+          { reply_markup: getBackKeyboard('student:menu', '◀️ В меню'), parse_mode: 'HTML' },
+          user.id,
+          'notification'
+        )
+        return
+      }
+    }
+  }
+
+  // Count pending submissions for this task
+  const pendingCount = await prisma.submission.count({
+    where: {
+      taskId: task.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
+  // Check if more submissions are needed
+  // Formula: required - passed - pending = remaining needed
+  const neededSubmissions = task.requiredCount - task.passedCount - pendingCount
+  if (neededSubmissions <= 0) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
       '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
-      { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+      { reply_markup: getBackKeyboard('close', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -120,9 +176,15 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Delete previous confirmation message to keep chat clean
-  // Note: Keep menu - don't delete it, student needs it after confirmation auto-deletes
+  // Check if this is a resubmission (student had failed submissions and is sending more)
+  const isResubmission = task.failedCount > 0 && !previousPending
+
+  // Delete ALL previous messages to keep chat clean - no duplicates ever
   await deleteMessagesByType(ctx, 'submission_confirm')
+  await deleteMessagesByType(ctx, 'menu')
+  await deleteMessagesByType(ctx, 'task_info')  // Delete "Задание создано" message
+  await deleteMessagesByType(ctx, 'review_result')
+  await deleteMessagesByType(ctx, 'notification')
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -146,26 +208,36 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     }
   })
 
+  // For resubmissions, immediately notify ustaz (no need to wait for confirmation)
+  if (isResubmission) {
+    await processSubmissionAndNotify(task, submission, user)
+  }
+
   // Send confirmation (auto-delete after N minutes)
-  const remaining = task.requiredCount - updatedTask.currentCount
-  const progressPercent = ((updatedTask.currentCount / task.requiredCount) * 100).toFixed(0)
+  // Calculate remaining correctly: required - passed - pending (including this new one)
+  // pendingCount was queried before creating submission, so add 1 for this new submission
+  const actualPendingCount = pendingCount + 1
+  const remaining = task.requiredCount - task.passedCount - actualPendingCount
+  const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
+  const isLastSubmission = remaining <= 0
 
   const message = buildSubmissionConfirmation(
     task.page.pageNumber,
     task.startLine,
     task.endLine,
-    updatedTask.currentCount,
+    task.passedCount + actualPendingCount,
     task.requiredCount,
-    remaining,
+    Math.max(0, remaining),
     progressPercent,
-    task.deadline
+    task.deadline,
+    isLastSubmission
   )
 
   await sendAndTrack(
     ctx,
     message,
     {
-      reply_markup: getStudentTaskKeyboard(task.id, true),
+      reply_markup: getStudentTaskKeyboard(task.id, true, isLastSubmission),
       parse_mode: 'HTML'
     },
     user.id,
@@ -200,6 +272,12 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     return
   }
 
+  // Check if in revision mode
+  if (ctx.session.step === 'awaiting_revision' && ctx.session.revisionPageNumber) {
+    await handleRevisionSubmission(ctx, user, 'video_note', videoNote.file_id, videoNote.duration)
+    return
+  }
+
   // Get active task
   const task = await prisma.task.findFirst({
     where: {
@@ -234,11 +312,12 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
   }
 
   // Use group settings (primary) or lesson settings (fallback)
-  const settings = task.group || task.lesson
+  const settings = task.group || task.lesson?.group || task.lesson
 
   // Check if lesson allows video notes
   if (!settings?.allowVideoNote) {
     await deleteUserMessage(ctx)
+    await deleteMessagesByType(ctx, 'menu')
     await sendAndTrack(
       ctx,
       '❌ <b>Неверный формат!</b>\n\nОтправьте 🎤 голосовое сообщение.',
@@ -249,13 +328,59 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     return
   }
 
-  // Check if task is already complete
-  if (task.currentCount >= task.requiredCount) {
+  // Check QRC pre-check for learning stages (1.1 and 2.1)
+  const group = task.group
+  if (group?.qrcPreCheckEnabled) {
+    const isLearningStage = task.stage === 'STAGE_1_1' || task.stage === 'STAGE_2_1'
+
+    if (isLearningStage) {
+      // Check if pre-check is passed
+      const preCheck = await prisma.qRCPreCheck.findUnique({
+        where: {
+          studentId_groupId_pageNumber_startLine_endLine_stage: {
+            studentId: user.id,
+            groupId: group.id,
+            pageNumber: task.page?.pageNumber || 1,
+            startLine: task.startLine,
+            endLine: task.endLine,
+            stage: task.stage,
+          }
+        }
+      })
+
+      if (!preCheck?.passed) {
+        await deleteUserMessage(ctx)
+        await sendAndTrack(
+          ctx,
+          '🤖 <b>Требуется AI предпроверка</b>\n\n' +
+          'Перед отправкой работ на проверку устазу, необходимо пройти AI проверку чтения.\n\n' +
+          '<i>Откройте меню и нажмите "🎙 Пройти AI проверку".</i>',
+          { reply_markup: getBackKeyboard('student:menu', '◀️ В меню'), parse_mode: 'HTML' },
+          user.id,
+          'notification'
+        )
+        return
+      }
+    }
+  }
+
+  // Count pending submissions for this task
+  const pendingCount = await prisma.submission.count({
+    where: {
+      taskId: task.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
+  // Check if more submissions are needed
+  // Formula: required - passed - pending = remaining needed
+  const neededSubmissions = task.requiredCount - task.passedCount - pendingCount
+  if (neededSubmissions <= 0) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
       '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
-      { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+      { reply_markup: getBackKeyboard('close', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -286,9 +411,15 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Delete previous confirmation message to keep chat clean
-  // Note: Keep menu - don't delete it, student needs it after confirmation auto-deletes
+  // Check if this is a resubmission (student had failed submissions and is sending more)
+  const isResubmission = task.failedCount > 0 && !previousPending
+
+  // Delete ALL previous messages to keep chat clean - no duplicates ever
   await deleteMessagesByType(ctx, 'submission_confirm')
+  await deleteMessagesByType(ctx, 'menu')
+  await deleteMessagesByType(ctx, 'task_info')  // Delete "Задание создано" message
+  await deleteMessagesByType(ctx, 'review_result')
+  await deleteMessagesByType(ctx, 'notification')
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -312,26 +443,36 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     }
   })
 
+  // For resubmissions, immediately notify ustaz (no need to wait for confirmation)
+  if (isResubmission) {
+    await processSubmissionAndNotify(task, submission, user)
+  }
+
   // Send confirmation (auto-delete after N minutes)
-  const remaining = task.requiredCount - updatedTask.currentCount
-  const progressPercent = ((updatedTask.currentCount / task.requiredCount) * 100).toFixed(0)
+  // Calculate remaining correctly: required - passed - pending (including this new one)
+  // pendingCount was queried before creating submission, so add 1 for this new submission
+  const actualPendingCount = pendingCount + 1
+  const remaining = task.requiredCount - task.passedCount - actualPendingCount
+  const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
+  const isLastSubmission = remaining <= 0
 
   const message = buildSubmissionConfirmation(
     task.page.pageNumber,
     task.startLine,
     task.endLine,
-    updatedTask.currentCount,
+    task.passedCount + actualPendingCount,
     task.requiredCount,
-    remaining,
+    Math.max(0, remaining),
     progressPercent,
-    task.deadline
+    task.deadline,
+    isLastSubmission
   )
 
   await sendAndTrack(
     ctx,
     message,
     {
-      reply_markup: getStudentTaskKeyboard(task.id, true),
+      reply_markup: getStudentTaskKeyboard(task.id, true, isLastSubmission),
       parse_mode: 'HTML'
     },
     user.id,
@@ -391,11 +532,12 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
   }
 
   // Use group settings (primary) or lesson settings (fallback)
-  const settings = task.group || task.lesson
+  const settings = task.group || task.lesson?.group || task.lesson
 
   // Check if lesson allows text
   if (!settings?.allowText) {
     await deleteUserMessage(ctx)
+    await deleteMessagesByType(ctx, 'menu')
 
     // Build format hint
     let formatHint = ''
@@ -417,13 +559,23 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Check if task is already complete
-  if (task.currentCount >= task.requiredCount) {
+  // Count pending submissions for this task
+  const pendingCount = await prisma.submission.count({
+    where: {
+      taskId: task.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
+  // Check if more submissions are needed
+  // Formula: required - passed - pending = remaining needed
+  const neededSubmissions = task.requiredCount - task.passedCount - pendingCount
+  if (neededSubmissions <= 0) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
       '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
-      { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+      { reply_markup: getBackKeyboard('close', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -454,9 +606,15 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     await processSubmissionAndNotify(task, previousPending, user)
   }
 
-  // Delete previous confirmation message to keep chat clean
-  // Note: Keep menu - don't delete it, student needs it after confirmation auto-deletes
+  // Check if this is a resubmission (student had failed submissions and is sending more)
+  const isResubmission = task.failedCount > 0 && !previousPending
+
+  // Delete ALL previous messages to keep chat clean - no duplicates ever
   await deleteMessagesByType(ctx, 'submission_confirm')
+  await deleteMessagesByType(ctx, 'menu')
+  await deleteMessagesByType(ctx, 'task_info')  // Delete "Задание создано" message
+  await deleteMessagesByType(ctx, 'review_result')
+  await deleteMessagesByType(ctx, 'notification')
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -479,26 +637,36 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     }
   })
 
+  // For resubmissions, immediately notify ustaz (no need to wait for confirmation)
+  if (isResubmission) {
+    await processSubmissionAndNotify(task, submission, user)
+  }
+
   // Send confirmation (auto-delete after N minutes)
-  const remaining = task.requiredCount - updatedTask.currentCount
-  const progressPercent = ((updatedTask.currentCount / task.requiredCount) * 100).toFixed(0)
+  // Calculate remaining correctly: required - passed - pending (including this new one)
+  // pendingCount was queried before creating submission, so add 1 for this new submission
+  const actualPendingCount = pendingCount + 1
+  const remaining = task.requiredCount - task.passedCount - actualPendingCount
+  const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
+  const isLastSubmission = remaining <= 0
 
   const message = buildSubmissionConfirmation(
     task.page.pageNumber,
     task.startLine,
     task.endLine,
-    updatedTask.currentCount,
+    task.passedCount + actualPendingCount,
     task.requiredCount,
-    remaining,
+    Math.max(0, remaining),
     progressPercent,
-    task.deadline
+    task.deadline,
+    isLastSubmission
   )
 
   await sendAndTrack(
     ctx,
     message,
     {
-      reply_markup: getStudentTaskKeyboard(task.id, true),
+      reply_markup: getStudentTaskKeyboard(task.id, true, isLastSubmission),
       parse_mode: 'HTML'
     },
     user.id,
@@ -531,7 +699,9 @@ export async function handleRejectedMessage(ctx: BotContext): Promise<void> {
       status: TaskStatus.IN_PROGRESS,
     },
     include: {
-      lesson: true,
+      lesson: {
+        include: { group: true }
+      },
       group: true,
     }
   })
@@ -542,7 +712,7 @@ export async function handleRejectedMessage(ctx: BotContext): Promise<void> {
   }
 
   // Use group settings (primary) or lesson settings (fallback)
-  const settings = task.group || task.lesson
+  const settings = task.group || task.lesson?.group || task.lesson
 
   // Build format hint based on settings
   let formatHint = ''
@@ -558,6 +728,7 @@ export async function handleRejectedMessage(ctx: BotContext): Promise<void> {
     formatHint = '🎤 голосовое сообщение или 📹 видео-кружок' // default
   }
 
+  await deleteMessagesByType(ctx, 'menu')
   await sendAndTrack(
     ctx,
     `❌ <b>Неверный формат!</b>\n\nОтправьте ${formatHint}.\n\n<i>Файлы, фото и аудио-файлы не принимаются.</i>`,
@@ -578,7 +749,8 @@ function buildSubmissionConfirmation(
   requiredCount: number,
   remaining: number,
   progressPercent: string,
-  deadline?: Date
+  deadline?: Date,
+  isLastSubmission: boolean = false
 ): string {
   const lineRange = startLine === endLine
     ? `строка ${startLine}`
@@ -593,6 +765,11 @@ function buildSubmissionConfirmation(
 
   if (remaining > 0) {
     message += `⏳ Осталось: <b>${remaining}</b>\n`
+  } else if (isLastSubmission) {
+    // Last submission - prompt for confirmation
+    message += `\n🎉 <b>Все записи готовы!</b>\n`
+    message += `<i>Нажмите «✅ Подтвердить работу» для отправки устазу.</i>`
+    return message
   } else {
     message += `\n🎉 <b>Все записи отправлены!</b>\n`
     message += `<i>Ожидайте проверку устаза.</i>`
@@ -641,8 +818,9 @@ function buildProgressBar(percent: number): string {
 
 /**
  * Process submission and notify ustaz based on AI verification mode
+ * Exported for use in confirmAndSendToUstaz in menu.ts
  */
-async function processSubmissionAndNotify(
+export async function processSubmissionAndNotify(
   task: any,
   submission: any,
   student: any
@@ -677,22 +855,349 @@ async function processSubmissionAndNotify(
     const verificationMode = group.verificationMode || 'MANUAL'
     const aiProvider = group.aiProvider || 'NONE'
 
-    // For now, all modes notify ustaz (AI verification to be implemented)
-    // In the future:
-    // - MANUAL: Always notify ustaz
-    // - SEMI_AUTO: Run AI check, then notify ustaz with AI score hint
-    // - FULL_AUTO: Run AI check, auto-accept/reject based on thresholds, notify ustaz only if in middle range
+    // Run AI verification if enabled and submission has audio
+    let aiResult: { score: number; transcript: string; errors: any[] } | null = null
 
-    // TODO: Implement AI verification when AI providers are ready
-    // For now, always notify ustaz regardless of mode
-    await notifyUstazAboutSubmission(task, submission, student, group)
+    if (aiProvider !== 'NONE' && (submission.fileType === 'voice' || submission.fileType === 'video_note') && submission.fileId) {
+      try {
+        if (aiProvider === 'QURANI_AI') {
+          console.log('[AI] Processing submission with Qurani.ai QRC...')
+          const { processSubmissionWithQRC } = await import('@/lib/qurani-ai')
+
+          const result = await processSubmissionWithQRC(
+            submission.fileId,
+            task.page?.pageNumber
+          )
+
+          if (result.success) {
+            aiResult = {
+              score: result.score,
+              transcript: result.transcript,
+              errors: result.errors,
+            }
+
+            // Save AI results to submission
+            await prisma.submission.update({
+              where: { id: submission.id },
+              data: {
+                aiProvider: 'QURANI_AI',
+                aiScore: result.score,
+                aiTranscript: result.transcript,
+                aiErrors: JSON.stringify(result.errors),
+                aiProcessedAt: new Date(),
+                aiRawResponse: JSON.stringify(result.rawResponse),
+              },
+            })
+
+            console.log(`[AI] QRC result: score=${result.score}%, transcript=${result.transcript.substring(0, 50)}...`)
+          }
+        } else if (aiProvider === 'WHISPER') {
+          console.log('[AI] Processing submission with OpenAI Whisper...')
+
+          // Download audio file from Telegram
+          const { bot } = await import('../bot')
+          const file = await bot.api.getFile(submission.fileId)
+          const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`
+
+          // Fetch audio data
+          const response = await fetch(fileUrl)
+          const audioBuffer = Buffer.from(await response.arrayBuffer())
+
+          // Get expected text from task page
+          const { getPageVerses, getMedinaLines } = await import('@/lib/quran-api')
+          const pageData = await getPageVerses(task.page?.pageNumber || 1)
+          const allLines = getMedinaLines(pageData.verses)
+
+          // Filter by requested lines
+          let relevantLines = allLines.filter(l =>
+            l.lineNumber >= task.startLine && l.lineNumber <= task.endLine
+          )
+
+          // Fallback: If no lines found (e.g. page 1 line 1 doesn't exist in API),
+          // get first N available lines where N = requested lines count
+          // This matches the same fallback logic used in QRC pre-check
+          const linesCount = task.endLine - task.startLine + 1
+          if (relevantLines.length === 0 && allLines.length > 0) {
+            console.log(`[AI] Whisper: Requested lines ${task.startLine}-${task.endLine} not found, taking first ${linesCount} available`)
+            relevantLines = allLines.slice(0, linesCount)
+          }
+
+          // Filter Arabic digits and verse markers from expected text
+          // so AI comparison matches actual recitation without verse numbers
+          const filterArabicDigits = (text: string) => text
+            .replace(/[\u0660-\u0669\u06F0-\u06F9\u06DD]/g, '') // Arabic-Indic digits & verse marker
+            .replace(/\s+/g, ' ')
+            .trim()
+
+          // Debug logging to trace the issue
+          console.log(`[AI] Whisper: page=${task.page?.pageNumber}, startLine=${task.startLine}, endLine=${task.endLine}`)
+          console.log(`[AI] Whisper: pageData.verses count=${pageData.verses?.length || 0}`)
+          console.log(`[AI] Whisper: total lines from getMedinaLines=${allLines.length}`)
+          console.log(`[AI] Whisper: API line numbers: ${allLines.map(l => l.lineNumber).join(', ')}`)
+          console.log(`[AI] Whisper: relevantLines count=${relevantLines.length}`)
+
+          const expectedText = filterArabicDigits(relevantLines.map(l => l.textArabic).join(' '))
+          const expectedWords = relevantLines.flatMap(l =>
+            (l.words?.map(w => filterArabicDigits(w.text_uthmani)) || []).filter(w => w.length > 0)
+          )
+
+          console.log(`[AI] Whisper: expectedText="${expectedText.substring(0, 100)}..."`)
+          console.log(`[AI] Whisper: expectedWords count=${expectedWords.length}`)
+
+          // Process with Whisper via check-audio API logic
+          const { prisma: db } = await import('@/lib/prisma')
+          const openaiKey = await db.systemSettings.findUnique({
+            where: { key: 'OPENAI_API_KEY' }
+          })
+
+          if (openaiKey?.value) {
+            // Call Whisper API
+            const formData = new FormData()
+            const blob = new Blob([audioBuffer], { type: 'audio/ogg' })
+            formData.append('file', blob, 'audio.ogg')
+            formData.append('model', 'whisper-1')
+            formData.append('language', 'ar')
+
+            const whisperResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${openaiKey.value}` },
+              body: formData,
+            })
+
+            if (whisperResponse.ok) {
+              const whisperResult = await whisperResponse.json()
+              const transcript = whisperResult.text || ''
+
+              // Use new combined analysis with whitelist + GPT-4o-mini
+              const hafzLevel = group.qrcHafzLevel || 1
+              const { analyzeQuranRecitation } = await import('@/lib/quran-text-matching')
+
+              const analysisResult = await analyzeQuranRecitation(
+                transcript,
+                expectedText,
+                expectedWords,
+                { hafzLevel, useGPT: true }
+              )
+
+              aiResult = {
+                score: analysisResult.score,
+                transcript,
+                errors: analysisResult.errors
+              }
+
+              // Save AI results
+              await prisma.submission.update({
+                where: { id: submission.id },
+                data: {
+                  aiProvider: 'WHISPER',
+                  aiScore: analysisResult.score,
+                  aiTranscript: transcript,
+                  aiErrors: JSON.stringify(analysisResult.errors),
+                  aiProcessedAt: new Date(),
+                },
+              })
+
+              console.log(`[AI] Whisper+GPT: hafzLevel=${hafzLevel}, score=${analysisResult.score}%`)
+              console.log(`[AI] GPT analysis: ${analysisResult.gptAnalysis || 'N/A'}`)
+            }
+          }
+        }
+
+        // Handle auto-verification modes
+        if (aiResult) {
+          const acceptThreshold = group.aiAcceptThreshold || 85
+          const rejectThreshold = group.aiRejectThreshold || 50
+
+          if (verificationMode === 'FULL_AUTO') {
+            // FULL_AUTO: AI makes the decision automatically
+            if (aiResult.score >= acceptThreshold) {
+              // Auto-accept
+              console.log(`[AI] FULL_AUTO: Auto-accepting submission (score ${aiResult.score}% >= ${acceptThreshold}%)`)
+              await autoPassSubmission({ ...submission, aiScore: aiResult.score, aiErrors: JSON.stringify(aiResult.errors) }, task, student)
+              return // Don't notify ustaz
+            } else if (aiResult.score < rejectThreshold) {
+              // Auto-reject
+              console.log(`[AI] FULL_AUTO: Auto-rejecting submission (score ${aiResult.score}% < ${rejectThreshold}%)`)
+              await autoFailSubmission({ ...submission, aiScore: aiResult.score, aiErrors: JSON.stringify(aiResult.errors) }, task, student)
+              return // Don't notify ustaz
+            }
+            // Score in middle range - notify ustaz for manual review
+          }
+          // SEMI_AUTO: Ustaz ALWAYS gets notifications, AI score is just a recommendation
+          // We don't auto-accept in SEMI_AUTO - ustaz has final decision
+          console.log(`[AI] ${verificationMode}: Notifying ustaz with AI score ${aiResult.score}%`)
+        }
+      } catch (error) {
+        console.error('[AI] Processing failed:', error)
+        // Continue to notify ustaz even if AI fails
+      }
+    }
+
+    // Notify ustaz (with AI score if available)
+    // Pass aiResult to update submission object with AI data
+    const updatedSubmission = aiResult ? {
+      ...submission,
+      aiScore: aiResult.score,
+      aiTranscript: aiResult.transcript,
+      aiErrors: JSON.stringify(aiResult.errors),
+    } : submission
+
+    await notifyUstazAboutSubmission(task, updatedSubmission, student, group)
   } catch (error) {
     console.error('Failed to process submission:', error)
   }
 }
 
 /**
- * Notify ustaz about new submission with review buttons
+ * Auto-pass a submission (for FULL_AUTO mode)
+ */
+async function autoPassSubmission(submission: any, task: any, student: any): Promise<void> {
+  try {
+    // Update submission status
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: {
+        status: SubmissionStatus.PASSED,
+        reviewedAt: new Date(),
+        feedback: 'Автоматически принято (AI проверка)',
+      },
+    })
+
+    // Update task counts
+    const updatedTask = await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        passedCount: { increment: 1 },
+      },
+    })
+
+    // Notify student with details
+    if (student.telegramId) {
+      const { bot } = await import('../bot')
+      const { deleteMessagesByTypeForChat } = await import('../utils/message-cleaner')
+      const chatId = Number(student.telegramId)
+      const scorePercent = submission.aiScore ? Math.round(submission.aiScore) : 0
+      const workNumber = updatedTask.passedCount
+      const totalRequired = task.requiredCount
+      const remaining = totalRequired - workNumber
+
+      // Delete previous auto-result notifications to avoid duplicates
+      const botToken = process.env.TELEGRAM_BOT_TOKEN || ''
+      await deleteMessagesByTypeForChat(chatId, 'review_result', botToken)
+
+      let message = `✅ <b>Работа ${workNumber}/${totalRequired} принята!</b>\n\n`
+      message += `📍 Страница ${task.page?.pageNumber || '?'}, строки ${task.startLine}-${task.endLine}\n`
+      message += `🤖 AI оценка: <b>${scorePercent}%</b>\n\n`
+
+      if (remaining > 0) {
+        message += `📝 Осталось сдать: <b>${remaining}</b>\n`
+        message += `<i>Продолжайте в том же духе!</i>`
+      } else {
+        message += `🎉 <b>Все работы сданы!</b>\n`
+        message += `<i>Переход к следующему этапу...</i>`
+      }
+
+      const sentMsg = await bot.api.sendMessage(chatId, message, { parse_mode: 'HTML' }).catch(() => null)
+
+      // Track message for cleanup
+      if (sentMsg) {
+        await prisma.botMessage.create({
+          data: {
+            chatId: BigInt(chatId),
+            messageId: BigInt(sentMsg.message_id),
+            userId: student.id,
+            messageType: 'review_result',
+            deleteAfter: new Date(Date.now() + 30 * 1000), // Auto-delete after 30 seconds
+          }
+        }).catch(() => {})
+      }
+    }
+  } catch (error) {
+    console.error('Auto-pass submission failed:', error)
+  }
+}
+
+/**
+ * Auto-fail a submission (for FULL_AUTO mode)
+ */
+async function autoFailSubmission(submission: any, task: any, student: any): Promise<void> {
+  try {
+    // Update submission status
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: {
+        status: SubmissionStatus.FAILED,
+        reviewedAt: new Date(),
+        feedback: 'Автоматически отклонено (AI проверка)',
+      },
+    })
+
+    // Update task counts
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        failedCount: { increment: 1 },
+      },
+    })
+
+    // Notify student with feedback
+    if (student.telegramId) {
+      const { bot } = await import('../bot')
+      const { deleteMessagesByTypeForChat } = await import('../utils/message-cleaner')
+      const chatId = Number(student.telegramId)
+      const scorePercent = submission.aiScore ? Math.round(submission.aiScore) : 0
+
+      // Delete previous auto-result notifications to avoid duplicates
+      const botToken = process.env.TELEGRAM_BOT_TOKEN || ''
+      await deleteMessagesByTypeForChat(chatId, 'review_result', botToken)
+
+      let message = `❌ <b>Работа не принята</b>\n\n`
+      message += `📍 Страница ${task.page?.pageNumber || '?'}, строки ${task.startLine}-${task.endLine}\n`
+      message += `🤖 AI оценка: <b>${scorePercent}%</b>\n\n`
+
+      // Parse errors if available
+      if (submission.aiErrors) {
+        try {
+          const errors = JSON.parse(submission.aiErrors)
+          if (errors.length > 0) {
+            message += `<b>Замечания:</b>\n`
+            errors.slice(0, 3).forEach((err: any) => {
+              message += `• ${err.word || err.type}\n`
+            })
+            if (errors.length > 3) {
+              message += `<i>...и ещё ${errors.length - 3} замечаний</i>\n`
+            }
+            message += `\n`
+          }
+        } catch {}
+      }
+
+      message += `<i>Попробуйте ещё раз.</i>`
+
+      const sentMsg = await bot.api.sendMessage(chatId, message, { parse_mode: 'HTML' }).catch(() => null)
+
+      // Track message for cleanup
+      if (sentMsg) {
+        await prisma.botMessage.create({
+          data: {
+            chatId: BigInt(chatId),
+            messageId: BigInt(sentMsg.message_id),
+            userId: student.id,
+            messageType: 'review_result',
+            deleteAfter: new Date(Date.now() + 30 * 1000), // Auto-delete after 30 seconds
+          }
+        }).catch(() => {})
+      }
+    }
+  } catch (error) {
+    console.error('Auto-fail submission failed:', error)
+  }
+}
+
+/**
+ * Notify ustaz about new submission - uses queue system
+ * Only sends notification if no review is currently in progress
+ * Otherwise just marks as ready for queue
  */
 async function notifyUstazAboutSubmission(
   task: any,
@@ -719,108 +1224,362 @@ async function notifyUstazAboutSubmission(
 
     if (!group?.ustaz?.telegramId) return
 
-    // Import bot and InlineKeyboard
-    const { bot } = await import('../bot')
-    const { InlineKeyboard } = await import('grammy')
-
     const ustazChatId = Number(group.ustaz.telegramId)
     const botToken = process.env.TELEGRAM_BOT_TOKEN
 
-    // Delete ustaz menu to keep chat clean (avoid duplicate menus after review)
-    if (botToken) {
-      await deleteMessagesByTypeForChat(ustazChatId, 'menu', botToken)
-    }
-
-    const studentName = student.firstName || 'Студент'
-    const groupName = group.name
-    const lineRange = task.startLine === task.endLine
-      ? `строка ${task.startLine}`
-      : `строки ${task.startLine}-${task.endLine}`
-
-    // Get stage name
-    const stageNames: Record<string, string> = {
-      STAGE_1_1: 'Этап 1.1',
-      STAGE_1_2: 'Этап 1.2',
-      STAGE_2_1: 'Этап 2.1',
-      STAGE_2_2: 'Этап 2.2',
-      STAGE_3: 'Этап 3',
-    }
-    const stageName = stageNames[task.stage] || task.stage
-
-    // Calculate progress
-    const progressPercent = Math.round((task.currentCount / task.requiredCount) * 100)
-    const progressBar = `[${'▓'.repeat(Math.round(progressPercent / 10))}${'░'.repeat(10 - Math.round(progressPercent / 10))}]`
-
-    let caption = `📥 <b>Новая работа</b>\n\n`
-    caption += `📚 <b>${groupName}</b>\n`
-    caption += `👤 ${studentName}\n`
-    caption += `📖 Стр. ${task.page.pageNumber}, ${lineRange}\n`
-    caption += `🎯 ${stageName}\n\n`
-    caption += `${progressBar} ${progressPercent}%\n`
-    caption += `📊 <b>${task.currentCount}/${task.requiredCount}</b>`
-
-    // Add passed/failed counts if any
-    if (task.passedCount > 0 || task.failedCount > 0) {
-      caption += `\n✅ ${task.passedCount}`
-      if (task.failedCount > 0) {
-        caption += ` | ❌ ${task.failedCount}`
-      }
-    }
-
-    // Add AI score if available (from submission)
-    if (submission.aiScore !== null && submission.aiScore !== undefined) {
-      const scoreEmoji = submission.aiScore >= 85 ? '🟢' : submission.aiScore >= 50 ? '🟡' : '🔴'
-      caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(submission.aiScore)}%</b>`
-      if (submission.aiTranscript) {
-        caption += `\n<i>${submission.aiTranscript.substring(0, 100)}${submission.aiTranscript.length > 100 ? '...' : ''}</i>`
-      }
-    }
-
-    // Create review keyboard with AI score hint
-    const reviewKeyboard = new InlineKeyboard()
-
-    if (submission.aiScore !== null && submission.aiScore >= 85) {
-      reviewKeyboard.text('✅ Принять (AI: ✓)', `review:pass:${submission.id}`)
-    } else if (submission.aiScore !== null && submission.aiScore < 50) {
-      reviewKeyboard.text('❌ Отклонить (AI: ✗)', `review:fail:${submission.id}`)
-    } else {
-      reviewKeyboard.text('✅ Сдал', `review:pass:${submission.id}`)
-    }
-
-    reviewKeyboard.text('❌ Не сдал', `review:fail:${submission.id}`)
-
-    // Send the file with caption and review buttons
-    if (submission.fileType === 'voice') {
-      await bot.api.sendVoice(ustazChatId, submission.fileId, {
-        caption,
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard
-      })
-    } else if (submission.fileType === 'video_note') {
-      // Video notes don't support captions - send video first, then message with buttons
-      const videoMsg = await bot.api.sendVideoNote(ustazChatId, submission.fileId)
-      // Send details as reply to the video note
-      await bot.api.sendMessage(ustazChatId, caption, {
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard,
-        reply_parameters: { message_id: videoMsg.message_id }
-      })
-    } else if (submission.fileType === 'text') {
-      // For text submissions, show the text content
-      const textContent = submission.fileId.replace('text:', '')
-      const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
-      await bot.api.sendMessage(ustazChatId, textMessage, {
-        parse_mode: 'HTML',
-        reply_markup: reviewKeyboard
-      })
-    }
-
-    // Mark submission as sent to ustaz
+    // Mark submission as ready for ustaz review
     await prisma.submission.update({
       where: { id: submission.id },
       data: { sentToUstazAt: new Date() }
     })
+
+    // Check if there's already a review message displayed for this ustaz
+    const existingReviewMsg = await prisma.botMessage.findFirst({
+      where: {
+        chatId: BigInt(ustazChatId),
+        messageType: 'submission_review'
+      }
+    })
+
+    // If review is already in progress, don't send new message - it's in the queue
+    if (existingReviewMsg) {
+      console.log(`[Queue] Submission ${submission.id} added to queue for ustaz ${ustazChatId}`)
+      return
+    }
+
+    // No active review - delete menu and show first submission
+    if (botToken) {
+      await deleteMessagesByTypeForChat(ustazChatId, 'menu', botToken)
+    }
+
+    // Show this submission
+    await showSubmissionToUstaz(ustazChatId, submission, task, student, group)
   } catch (error) {
     console.error('Failed to notify ustaz:', error)
+  }
+}
+
+/**
+ * Show a specific submission to ustaz with review buttons
+ * Called when starting review or showing next in queue
+ */
+async function showSubmissionToUstaz(
+  ustazChatId: number,
+  submission: any,
+  task: any,
+  student: any,
+  group: any
+): Promise<void> {
+  const { bot } = await import('../bot')
+  const { InlineKeyboard } = await import('grammy')
+  const { trackMessageForChat } = await import('../utils/message-cleaner')
+
+  // Get queue count for header
+  const groups = await prisma.group.findMany({
+    where: { ustaz: { telegramId: BigInt(ustazChatId) } },
+    select: { id: true }
+  })
+  const groupIds = groups.map(g => g.id)
+
+  const queueCount = await prisma.submission.count({
+    where: {
+      status: SubmissionStatus.PENDING,
+      sentToUstazAt: { not: null },
+      OR: [
+        { task: { lesson: { groupId: { in: groupIds } } } },
+        { task: { groupId: { in: groupIds } } }
+      ]
+    }
+  })
+
+  const studentName = student.firstName?.trim() || 'Студент'
+  const groupName = group.name
+  const lineRange = task.startLine === task.endLine
+    ? `строка ${task.startLine}`
+    : `строки ${task.startLine}-${task.endLine}`
+
+  const stageNames: Record<string, string> = {
+    STAGE_1_1: 'Этап 1.1',
+    STAGE_1_2: 'Этап 1.2',
+    STAGE_2_1: 'Этап 2.1',
+    STAGE_2_2: 'Этап 2.2',
+    STAGE_3: 'Этап 3',
+  }
+  const stageName = stageNames[task.stage] || task.stage
+
+  const progressPercent = Math.round((task.currentCount / task.requiredCount) * 100)
+  const clampedPercent = Math.min(100, Math.max(0, progressPercent))
+  const progressBar = `[${'▓'.repeat(Math.round(clampedPercent / 10))}${'░'.repeat(10 - Math.round(clampedPercent / 10))}]`
+
+  // Header with queue count
+  let caption = `📥 <b>Проверка работ</b> (${queueCount} в очереди)\n\n`
+  caption += `📚 <b>${groupName}</b>\n`
+  caption += `👤 ${studentName}\n`
+  caption += `📖 Стр. ${task.page.pageNumber}, ${lineRange}\n`
+  caption += `🎯 ${stageName}\n\n`
+  caption += `${progressBar} ${progressPercent}%\n`
+  caption += `📊 <b>${task.currentCount}/${task.requiredCount}</b>`
+
+  if (task.passedCount > 0 || task.failedCount > 0) {
+    caption += `\n✅ ${task.passedCount}`
+    if (task.failedCount > 0) {
+      caption += ` | ❌ ${task.failedCount}`
+    }
+  }
+
+  if (submission.aiScore !== null && submission.aiScore !== undefined) {
+    const scoreEmoji = submission.aiScore >= 85 ? '🟢' : submission.aiScore >= 50 ? '🟡' : '🔴'
+    caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(submission.aiScore)}%</b>`
+    if (submission.aiTranscript) {
+      caption += `\n<i>${submission.aiTranscript.substring(0, 100)}${submission.aiTranscript.length > 100 ? '...' : ''}</i>`
+    }
+  }
+
+  // Always show both Pass and Fail buttons - ustaz has final decision
+  const reviewKeyboard = new InlineKeyboard()
+
+  // Pass button - always available
+  if (submission.aiScore !== null && submission.aiScore >= 85) {
+    reviewKeyboard.text('✅ Сдал (AI: ✓)', `review:pass:${submission.id}`)
+  } else {
+    reviewKeyboard.text('✅ Сдал', `review:pass:${submission.id}`)
+  }
+
+  // Fail button - always available
+  if (submission.aiScore !== null && submission.aiScore < 50) {
+    reviewKeyboard.text('❌ Не сдал (AI: ✗)', `review:fail:${submission.id}`)
+  } else {
+    reviewKeyboard.text('❌ Не сдал', `review:fail:${submission.id}`)
+  }
+
+  // Quran button - opens page with highlighted lines
+  const webAppUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'
+  const quranUrl = `${webAppUrl}/telegram?redirect=/ustaz/quran?page=${task.page.pageNumber}%26startLine=${task.startLine}%26endLine=${task.endLine}`
+  reviewKeyboard.row().webApp('📖 Коран', quranUrl)
+
+  if (student.telegramUsername) {
+    reviewKeyboard.row().url(`💬 Написать студенту`, `https://t.me/${student.telegramUsername}`)
+  } else if (student.telegramId) {
+    reviewKeyboard.row().url(`💬 Написать студенту`, `tg://user?id=${student.telegramId}`)
+  }
+
+  // Send the file with caption and review buttons
+  if (submission.fileType === 'voice') {
+    const sentMsg = await bot.api.sendVoice(ustazChatId, submission.fileId, {
+      caption,
+      parse_mode: 'HTML',
+      reply_markup: reviewKeyboard
+    })
+    await trackMessageForChat(ustazChatId, sentMsg.message_id, group.ustaz.id, 'submission_review')
+  } else if (submission.fileType === 'video_note') {
+    const videoMsg = await bot.api.sendVideoNote(ustazChatId, submission.fileId)
+    await trackMessageForChat(ustazChatId, videoMsg.message_id, group.ustaz.id, 'submission_review')
+    const captionMsg = await bot.api.sendMessage(ustazChatId, caption, {
+      parse_mode: 'HTML',
+      reply_markup: reviewKeyboard,
+      reply_parameters: { message_id: videoMsg.message_id }
+    })
+    await trackMessageForChat(ustazChatId, captionMsg.message_id, group.ustaz.id, 'submission_review')
+  } else if (submission.fileType === 'text') {
+    const textContent = submission.fileId.replace('text:', '')
+    const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
+    const sentMsg = await bot.api.sendMessage(ustazChatId, textMessage, {
+      parse_mode: 'HTML',
+      reply_markup: reviewKeyboard
+    })
+    await trackMessageForChat(ustazChatId, sentMsg.message_id, group.ustaz.id, 'submission_review')
+  }
+}
+
+/**
+ * Show next pending submission to ustaz after review
+ * Exported for use in menu.ts handleReviewCallback
+ */
+export async function showNextPendingSubmissionToUstaz(ustazChatId: number, ustazId: string): Promise<boolean> {
+  try {
+    const { bot } = await import('../bot')
+    const botToken = process.env.TELEGRAM_BOT_TOKEN
+
+    // Delete old review messages
+    if (botToken) {
+      await deleteMessagesByTypeForChat(ustazChatId, 'submission_review', botToken)
+    }
+
+    // Get ustaz's groups
+    const groups = await prisma.group.findMany({
+      where: { ustaz: { telegramId: BigInt(ustazChatId) } },
+      select: { id: true }
+    })
+    const groupIds = groups.map(g => g.id)
+
+    // Get next pending submission
+    const nextSubmission = await prisma.submission.findFirst({
+      where: {
+        status: SubmissionStatus.PENDING,
+        sentToUstazAt: { not: null },
+        OR: [
+          { task: { lesson: { groupId: { in: groupIds } } } },
+          { task: { groupId: { in: groupIds } } }
+        ]
+      },
+      include: {
+        task: {
+          include: {
+            page: true,
+            group: { include: { ustaz: true } },
+            lesson: { include: { group: { include: { ustaz: true } } } }
+          }
+        },
+        student: true
+      },
+      orderBy: { createdAt: 'asc' }
+    })
+
+    if (!nextSubmission) {
+      return false // No more submissions
+    }
+
+    const task = nextSubmission.task
+    const student = nextSubmission.student
+    const group = task.group || task.lesson?.group
+
+    if (!group) return false
+
+    await showSubmissionToUstaz(ustazChatId, nextSubmission, task, student, group)
+    return true
+  } catch (error) {
+    console.error('Failed to show next submission:', error)
+    return false
+  }
+}
+
+// ============== REVISION SUBMISSION HANDLERS ==============
+
+/**
+ * Handle revision submission (voice or video note)
+ */
+async function handleRevisionSubmission(
+  ctx: BotContext,
+  user: any,
+  fileType: 'voice' | 'video_note',
+  fileId: string,
+  duration?: number
+): Promise<void> {
+  const pageNumber = ctx.session.revisionPageNumber!
+
+  // Delete user's message to keep chat clean
+  await deleteUserMessage(ctx)
+
+  // Get student's ustaz for notification
+  const studentWithGroup = await prisma.user.findUnique({
+    where: { id: user.id },
+    include: {
+      studentGroups: {
+        where: { isActive: true },
+        include: {
+          group: {
+            include: { ustaz: true }
+          }
+        },
+        take: 1
+      }
+    }
+  })
+
+  const ustaz = studentWithGroup?.studentGroups[0]?.group?.ustaz
+
+  // Get today's date (start of day) for daily tracking
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Get student's revision pages per day requirement
+  const revisionPagesPerDay = studentWithGroup?.studentGroups[0]?.group?.revisionPagesPerDay || 3
+
+  // Create revision submission with date
+  const revision = await prisma.revisionSubmission.create({
+    data: {
+      studentId: user.id,
+      pageNumber,
+      date: today,
+      fileId,
+      fileType,
+      duration,
+      status: SubmissionStatus.PENDING,
+      studentMsgId: ctx.message?.message_id ? BigInt(ctx.message.message_id) : null,
+    }
+  })
+
+  // Update or create daily revision progress
+  await prisma.dailyRevisionProgress.upsert({
+    where: {
+      studentId_date: {
+        studentId: user.id,
+        date: today,
+      }
+    },
+    create: {
+      studentId: user.id,
+      date: today,
+      pagesRequired: revisionPagesPerDay,
+      pagesTotal: 1,
+    },
+    update: {
+      pagesTotal: { increment: 1 },
+    }
+  })
+
+  // Send confirmation to student
+  const message = `✅ <b>Повторение отправлено!</b>\n\n` +
+    `📖 Страница: <b>${pageNumber}</b>\n\n` +
+    `<i>Ожидайте проверку устаза.</i>`
+
+  await sendAndTrack(
+    ctx,
+    message,
+    {
+      reply_markup: getRevisionSubmitKeyboard(pageNumber),
+      parse_mode: 'HTML'
+    },
+    user.id,
+    'submission_confirm'
+  )
+
+  // Reset session state
+  ctx.session.step = 'browsing_menu'
+  ctx.session.revisionPageNumber = undefined
+
+  // Notify ustaz
+  if (ustaz?.telegramId) {
+    try {
+      const { bot } = await import('../bot')
+      const ustazChatId = Number(ustaz.telegramId)
+      const studentName = user.firstName?.trim() || 'Студент'
+      const groupName = studentWithGroup?.studentGroups[0]?.group?.name || ''
+
+      let caption = `🔄 <b>Повторение</b>\n\n`
+      caption += `📚 <b>${groupName}</b>\n`
+      caption += `👤 ${studentName}\n`
+      caption += `📖 Страница: <b>${pageNumber}</b>`
+
+      // Send the file with caption and review buttons
+      if (fileType === 'voice') {
+        await bot.api.sendVoice(ustazChatId, fileId, {
+          caption,
+          parse_mode: 'HTML',
+          reply_markup: getRevisionReviewKeyboard(revision.id, user.telegramUsername || undefined)
+        })
+      } else {
+        // Video notes don't support captions - send video first, then message with buttons
+        const videoMsg = await bot.api.sendVideoNote(ustazChatId, fileId)
+        // Send details as reply to the video note
+        await bot.api.sendMessage(ustazChatId, caption, {
+          parse_mode: 'HTML',
+          reply_markup: getRevisionReviewKeyboard(revision.id, user.telegramUsername || undefined),
+          reply_parameters: { message_id: videoMsg.message_id }
+        })
+      }
+    } catch (error) {
+      console.error('Failed to notify ustaz about revision:', error)
+    }
   }
 }

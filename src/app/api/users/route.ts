@@ -31,10 +31,17 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get('search')
     const noGroup = searchParams.get('noGroup') === 'true'
     const ustazId = searchParams.get('ustazId')
+    const groupId = searchParams.get('groupId')
+    const gender = searchParams.get('gender')
 
     const where: any = {}
     if (role) where.role = role
-    if (noGroup) where.studentGroups = { none: {} }
+    if (gender) where.gender = gender
+    if (noGroup || groupId === 'none') {
+      where.studentGroups = { none: {} }
+    } else if (groupId) {
+      where.studentGroups = { some: { groupId } }
+    }
     if (ustazId === 'none') {
       where.ustazId = null
     } else if (ustazId) {

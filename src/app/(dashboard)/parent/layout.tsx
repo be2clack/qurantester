@@ -1,5 +1,6 @@
 import { AppSidebar } from '@/components/app-sidebar'
 import { Header } from '@/components/layouts/header'
+import { TelegramFullscreen } from '@/components/telegram-fullscreen'
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar'
 import { getCurrentUser } from '@/lib/auth'
 import { UserRole } from '@prisma/client'
@@ -23,6 +24,7 @@ export default async function ParentLayout({
 
   return (
     <SidebarProvider>
+      <TelegramFullscreen />
       <AppSidebar
         role={UserRole.PARENT}
         user={{

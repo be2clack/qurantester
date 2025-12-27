@@ -8,47 +8,508 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ============== ENUMS ==============
+model AIUsageLog {
+  id            String     @id @default(cuid())
+  provider      AIProvider
+  operation     String
+  inputTokens   Int?
+  outputTokens  Int?
+  audioDuration Float?
+  estimatedCost Float
+  userId        String?
+  groupId       String?
+  submissionId  String?
+  success       Boolean    @default(true)
+  errorMessage  String?
+  createdAt     DateTime   @default(now())
 
-enum UserRole {
-  ADMIN
-  USTAZ
-  STUDENT
-  PARENT
-  PENDING       // Ожидает подтверждения админом
+  @@index([createdAt])
+  @@index([provider])
+  @@index([userId])
 }
 
-enum LessonType {
-  MEMORIZATION  // Заучивание
-  REVISION      // Повторение
-  TRANSLATION   // Перевод
+model AuthToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
 }
 
-enum SubmissionStatus {
-  PENDING       // Ожидает проверки
-  PASSED        // Сдал
-  FAILED        // Не сдал
+model BotMessage {
+  id          String    @id @default(cuid())
+  chatId      BigInt
+  messageId   BigInt
+  userId      String?
+  messageType String
+  createdAt   DateTime  @default(now())
+  deleteAfter DateTime?
+
+  @@index([chatId])
+  @@index([deleteAfter])
+  @@index([userId])
 }
 
-enum TaskStatus {
-  IN_PROGRESS   // В процессе
-  SUBMITTED     // Отправлено на проверку
-  PASSED        // Сдано
-  FAILED        // Не сдано, пересдача
+model BotSession {
+  id        String   @id @default(cuid())
+  data      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
-enum StageNumber {
-  STAGE_1_1     // Строки 1-7 по одной (или 3/7 в зависимости от уровня)
-  STAGE_1_2     // Строки 1-7 вместе (80 раз)
-  STAGE_2_1     // Строки 8-15 по одной
-  STAGE_2_2     // Строки 8-15 вместе (80 раз)
-  STAGE_3       // Вся страница (80 раз)
+model CronJob {
+  id         String    @id @default(cuid())
+  externalId String?   @unique
+  name       String    @unique
+  url        String
+  schedule   String
+  isEnabled  Boolean   @default(true)
+  lastRunAt  DateTime?
+  lastStatus String?
+  lastError  String?
+  runCount   Int       @default(0)
+  errorCount Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 }
 
-enum GroupLevel {
-  LEVEL_1       // 1 строка за 12 часов
-  LEVEL_2       // 3 строки за 12 часов
-  LEVEL_3       // 7 строк за 12 часов
+model DailyRevisionProgress {
+  id            String   @id @default(cuid())
+  studentId     String
+  date          DateTime @db.Date
+  pagesRequired Int
+  pagesPassed   Int      @default(0)
+  pagesFailed   Int      @default(0)
+  pagesTotal    Int      @default(0)
+  isComplete    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([studentId, date])
+  @@index([date])
+  @@index([isComplete])
+  @@index([studentId])
+}
+
+model Group {
+  id                   String                @id @default(cuid())
+  name                 String
+  description          String?
+  level                GroupLevel            @default(LEVEL_1)
+  isActive             Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  lessonType           LessonType            @default(MEMORIZATION)
+  repetitionCount      Int                   @default(80)
+  showText             Boolean               @default(false)
+  showImage            Boolean               @default(false)
+  showAudio            Boolean               @default(false)
+  allowVoice           Boolean               @default(true)
+  allowVideoNote       Boolean               @default(true)
+  allowText            Boolean               @default(false)
+  ustazId              String
+  mushafType           MushafType            @default(LOCAL)
+  reciterId            Int?
+  showTafsir           Boolean               @default(false)
+  showTranslation      Boolean               @default(false)
+  tafsirId             Int?
+  translationId        Int?
+  showTajweed          Boolean               @default(false)
+  aiAcceptThreshold    Int                   @default(85)
+  aiProvider           AIProvider            @default(NONE)
+  aiRejectThreshold    Int                   @default(50)
+  verificationMode     VerificationMode      @default(MANUAL)
+  gender               Gender                @default(MALE)
+  revisionPagesPerDay  Int                   @default(3)
+  stage1Hours          Int                   @default(24)
+  stage2Hours          Int                   @default(48)
+  stage3Hours          Int                   @default(48)
+  wordsPassThreshold   Int                   @default(8)
+  wordsPerDay          Int                   @default(10)
+  mufradatTimeLimit    Int                   @default(180)
+  qrcHafzLevel         Int                   @default(1)
+  qrcPassThreshold     Int                   @default(70)
+  qrcPreCheckEnabled   Boolean               @default(false)
+  qrcTajweedLevel      Int                   @default(1)
+  qrcPreCheckProvider  AIProvider            @default(QURANI_AI)
+  // Revision settings
+  revisionAllPages     Boolean               @default(false) // If true, student must revise all pages up to their progress
+  revisionButtonOnly   Boolean               @default(false) // If true, no voice needed - just click button to mark as revised
+
+  ustaz                User                  @relation(fields: [ustazId], references: [id])
+  lessons              Lesson[]
+  mufradatGameSessions MufradatGameSession[]
+  revisionLogs         DailyRevisionLog[]
+  students             StudentGroup[]
+  tasks                Task[]
+
+  @@index([lessonType])
+  @@index([ustazId])
+}
+
+model Lesson {
+  id              String     @id @default(cuid())
+  name            String
+  type            LessonType
+  isActive        Boolean    @default(true)
+  repetitionCount Int        @default(80)
+  showText        Boolean    @default(false)
+  showImage       Boolean    @default(false)
+  showAudio       Boolean    @default(false)
+  allowVoice      Boolean    @default(true)
+  allowVideoNote  Boolean    @default(true)
+  allowText       Boolean    @default(false)
+  groupId         String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  stage1Hours     Int        @default(24)
+  stage2Hours     Int        @default(48)
+  stage3Hours     Int        @default(48)
+  group           Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  tasks           Task[]
+
+  @@index([groupId])
+  @@index([type])
+}
+
+model MufradatGameSession {
+  id           String   @id @default(cuid())
+  studentId    String
+  groupId      String
+  taskId       String?
+  words        String
+  currentIndex Int      @default(0)
+  correctCount Int      @default(0)
+  startTime    DateTime @default(now())
+  timeLimit    Int
+  results      String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  group        Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  student      User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, isActive])
+  @@index([isActive])
+  @@index([studentId])
+}
+
+model MufradatSubmission {
+  id            String   @id @default(cuid())
+  studentId     String
+  date          DateTime @db.Date
+  wordsTotal    Int
+  wordsCorrect  Int
+  wordsMistakes Int
+  passed        Boolean
+  details       String?
+  createdAt     DateTime @default(now())
+  student       User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, date])
+  @@index([date])
+  @@index([passed])
+  @@index([studentId])
+}
+
+model QRCPreCheck {
+  id           String      @id @default(cuid())
+  studentId    String
+  groupId      String
+  taskId       String?
+  pageNumber   Int
+  startLine    Int
+  endLine      Int
+  stage        StageNumber
+  passed       Boolean     @default(false)
+  score        Float?
+  transcript   String?
+  errors       String?
+  rawResponse  String?
+  hafzLevel    Int         @default(1)
+  tajweedLevel Int         @default(1)
+  createdAt    DateTime    @default(now())
+  expiresAt    DateTime?
+
+  @@unique([studentId, groupId, pageNumber, startLine, endLine, stage])
+  @@index([groupId])
+  @@index([passed])
+  @@index([studentId])
+  @@index([taskId])
+}
+
+model QuranLine {
+  id          String    @id @default(cuid())
+  lineNumber  Int
+  pageId      String
+  textArabic  String?
+  textTajweed String?
+  imageFileId String?
+  audioFileId String?
+  translation String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  page        QuranPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@unique([pageId, lineNumber])
+  @@index([pageId])
+}
+
+model QuranPage {
+  id         String      @id @default(cuid())
+  pageNumber Int         @unique
+  totalLines Int         @default(15)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  lines      QuranLine[]
+  tasks      Task[]
+
+  @@index([pageNumber])
+}
+
+model RevisionSubmission {
+  id            String           @id @default(cuid())
+  studentId     String
+  pageNumber    Int
+  fileId        String?
+  fileType      String?
+  duration      Int?
+  status        SubmissionStatus @default(PENDING)
+  reviewerId    String?
+  reviewedAt    DateTime?
+  feedback      String?
+  telegramMsgId BigInt?
+  studentMsgId  BigInt?
+  createdAt     DateTime         @default(now())
+  date          DateTime         @db.Date
+  student       User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([date])
+  @@index([pageNumber])
+  @@index([status])
+  @@index([studentId, date])
+  @@index([studentId])
+}
+
+model StudentGroup {
+  id           String      @id @default(cuid())
+  studentId    String
+  groupId      String
+  currentPage  Int         @default(1)
+  currentLine  Int         @default(1)
+  currentStage StageNumber @default(STAGE_1_1)
+  joinedAt     DateTime    @default(now())
+  isActive     Boolean     @default(true)
+  group        Group       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  student      User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, groupId])
+  @@index([groupId])
+  @@index([studentId])
+}
+
+model Submission {
+  id             String           @id @default(cuid())
+  taskId         String
+  studentId      String
+  fileId         String?
+  fileType       String?
+  duration       Int?
+  status         SubmissionStatus @default(PENDING)
+  reviewerId     String?
+  reviewedAt     DateTime?
+  feedback       String?
+  telegramMsgId  BigInt?
+  createdAt      DateTime         @default(now())
+  aiErrors       String?
+  aiProcessedAt  DateTime?
+  aiProvider     String?
+  aiRawResponse  String?
+  aiScore        Float?
+  aiTranscript   String?
+  studentMsgId   BigInt?
+  sentToUstazAt  DateTime?
+  gameCorrect    Int?
+  gameData       String?
+  gameScore      Int?
+  gameTotal      Int?
+  submissionType String           @default("AUDIO")
+  student        User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  task           Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([studentId])
+  @@index([taskId])
+}
+
+model SystemSettings {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+}
+
+model Task {
+  id            String       @id @default(cuid())
+  lessonId      String?
+  groupId       String?
+  studentId     String
+  pageId        String
+  startLine     Int
+  endLine       Int
+  stage         StageNumber
+  status        TaskStatus   @default(IN_PROGRESS)
+  currentCount  Int          @default(0)
+  requiredCount Int          @default(80)
+  passedCount   Int          @default(0)
+  failedCount   Int          @default(0)
+  startedAt     DateTime     @default(now())
+  deadline      DateTime
+  completedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  submissions   Submission[]
+  group         Group?       @relation(fields: [groupId], references: [id])
+  lesson        Lesson?      @relation(fields: [lessonId], references: [id])
+  page          QuranPage    @relation(fields: [pageId], references: [id])
+  student       User         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@index([lessonId])
+  @@index([pageId])
+  @@index([status])
+  @@index([studentId])
+}
+
+model User {
+  id                   String                @id @default(cuid())
+  phone                String                @unique
+  firstName            String?
+  lastName             String?
+  birthDate            DateTime?
+  telegramId           BigInt?               @unique
+  telegramUsername     String?
+  telegramPhoto        String?
+  role                 UserRole              @default(STUDENT)
+  isActive             Boolean               @default(true)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  currentPage          Int                   @default(1)
+  currentLine          Int                   @default(1)
+  currentStage         StageNumber           @default(STAGE_1_1)
+  ustazId              String?
+  passwordHash         String?
+  gender               Gender?
+  authTokens           AuthToken[]
+  ustazGroups          Group[]
+  mufradatGameSessions MufradatGameSession[]
+  mufradatSubmissions  MufradatSubmission[]
+  revisionLogs         DailyRevisionLog[]
+  revisionSubmissions  RevisionSubmission[]
+  studentGroups        StudentGroup[]
+  submissions          Submission[]
+  tasks                Task[]
+  ustaz                User?                 @relation("UserUstaz", fields: [ustazId], references: [id])
+  students             User[]                @relation("UserUstaz")
+  statistics           UserStatistics?
+  parentOf             User[]                @relation("ParentChild")
+  childOf              User[]                @relation("ParentChild")
+
+  @@index([phone])
+  @@index([role])
+  @@index([telegramId])
+  @@index([ustazId])
+}
+
+model UserStatistics {
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  totalPagesCompleted     Int       @default(0)
+  totalLinesCompleted     Int       @default(0)
+  totalTasksCompleted     Int       @default(0)
+  totalTasksFailed        Int       @default(0)
+  averageCompletionTime   Float?
+  fastestPageTime         Float?
+  estimatedCompletionDate DateTime?
+  lastWeekProgress        Int       @default(0)
+  thisWeekProgress        Int       @default(0)
+  lastMonthProgress       Int       @default(0)
+  thisMonthProgress       Int       @default(0)
+  totalSubmissions        Int       @default(0)
+  passedSubmissions       Int       @default(0)
+  totalReviews            Int       @default(0)
+  currentStreak           Int       @default(0)
+  longestStreak           Int       @default(0)
+  averagePagesPerWeek     Float     @default(0)
+  globalRank              Int?
+  groupRank               Int?
+  updatedAt               DateTime  @updatedAt
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([globalRank])
+  @@index([userId])
+}
+
+model WordTranslation {
+  id            String    @id @default(cuid())
+  wordKey       String    @unique
+  surahNumber   Int
+  ayahNumber    Int
+  position      Int
+  textArabic    String
+  textSimple    String?
+  translationEn String?
+  translationRu String?
+  isVerified    Boolean   @default(false)
+  verifiedBy    String?
+  verifiedAt    DateTime?
+  aiGenerated   Boolean   @default(false)
+  aiModel       String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([isVerified])
+  @@index([surahNumber, ayahNumber])
+}
+
+// Daily revision log for button-only revision mode
+model DailyRevisionLog {
+  id              String          @id @default(cuid())
+  studentId       String
+  groupId         String
+  date            DateTime        @db.Date // The day this revision is for
+  pageNumber      Int             // Which page was revised
+  markedAt        DateTime        @default(now()) // When student clicked the button
+  ustazAckedAt    DateTime?       // When ustaz acknowledged (clicked "OK")
+  status          RevisionStatus  @default(PENDING)
+
+  student         User            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  group           Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, groupId, date, pageNumber])
+  @@index([studentId, date])
+  @@index([groupId, date])
+}
+
+enum RevisionStatus {
+  PENDING     // Student marked, ustaz not yet acknowledged
+  ACKNOWLEDGED // Ustaz clicked OK
+}
+
+enum AIProvider {
+  NONE
+  QURANI_AI
+  WHISPER
+  HUGGINGFACE
 }
 
 enum ContentType {
@@ -57,461 +518,60 @@ enum ContentType {
   AUDIO
 }
 
-enum MushafType {
-  LOCAL           // Наш Мусхаф (локальная БД)
-  MEDINA_API      // Мединский мусхаф (Quran.com API)
+enum Gender {
+  MALE
+  FEMALE
 }
 
-enum AIProvider {
-  NONE            // Без AI проверки (только устаз)
-  QURANI_AI       // Qurani.ai QRC API
-  WHISPER         // OpenAI Whisper
-  HUGGINGFACE     // HuggingFace Quran ASR модель
+enum GroupLevel {
+  LEVEL_1
+  LEVEL_2
+  LEVEL_3
+}
+
+enum LessonType {
+  MEMORIZATION
+  REVISION
+  TRANSLATION
+}
+
+enum MushafType {
+  LOCAL
+  MEDINA_API
+}
+
+enum StageNumber {
+  STAGE_1_1
+  STAGE_1_2
+  STAGE_2_1
+  STAGE_2_2
+  STAGE_3
+}
+
+enum SubmissionStatus {
+  PENDING
+  PASSED
+  FAILED
+}
+
+enum TaskStatus {
+  IN_PROGRESS
+  SUBMITTED
+  PASSED
+  FAILED
+  CANCELLED
+}
+
+enum UserRole {
+  ADMIN
+  USTAZ
+  STUDENT
+  PARENT
+  PENDING
 }
 
 enum VerificationMode {
-  MANUAL          // Только устаз проверяет
-  SEMI_AUTO       // AI проверяет, устаз подтверждает
-  FULL_AUTO       // AI проверяет автоматически
-}
-
-// ============== USERS ==============
-
-model User {
-  id                String    @id @default(cuid())
-  phone             String    @unique
-  firstName         String?
-  lastName          String?
-  birthDate         DateTime? // Дата рождения
-  telegramId        BigInt?   @unique
-  telegramUsername  String?
-  telegramPhoto     String?
-  passwordHash      String?   // For web login (admin/ustaz)
-  role              UserRole  @default(STUDENT)
-  isActive          Boolean   @default(true)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-
-  // Relations
-  ustazGroups       Group[]   @relation("UstazGroups")
-  studentGroups     StudentGroup[]  // Many-to-many: student can be in multiple groups
-  ustazId           String?   // For students: their ustaz (selected during registration)
-  ustaz             User?     @relation("StudentUstaz", fields: [ustazId], references: [id])
-  students          User[]    @relation("StudentUstaz") // For ustaz: their students
-
-  // Parent-Child relations
-  parentOf          User[]    @relation("ParentChild")
-  childOf           User[]    @relation("ParentChild")
-
-  // Student progress (per-group progress is in StudentGroup)
-  currentPage       Int       @default(1)
-  currentLine       Int       @default(1)
-  currentStage      StageNumber @default(STAGE_1_1)
-
-  // Tasks and submissions
-  tasks             Task[]
-  submissions       Submission[]
-
-  // Auth tokens
-  authTokens        AuthToken[]
-
-  // Statistics
-  statistics        UserStatistics?
-
-  @@index([phone])
-  @@index([telegramId])
-  @@index([role])
-  @@index([ustazId])
-}
-
-model AuthToken {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-  
-  @@index([token])
-  @@index([userId])
-}
-
-// ============== GROUPS ==============
-
-model Group {
-  id          String     @id @default(cuid())
-  name        String
-  description String?
-  level       GroupLevel @default(LEVEL_1)
-  isActive    Boolean    @default(true)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-
-  // Lesson settings (moved from Lesson model)
-  lessonType      LessonType @default(MEMORIZATION)
-  repetitionCount Int        @default(80)  // Количество повторений
-  stage1Days      Int        @default(1)   // Дни на этап 1
-  stage2Days      Int        @default(2)   // Дни на этап 2
-  stage3Days      Int        @default(2)   // Дни на этап 3
-
-  // Content settings
-  showText        Boolean    @default(false)
-  showImage       Boolean    @default(false)
-  showAudio       Boolean    @default(false)
-
-  // Submission format settings
-  allowVoice      Boolean    @default(true)   // Голосовые сообщения
-  allowVideoNote  Boolean    @default(true)   // Кружочки
-  allowText       Boolean    @default(false)  // Текстовые сообщения
-
-  // Mushaf settings
-  mushafType        MushafType @default(LOCAL)  // Тип мусхафа
-  translationId     Int?       // ID перевода Quran.com (45 = Кулиев)
-  tafsirId          Int?       // ID тафсира Quran.com (170 = ас-Саади)
-  showTranslation   Boolean    @default(false)  // Показывать перевод
-  showTafsir        Boolean    @default(false)  // Показывать тафсир
-  showTajweed       Boolean    @default(false)  // Показывать таджвид
-  reciterId         Int?       // ID чтеца для аудио
-
-  // AI Verification settings
-  aiProvider          AIProvider       @default(NONE)    // AI провайдер
-  verificationMode    VerificationMode @default(MANUAL)  // Режим верификации
-  aiAcceptThreshold   Int              @default(85)      // Порог для автопринятия (%)
-  aiRejectThreshold   Int              @default(50)      // Порог для автоотклонения (%)
-
-  // Relations
-  ustaz       User       @relation("UstazGroups", fields: [ustazId], references: [id])
-  ustazId     String
-  students    StudentGroup[]  // Many-to-many via join table
-  lessons     Lesson[]   // Legacy relation
-  tasks       Task[]     @relation("GroupTasks")
-
-  @@index([ustazId])
-  @@index([lessonType])
-}
-
-// ============== STUDENT-GROUP (Many-to-Many) ==============
-
-model StudentGroup {
-  id          String      @id @default(cuid())
-  studentId   String
-  student     User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  groupId     String
-  group       Group       @relation(fields: [groupId], references: [id], onDelete: Cascade)
-
-  // Per-group progress for student
-  currentPage   Int         @default(1)
-  currentLine   Int         @default(1)
-  currentStage  StageNumber @default(STAGE_1_1)
-
-  joinedAt    DateTime    @default(now())
-  isActive    Boolean     @default(true)
-
-  @@unique([studentId, groupId])
-  @@index([studentId])
-  @@index([groupId])
-}
-
-// ============== QURAN CONTENT ==============
-
-model QuranPage {
-  id          String      @id @default(cuid())
-  pageNumber  Int         @unique
-  totalLines  Int         @default(15)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-
-  lines       QuranLine[]
-  tasks       Task[]
-  
-  @@index([pageNumber])
-}
-
-model QuranLine {
-  id          String    @id @default(cuid())
-  lineNumber  Int
-  pageId      String
-  page        QuranPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
-  
-  // Content (optional, can be filled later)
-  textArabic  String?   @db.Text
-  textTajweed String?   @db.Text  // HTML/styled text with tajweed
-  imageFileId String?   // Telegram file_id
-  audioFileId String?   // Telegram file_id
-  translation String?   @db.Text
-  
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  @@unique([pageId, lineNumber])
-  @@index([pageId])
-}
-
-// ============== LESSONS ==============
-
-model Lesson {
-  id              String     @id @default(cuid())
-  name            String
-  type            LessonType
-  isActive        Boolean    @default(true)
-  
-  // Settings
-  repetitionCount Int        @default(80)  // Количество повторений (студент должен сдать все 80)
-  
-  // Stage durations (in days)
-  stage1Days      Int        @default(1)   // Дни на этап 1 (по строке)
-  stage2Days      Int        @default(2)   // Дни на этап 2 (половина)
-  stage3Days      Int        @default(2)   // Дни на этап 3 (вся страница)
-  
-  // Content settings
-  showText        Boolean    @default(false)
-  showImage       Boolean    @default(false)
-  showAudio       Boolean    @default(false)
-  
-  // Submission settings
-  allowVoice      Boolean    @default(true)  // Голосовые сообщения
-  allowVideoNote  Boolean    @default(true)  // Кружочки
-  allowText       Boolean    @default(false) // Текстовые сообщения
-  
-  groupId         String
-  group           Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  
-  tasks           Task[]
-  
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  
-  @@index([groupId])
-  @@index([type])
-}
-
-// ============== TASKS ==============
-
-model Task {
-  id              String      @id @default(cuid())
-
-  // Assignment details
-  lessonId        String?     // Legacy - kept for old data
-  lesson          Lesson?     @relation(fields: [lessonId], references: [id], onDelete: SetNull)
-  groupId         String?     // New - group contains all settings
-  group           Group?      @relation("GroupTasks", fields: [groupId], references: [id], onDelete: SetNull)
-  studentId       String
-  student         User        @relation(fields: [studentId], references: [id], onDelete: Cascade)
-
-  // What to learn
-  pageId          String
-  page            QuranPage   @relation(fields: [pageId], references: [id])
-  startLine       Int
-  endLine         Int
-  stage           StageNumber
-
-  // Progress
-  status          TaskStatus  @default(IN_PROGRESS)
-  currentCount    Int         @default(0)  // Сколько раз отправил
-  requiredCount   Int         @default(80) // Сколько нужно
-  passedCount     Int         @default(0)  // Сколько сдал
-  failedCount     Int         @default(0)  // Сколько не сдал
-
-  // Timing
-  startedAt       DateTime    @default(now())
-  deadline        DateTime
-  completedAt     DateTime?
-
-  submissions     Submission[]
-
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-
-  @@index([studentId])
-  @@index([lessonId])
-  @@index([groupId])
-  @@index([status])
-  @@index([pageId])
-}
-
-// ============== SUBMISSIONS ==============
-
-model Submission {
-  id              String           @id @default(cuid())
-
-  taskId          String
-  task            Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  studentId       String
-  student         User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
-
-  // Content type
-  submissionType  String           @default("AUDIO") // "AUDIO" or "MUFRADAT_GAME"
-
-  // Audio/Video content (for AUDIO type)
-  fileId          String?          // Telegram file_id (optional for game)
-  fileType        String?          // "voice" or "video_note"
-  duration        Int?             // Duration in seconds
-
-  // Mufradat game data (for MUFRADAT_GAME type)
-  gameScore       Int?             // Score 0-100%
-  gameCorrect     Int?             // Number of correct answers
-  gameTotal       Int?             // Total questions
-  gameData        String?   @db.Text  // JSON with detailed results
-
-  // Review
-  status          SubmissionStatus @default(PENDING)
-  reviewerId      String?
-  reviewedAt      DateTime?
-  feedback        String?
-
-  // AI Verification results
-  aiProvider      String?          // Какой AI использовался
-  aiScore         Float?           // Оценка точности (0-100%)
-  aiTranscript    String?   @db.Text  // Расшифровка от AI
-  aiErrors        String?   @db.Text  // JSON с ошибками
-  aiProcessedAt   DateTime?        // Когда проверено AI
-  aiRawResponse   String?   @db.Text  // Полный ответ API (для отладки)
-
-  // Telegram message tracking
-  telegramMsgId   BigInt?          // Bot confirmation message ID
-  studentMsgId    BigInt?          // Student's original message ID (voice/video)
-  sentToUstazAt   DateTime?        // When this submission was sent to ustaz for review
-
-  createdAt       DateTime         @default(now())
-  
-  @@index([taskId])
-  @@index([studentId])
-  @@index([status])
-}
-
-// ============== STATISTICS ==============
-
-model UserStatistics {
-  id                  String   @id @default(cuid())
-  userId              String   @unique
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  // Overall progress
-  totalPagesCompleted Int      @default(0)
-  totalLinesCompleted Int      @default(0)
-  totalTasksCompleted Int      @default(0)
-  totalTasksFailed    Int      @default(0)
-  
-  // Time tracking
-  averageCompletionTime Float? // Average hours per page
-  fastestPageTime     Float?   // Fastest page completion in hours
-  
-  // Predictions
-  estimatedCompletionDate DateTime?
-  
-  // Weekly/Monthly comparisons
-  lastWeekProgress    Int      @default(0)  // Pages completed last week
-  thisWeekProgress    Int      @default(0)  // Pages completed this week
-  lastMonthProgress   Int      @default(0)  // Pages completed last month
-  thisMonthProgress   Int      @default(0)  // Pages completed this month
-  
-  // Submissions
-  totalSubmissions    Int      @default(0)
-  passedSubmissions   Int      @default(0)
-  totalReviews        Int      @default(0)  // For ustaz
-
-  // Streaks
-  currentStreak       Int      @default(0)
-  longestStreak       Int      @default(0)
-
-  // Weekly stats
-  averagePagesPerWeek Float    @default(0)
-
-  // Ranking
-  globalRank          Int?
-  groupRank           Int?
-
-  updatedAt           DateTime @updatedAt
-  
-  @@index([userId])
-  @@index([globalRank])
-}
-
-// ============== WORD TRANSLATIONS (Mufradat) ==============
-
-model WordTranslation {
-  id              String    @id @default(cuid())
-
-  // Unique identifier for word: "surah:ayah:position" (e.g., "1:1:1")
-  wordKey         String    @unique
-
-  // Word data from Quran.com API
-  surahNumber     Int
-  ayahNumber      Int
-  position        Int       // Word position in ayah (1-indexed)
-  textArabic      String    // Arabic text (uthmani)
-  textSimple      String?   // Simplified Arabic
-
-  // Translations
-  translationEn   String?   // English (from API)
-  translationRu   String?   // Russian (from ChatGPT)
-
-  // Meta
-  isVerified      Boolean   @default(false)  // Admin verified
-  verifiedBy      String?   // Admin who verified
-  verifiedAt      DateTime?
-  aiGenerated     Boolean   @default(false)  // Generated by AI
-  aiModel         String?   // Which AI model (gpt-4, gpt-3.5-turbo, etc)
-
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@index([surahNumber, ayahNumber])
-  @@index([isVerified])
-}
-
-// ============== SYSTEM SETTINGS ==============
-
-model SystemSettings {
-  id                  String   @id @default(cuid())
-  key                 String   @unique
-  value               String   @db.Text
-  description         String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  
-  @@index([key])
-}
-
-// ============== BOT MESSAGE TRACKING ==============
-
-model BotMessage {
-  id              String    @id @default(cuid())
-  chatId          BigInt
-  messageId       BigInt
-  userId          String?
-  messageType     String    // menu, task, notification, submission_confirm, etc.
-  deleteAfter     DateTime? // When to auto-delete this message (null = never)
-  createdAt       DateTime  @default(now())
-
-  @@index([chatId])
-  @@index([userId])
-  @@index([deleteAfter])
-}
-
-// ============== CRON JOBS ==============
-
-model CronJob {
-  id              String   @id @default(cuid())
-  externalId      String?  @unique // ID from cron-job.org
-  name            String   @unique
-  url             String
-  schedule        String   // Cron expression
-  isEnabled       Boolean  @default(true)
-  lastRunAt       DateTime?
-  lastStatus      String?  // success, error, etc.
-  lastError       String?
-  runCount        Int      @default(0)
-  errorCount      Int      @default(0)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-}
-
-// ============== BOT SESSION ==============
-
-model BotSession {
-  id        String   @id
-  data      String   @db.Text  // JSON session data
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  MANUAL
+  SEMI_AUTO
+  FULL_AUTO
 }

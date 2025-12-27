@@ -27,6 +27,7 @@ export default async function StudentQuranPage() {
     <StudentQuranViewer
       currentPage={currentPage}
       currentLine={currentLine}
+      currentStage={currentStage}
       stageName={stageName}
     />
   )

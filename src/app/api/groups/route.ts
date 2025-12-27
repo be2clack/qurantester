@@ -8,20 +8,18 @@ const createGroupSchema = z.object({
   description: z.string().optional(),
   ustazId: z.string(),
   level: z.nativeEnum(GroupLevel).default(GroupLevel.LEVEL_1),
-  lessonType: z.nativeEnum(LessonType).default(LessonType.MEMORIZATION), // For auto-naming
+  gender: z.enum(['MALE', 'FEMALE']).default('MALE'),
+  lessonType: z.nativeEnum(LessonType).default(LessonType.MEMORIZATION),
 })
 
-// Generate auto-name: 2-letter prefix + Year + Level + Number
-// Format: ЗА-25-1-1 (Заучивание, 2025, Level 1, group #1)
-async function generateGroupName(lessonType: LessonType, level: GroupLevel): Promise<string> {
-  const typePrefixes: Record<LessonType, string> = {
-    [LessonType.MEMORIZATION]: 'ЗА',  // Заучивание
-    [LessonType.REVISION]: 'ПО',       // Повторение
-    [LessonType.TRANSLATION]: 'ПЕ',    // Перевод
-  }
-  const levelNumber = level.replace('LEVEL_', '')
+// Generate auto-name: [ПОЛ]-[год]-[уровень]-[номер]
+// Format: М-25-3-1 (Мужская, 2025, Level 3, group #1) or Ж-25-1-2 (Женская, 2025, Level 1, group #2)
+async function generateGroupName(gender: 'MALE' | 'FEMALE', level: GroupLevel): Promise<string> {
+  const genderPrefix = gender === 'MALE' ? 'М' : 'Ж'
   const year = new Date().getFullYear().toString().slice(-2)
-  const basePattern = `${typePrefixes[lessonType]}-${year}-${levelNumber}`
+  const levelNumber = level.replace('LEVEL_', '')
+
+  const basePattern = `${genderPrefix}-${year}-${levelNumber}`
 
   // Count existing groups with same base pattern to get next number
   const existingGroups = await prisma.group.count({
@@ -113,7 +111,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const { description, ustazId, level, lessonType } = validation.data
+    const { description, ustazId, level, gender, lessonType } = validation.data
 
     // Verify ustaz exists and has correct role
     const ustaz = await prisma.user.findUnique({ where: { id: ustazId } })
@@ -125,7 +123,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Always auto-generate name with unique number
-    const groupName = await generateGroupName(lessonType, level)
+    const groupName = await generateGroupName(gender, level)
 
     const group = await prisma.group.create({
       data: {
@@ -133,12 +131,16 @@ export async function POST(req: NextRequest) {
         description,
         ustazId,
         level,
+        gender,
         lessonType,
         // Default settings for lessons
         repetitionCount: 80,
-        stage1Days: 1,
-        stage2Days: 2,
-        stage3Days: 2,
+        stage1Hours: 24,
+        stage2Hours: 48,
+        stage3Hours: 48,
+        revisionPagesPerDay: 3,
+        wordsPerDay: 10,
+        wordsPassThreshold: 8,
         allowVoice: true,
         allowVideoNote: true,
         allowText: false,
