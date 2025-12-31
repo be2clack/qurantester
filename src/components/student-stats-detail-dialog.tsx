@@ -54,6 +54,21 @@ interface MufradatData {
   passed: boolean
 }
 
+interface TranslationDayData {
+  date: string
+  pagesStudied: number
+  pagesLearned: number
+  totalAttempts: number
+  avgScore: number
+  pages: {
+    pageNumber: number
+    bestScore: number
+    attempts: number
+    wordsCorrect: number
+    wordsWrong: number
+  }[]
+}
+
 export function StudentStatsDetailDialog({
   open,
   onOpenChange,
@@ -66,6 +81,7 @@ export function StudentStatsDetailDialog({
   const [tasks, setTasks] = useState<TaskData[]>([])
   const [revisions, setRevisions] = useState<RevisionData[]>([])
   const [mufradatSubs, setMufradatSubs] = useState<MufradatData[]>([])
+  const [translationDays, setTranslationDays] = useState<TranslationDayData[]>([])
 
   useEffect(() => {
     if (open && studentId) {
@@ -95,6 +111,7 @@ export function StudentStatsDetailDialog({
         if (res.ok) {
           const data = await res.json()
           setMufradatSubs(data.daily || [])
+          setTranslationDays(data.translation?.daily || [])
         }
       }
     } catch (error) {
@@ -235,10 +252,49 @@ export function StudentStatsDetailDialog({
 
             {type === 'mufradat' && (
               <>
-                {mufradatSubs.length === 0 ? (
+                {translationDays.length === 0 && mufradatSubs.length === 0 ? (
                   <p className="text-muted-foreground text-center py-4">Нет данных о переводах</p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
+                    {/* New translation page progress */}
+                    {translationDays.length > 0 && (
+                      <>
+                        <h4 className="font-medium text-sm text-purple-600">Прогресс по страницам</h4>
+                        {translationDays.map((day, idx) => (
+                          <div key={idx} className="p-3 border rounded-lg space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium">
+                                {format(new Date(day.date), 'd MMM yyyy', { locale: ru })}
+                              </span>
+                              <span className="text-sm text-muted-foreground">
+                                {day.pagesStudied} стр., {day.totalAttempts} попыток
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {day.pages.map((page) => (
+                                <div
+                                  key={page.pageNumber}
+                                  className={`px-2 py-1 rounded text-xs ${
+                                    page.bestScore >= 80
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : page.bestScore >= 50
+                                        ? 'bg-yellow-100 text-yellow-800'
+                                        : 'bg-red-100 text-red-800'
+                                  }`}
+                                >
+                                  стр. {page.pageNumber}: {page.bestScore}%
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
+
+                    {/* Legacy mufradat data */}
+                    {mufradatSubs.length > 0 && translationDays.length > 0 && (
+                      <h4 className="font-medium text-sm text-muted-foreground mt-4">Старые данные</h4>
+                    )}
                     {mufradatSubs.map((sub, idx) => (
                       <div
                         key={idx}

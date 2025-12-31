@@ -46,13 +46,22 @@ export async function GET(request: NextRequest) {
     startDate.setDate(startDate.getDate() - days)
     startDate.setHours(0, 0, 0, 0)
 
-    // Get submissions for the period
+    // Get legacy submissions for the period
     const submissions = await prisma.mufradatSubmission.findMany({
       where: {
         studentId: targetStudentId,
         date: { gte: startDate }
       },
       orderBy: { date: 'desc' }
+    })
+
+    // Get new translation page progress
+    const translationProgress = await prisma.translationPageProgress.findMany({
+      where: {
+        studentId: targetStudentId,
+        date: { gte: startDate }
+      },
+      orderBy: [{ date: 'desc' }, { pageNumber: 'asc' }]
     })
 
     // Calculate statistics
@@ -92,6 +101,38 @@ export async function GET(request: NextRequest) {
       correctWords: weekSubmissions.reduce((sum, s) => sum + s.wordsCorrect, 0)
     }
 
+    // Group translation progress by date
+    const translationByDate = new Map<string, typeof translationProgress>()
+    translationProgress.forEach(tp => {
+      const dateKey = new Date(tp.date).toISOString().split('T')[0]
+      if (!translationByDate.has(dateKey)) {
+        translationByDate.set(dateKey, [])
+      }
+      translationByDate.get(dateKey)!.push(tp)
+    })
+
+    // Build translation daily stats
+    const translationDailyStats = Array.from(translationByDate.entries()).map(([dateStr, pages]) => ({
+      date: dateStr,
+      pagesStudied: pages.length,
+      pagesLearned: pages.filter(p => p.bestScore >= 80).length,
+      totalAttempts: pages.reduce((sum, p) => sum + p.attempts, 0),
+      avgScore: pages.length > 0
+        ? Math.round(pages.reduce((sum, p) => sum + p.bestScore, 0) / pages.length)
+        : 0,
+      pages: pages.map(p => ({
+        pageNumber: p.pageNumber,
+        bestScore: p.bestScore,
+        attempts: p.attempts,
+        wordsCorrect: p.wordsCorrect,
+        wordsWrong: p.wordsWrong,
+      }))
+    }))
+
+    // Today's translation progress
+    const todayStr = today.toISOString().split('T')[0]
+    const todayTranslation = translationByDate.get(todayStr) || []
+
     return NextResponse.json({
       studentId: targetStudentId,
       period: {
@@ -114,7 +155,18 @@ export async function GET(request: NextRequest) {
         wordsCorrect: todaySubmission.wordsCorrect,
         passed: todaySubmission.passed
       } : null,
-      daily: dailyStats
+      daily: dailyStats,
+      // New translation page-based stats
+      translation: {
+        todayPages: todayTranslation.map(p => ({
+          pageNumber: p.pageNumber,
+          bestScore: p.bestScore,
+          attempts: p.attempts,
+        })),
+        todayPagesStudied: todayTranslation.length,
+        todayPagesLearned: todayTranslation.filter(p => p.bestScore >= 80).length,
+        daily: translationDailyStats
+      }
     })
   } catch (error) {
     console.error('Error fetching mufradat stats:', error)

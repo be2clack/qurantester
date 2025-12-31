@@ -109,7 +109,7 @@ export async function GET(
                     createdAt: true,
                   }
                 },
-                // Mufradat submissions (last 7 days)
+                // Mufradat submissions (last 7 days) - legacy
                 mufradatSubmissions: {
                   where: {
                     date: {
@@ -124,6 +124,23 @@ export async function GET(
                     passed: true,
                   },
                   orderBy: { date: 'desc' }
+                },
+                // Translation page progress (new system)
+                translationPageProgress: {
+                  where: {
+                    date: {
+                      gte: new Date(new Date().setHours(0, 0, 0, 0)) // today only
+                    }
+                  },
+                  select: {
+                    pageNumber: true,
+                    wordsCorrect: true,
+                    wordsTotal: true,
+                    wordsWrong: true,
+                    bestScore: true,
+                    attempts: true,
+                  },
+                  orderBy: { pageNumber: 'asc' }
                 },
                 // Completed tasks count for memorization (PASSED = completed successfully)
                 _count: {
@@ -213,7 +230,7 @@ export async function GET(
           revisionsPassed: passedRevisions,
           revisionsPending: pendingRevisions,
           revisionsTotal: revisions.length,
-          // Mufradat stats
+          // Mufradat stats (legacy)
           mufradatWeekPassed,
           mufradatWeekTotal,
           mufradatToday: mufradatTodaySub ? {
@@ -221,6 +238,23 @@ export async function GET(
             wordsTotal: mufradatTodaySub.wordsTotal,
             passed: mufradatTodaySub.passed
           } : null,
+          // Translation page progress (new system)
+          translationToday: sg.student.translationPageProgress || [],
+          translationTodayStats: (() => {
+            const progress = sg.student.translationPageProgress || []
+            if (progress.length === 0) return null
+            const totalAttempts = progress.reduce((sum: number, p: any) => sum + p.attempts, 0)
+            const avgScore = progress.length > 0
+              ? Math.round(progress.reduce((sum: number, p: any) => sum + p.bestScore, 0) / progress.length)
+              : 0
+            const pagesLearned = progress.filter((p: any) => p.bestScore >= 80).length
+            return {
+              pagesStudied: progress.length,
+              pagesLearned,
+              totalAttempts,
+              avgScore,
+            }
+          })(),
         }
       })
     }

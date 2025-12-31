@@ -186,13 +186,27 @@ interface GroupData {
     revisionsPassed?: number
     revisionsPending?: number
     revisionsTotal?: number
-    // Mufradat stats
+    // Mufradat stats (legacy)
     mufradatWeekPassed?: number
     mufradatWeekTotal?: number
     mufradatToday?: {
       wordsCorrect: number
       wordsTotal: number
       passed: boolean
+    } | null
+    // Translation page progress (new)
+    translationToday?: {
+      pageNumber: number
+      wordsCorrect: number
+      wordsTotal: number
+      bestScore: number
+      attempts: number
+    }[]
+    translationTodayStats?: {
+      pagesStudied: number
+      pagesLearned: number
+      totalAttempts: number
+      avgScore: number
     } | null
   }[]
 }
@@ -1833,7 +1847,16 @@ export default function EditGroupPage() {
                         >
                           <div className="flex items-center gap-2 text-sm">
                             <Languages className="h-3.5 w-3.5 text-purple-500" />
-                            {student.mufradatToday ? (
+                            {student.translationTodayStats ? (
+                              <div className="space-y-0.5">
+                                <span className="font-medium">
+                                  {student.translationTodayStats.pagesStudied} стр. ({student.translationTodayStats.avgScore}%)
+                                </span>
+                                <div className="text-xs text-muted-foreground">
+                                  {student.translationTodayStats.totalAttempts} попыток
+                                </div>
+                              </div>
+                            ) : student.mufradatToday ? (
                               <span className="font-medium">
                                 {student.mufradatToday.passed ? '✅' : '❌'} {student.mufradatToday.wordsCorrect}/{student.mufradatToday.wordsTotal}
                               </span>
