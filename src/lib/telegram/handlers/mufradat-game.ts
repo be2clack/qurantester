@@ -40,9 +40,10 @@ async function getActiveSession(userId: string) {
 async function createSession(
   userId: string,
   groupId: string,
-  taskId: string,
+  taskId: string | null,
   words: GameWord[],
-  timeLimit: number
+  timeLimit: number,
+  pageNumber?: number
 ) {
   // Deactivate any existing sessions
   await prisma.mufradatGameSession.updateMany({
@@ -55,6 +56,7 @@ async function createSession(
       studentId: userId,
       groupId,
       taskId,
+      pageNumber,
       words: JSON.stringify(words),
       timeLimit,
       results: JSON.stringify([]),
@@ -234,13 +236,70 @@ function createGameFromExistingWords(words: any[], count: number): GameWord[] {
 }
 
 /**
+ * Get words for a specific page only (for page-based translation practice)
+ */
+async function getWordsForSpecificPage(
+  pageNumber: number,
+  count: number
+): Promise<GameWord[]> {
+  // Get surahs for this specific page
+  const surahs = getSurahsByPage(pageNumber)
+
+  if (surahs.length === 0) {
+    return []
+  }
+
+  const surahNumbers = surahs.map(s => s.number)
+
+  // Get words from this page's surahs only
+  const words = await prisma.wordTranslation.findMany({
+    where: {
+      surahNumber: { in: surahNumbers },
+      OR: [
+        { translationRu: { not: null } },
+        { translationEn: { not: null } }
+      ]
+    },
+    orderBy: [
+      { surahNumber: 'asc' },
+      { ayahNumber: 'asc' },
+      { position: 'asc' }
+    ],
+    take: count * 4
+  })
+
+  if (words.length < count) {
+    // Not enough words for this page, try fallback
+    const fallbackWords = await prisma.wordTranslation.findMany({
+      where: {
+        OR: [
+          { translationRu: { not: null } },
+          { translationEn: { not: null } }
+        ]
+      },
+      orderBy: { id: 'desc' },
+      take: count * 4
+    })
+
+    if (fallbackWords.length >= count) {
+      return createGameFromExistingWords(fallbackWords, count)
+    }
+
+    return []
+  }
+
+  return createGameFromExistingWords(words, count)
+}
+
+/**
  * Start mufradat game for a student
+ * @param pageNumber - if provided, game will use words from this specific page only
  */
 export async function startMufradatGame(
   ctx: BotContext,
   user: any,
   groupId: string,
-  taskId?: string
+  pageNumber?: number // New parameter for specific page selection
 ): Promise<void> {
   const userId = user.id
 
@@ -256,8 +315,14 @@ export async function startMufradatGame(
     return
   }
 
-  let actualTaskId = taskId
-  if (!actualTaskId) {
+  // For page-based translation, we don't need a task - we use TranslationPageProgress
+  const targetPage = pageNumber || studentGroup.currentPage
+
+  // Create a dummy taskId for session tracking (we'll use page-based progress instead)
+  let taskId: string | null = null
+
+  // Only create task if not using specific page selection
+  if (!pageNumber) {
     const existingTask = await prisma.task.findFirst({
       where: {
         studentId: userId,
@@ -267,7 +332,7 @@ export async function startMufradatGame(
     })
 
     if (existingTask) {
-      actualTaskId = existingTask.id
+      taskId = existingTask.id
     } else {
       let page = await prisma.quranPage.findUnique({
         where: { pageNumber: studentGroup.currentPage }
@@ -295,7 +360,7 @@ export async function startMufradatGame(
           deadline
         }
       })
-      actualTaskId = task.id
+      taskId = task.id
     }
   }
 
@@ -303,30 +368,33 @@ export async function startMufradatGame(
     const wordsCount = studentGroup.group.wordsPerDay || WORDS_PER_GAME
     const timeLimit = studentGroup.group.mufradatTimeLimit || DEFAULT_TIME_LIMIT
 
-    const words = await getWordsForStudentProgress(
-      studentGroup.currentPage,
-      studentGroup.currentLine,
-      wordsCount
-    )
+    // Get words - either from specific page or from progress-based
+    const words = pageNumber
+      ? await getWordsForSpecificPage(pageNumber, wordsCount)
+      : await getWordsForStudentProgress(
+          studentGroup.currentPage,
+          studentGroup.currentLine,
+          wordsCount
+        )
 
     if (words.length === 0) {
       await ctx.editMessageText(
         '❌ Недостаточно слов для игры.\n\nАдмин должен импортировать слова для вашей страницы.',
-        { reply_markup: new InlineKeyboard().text('◀️ Назад', 'student:menu') }
+        { reply_markup: new InlineKeyboard().text('◀️ Назад', 'student:mufradat') }
       )
       return
     }
 
-    // Create session in database
-    await createSession(userId, groupId, actualTaskId!, words, timeLimit)
+    // Create session in database (taskId can be null for page-based games)
+    await createSession(userId, groupId, taskId, words, timeLimit, targetPage)
 
     // Show first question
-    await showGameQuestion(ctx, userId)
+    await showGameQuestion(ctx, userId, targetPage)
   } catch (error) {
     console.error('Failed to start mufradat game:', error)
     await ctx.editMessageText(
       '❌ Ошибка при запуске игры.\n\nПопробуйте позже.',
-      { reply_markup: new InlineKeyboard().text('◀️ Назад', 'student:menu') }
+      { reply_markup: new InlineKeyboard().text('◀️ Назад', 'student:mufradat') }
     )
   }
 }
@@ -334,7 +402,7 @@ export async function startMufradatGame(
 /**
  * Show current game question with timer
  */
-async function showGameQuestion(ctx: BotContext, userId: string): Promise<void> {
+async function showGameQuestion(ctx: BotContext, userId: string, pageNumber?: number): Promise<void> {
   const session = await getActiveSession(userId)
   if (!session) return
 
@@ -361,15 +429,19 @@ async function showGameQuestion(ctx: BotContext, userId: string): Promise<void> 
   const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`
   const timeEmoji = remainingSeconds <= 30 ? '🔴' : remainingSeconds <= 60 ? '🟡' : '🟢'
 
+  // Use pageNumber from session if available
+  const displayPage = session.pageNumber || pageNumber
+  const pageStr = displayPage ? ` (стр. ${displayPage})` : ''
+
   let question: string
   if (word.direction === 'ar_to_ru') {
-    question = `🎮 <b>Муфрадат</b> — ${questionNum}/${total}\n\n`
+    question = `🎮 <b>Муфрадат</b>${pageStr} — ${questionNum}/${total}\n\n`
     question += `${progressBar} ${progressPercent}%\n`
     question += `${timeEmoji} Осталось: <b>${timeStr}</b>\n\n`
     question += `📝 Переведите на русский:\n\n`
     question += `<b style="font-size: 32px;">${word.textArabic}</b>`
   } else {
-    question = `🎮 <b>Муфрадат</b> — ${questionNum}/${total}\n\n`
+    question = `🎮 <b>Муфрадат</b>${pageStr} — ${questionNum}/${total}\n\n`
     question += `${progressBar} ${progressPercent}%\n`
     question += `${timeEmoji} Осталось: <b>${timeStr}</b>\n\n`
     question += `📝 Выберите арабское слово:\n\n`
@@ -500,103 +572,158 @@ async function finishGame(
   // Deactivate session
   await deactivateSession(session.id)
 
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Check if this is a page-based translation game
+  const isPageBasedGame = !!session.pageNumber
+
   try {
-    const submission = await prisma.submission.create({
-      data: {
-        taskId: session.taskId,
-        studentId: userId,
-        submissionType: 'MUFRADAT_GAME',
-        gameScore: score,
-        gameCorrect: session.correctCount,
-        gameTotal: words.length,
-        gameData: JSON.stringify({
-          results,
-          totalTime,
-          timeExpired,
-          timeLimit: session.timeLimit
-        }),
-        status: passed ? SubmissionStatus.PASSED : SubmissionStatus.PENDING,
-        feedback: timeExpired
-          ? `Муфрадат: ${session.correctCount}/${words.length} (⏱️ время вышло)`
-          : `Муфрадат: ${session.correctCount}/${words.length} (${score}%)`,
-        reviewedAt: passed ? new Date() : null
-      }
-    })
-
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-
-    await prisma.mufradatSubmission.upsert({
-      where: {
-        studentId_date: {
+    if (isPageBasedGame) {
+      // For page-based translation: save to TranslationPageProgress
+      await prisma.translationPageProgress.upsert({
+        where: {
+          studentId_groupId_pageNumber_date: {
+            studentId: userId,
+            groupId: session.groupId,
+            pageNumber: session.pageNumber,
+            date: today
+          }
+        },
+        create: {
           studentId: userId,
-          date: today
-        }
-      },
-      create: {
-        studentId: userId,
-        date: today,
-        wordsTotal: words.length,
-        wordsCorrect: session.correctCount,
-        wordsMistakes: words.length - session.correctCount,
-        passed,
-        details: JSON.stringify(results)
-      },
-      update: {
-        wordsTotal: words.length,
-        wordsCorrect: session.correctCount,
-        wordsMistakes: words.length - session.correctCount,
-        passed,
-        details: JSON.stringify(results)
-      }
-    })
-
-    if (passed) {
-      await prisma.task.update({
-        where: { id: session.taskId },
-        data: {
-          status: TaskStatus.PASSED,
-          currentCount: 1
+          groupId: session.groupId,
+          pageNumber: session.pageNumber,
+          date: today,
+          wordsTotal: words.length,
+          wordsCorrect: session.correctCount,
+          wordsWrong: words.length - session.correctCount,
+          attempts: 1,
+          bestScore: score,
+          lastPlayedAt: new Date()
+        },
+        update: {
+          wordsCorrect: { increment: session.correctCount },
+          wordsWrong: { increment: words.length - session.correctCount },
+          attempts: { increment: 1 },
+          bestScore: score, // Update if this score is better - handled in query
+          lastPlayedAt: new Date()
         }
       })
 
-      const studentGroup = await prisma.studentGroup.findFirst({
-        where: { studentId: userId, groupId: session.groupId }
-      })
-
-      if (studentGroup) {
-        let newLine = studentGroup.currentLine + 1
-        let newPage = studentGroup.currentPage
-
-        if (newLine > 15) {
-          newLine = 1
-          newPage++
+      // Check if current score is better than stored and update bestScore
+      const currentProgress = await prisma.translationPageProgress.findUnique({
+        where: {
+          studentId_groupId_pageNumber_date: {
+            studentId: userId,
+            groupId: session.groupId,
+            pageNumber: session.pageNumber,
+            date: today
+          }
         }
-
-        await prisma.studentGroup.update({
-          where: { id: studentGroup.id },
-          data: {
-            currentLine: newLine,
-            currentPage: newPage
-          }
-        })
-
-        await prisma.user.update({
-          where: { id: userId },
-          data: {
-            currentLine: newLine,
-            currentPage: newPage
-          }
+      })
+      if (currentProgress && score > currentProgress.bestScore) {
+        await prisma.translationPageProgress.update({
+          where: { id: currentProgress.id },
+          data: { bestScore: score }
         })
       }
-
-      await prisma.userStatistics.upsert({
-        where: { userId },
-        create: { userId, totalTasksCompleted: 1 },
-        update: { totalTasksCompleted: { increment: 1 } }
-      })
     } else {
-      await notifyUstazAboutMufradatGame(user, session, submission, score, timeExpired)
+      // For legacy task-based flow
+      if (session.taskId) {
+        await prisma.submission.create({
+          data: {
+            taskId: session.taskId,
+            studentId: userId,
+            submissionType: 'MUFRADAT_GAME',
+            gameScore: score,
+            gameCorrect: session.correctCount,
+            gameTotal: words.length,
+            gameData: JSON.stringify({
+              results,
+              totalTime,
+              timeExpired,
+              timeLimit: session.timeLimit
+            }),
+            status: passed ? SubmissionStatus.PASSED : SubmissionStatus.PENDING,
+            feedback: timeExpired
+              ? `Муфрадат: ${session.correctCount}/${words.length} (⏱️ время вышло)`
+              : `Муфрадат: ${session.correctCount}/${words.length} (${score}%)`,
+            reviewedAt: passed ? new Date() : null
+          }
+        })
+      }
+
+      await prisma.mufradatSubmission.upsert({
+        where: {
+          studentId_date: {
+            studentId: userId,
+            date: today
+          }
+        },
+        create: {
+          studentId: userId,
+          date: today,
+          wordsTotal: words.length,
+          wordsCorrect: session.correctCount,
+          wordsMistakes: words.length - session.correctCount,
+          passed,
+          details: JSON.stringify(results)
+        },
+        update: {
+          wordsTotal: words.length,
+          wordsCorrect: session.correctCount,
+          wordsMistakes: words.length - session.correctCount,
+          passed,
+          details: JSON.stringify(results)
+        }
+      })
+
+      if (passed && session.taskId) {
+        await prisma.task.update({
+          where: { id: session.taskId },
+          data: {
+            status: TaskStatus.PASSED,
+            currentCount: 1
+          }
+        })
+
+        const studentGroup = await prisma.studentGroup.findFirst({
+          where: { studentId: userId, groupId: session.groupId }
+        })
+
+        if (studentGroup) {
+          let newLine = studentGroup.currentLine + 1
+          let newPage = studentGroup.currentPage
+
+          if (newLine > 15) {
+            newLine = 1
+            newPage++
+          }
+
+          await prisma.studentGroup.update({
+            where: { id: studentGroup.id },
+            data: {
+              currentLine: newLine,
+              currentPage: newPage
+            }
+          })
+
+          await prisma.user.update({
+            where: { id: userId },
+            data: {
+              currentLine: newLine,
+              currentPage: newPage
+            }
+          })
+        }
+
+        await prisma.userStatistics.upsert({
+          where: { userId },
+          create: { userId, totalTasksCompleted: 1 },
+          update: { totalTasksCompleted: { increment: 1 } }
+        })
+      }
     }
   } catch (error) {
     console.error('Failed to save game results:', error)
@@ -604,12 +731,16 @@ async function finishGame(
 
   const emoji = passed ? '🎉' : timeExpired ? '⏱️' : '📊'
   const statusText = passed
-    ? 'Отлично! Задание выполнено!'
+    ? isPageBasedGame ? 'Отлично! Страница изучена!' : 'Отлично! Задание выполнено!'
     : timeExpired
       ? 'Время вышло!'
       : 'Попробуйте ещё раз'
 
-  let message = `${emoji} <b>Результат игры</b>\n\n`
+  let message = `${emoji} <b>Результат игры</b>`
+  if (isPageBasedGame) {
+    message += ` (стр. ${session.pageNumber})`
+  }
+  message += `\n\n`
   message += `✅ Правильно: <b>${session.correctCount}/${words.length}</b>\n`
   message += `📊 Результат: <b>${score}%</b>\n`
   message += `⏱ Время: <b>${Math.floor(totalTime / 60)}:${(totalTime % 60).toString().padStart(2, '0')}</b>`
@@ -632,9 +763,15 @@ async function finishGame(
 
   const keyboard = new InlineKeyboard()
   if (!passed) {
-    keyboard.text('🔄 Играть снова', `mufradat:start:${session.groupId}`).row()
+    // For page-based games, return to the same page; for legacy, return to general mufradat
+    const playAgainCallback = isPageBasedGame
+      ? `translation:page:${session.pageNumber}`
+      : `mufradat:start:${session.groupId}`
+    keyboard.text('🔄 Играть снова', playAgainCallback).row()
   }
-  keyboard.text('◀️ В меню', 'student:menu')
+  // For page-based games, return to page selection; for legacy, return to main menu
+  const backCallback = isPageBasedGame ? 'student:mufradat' : 'student:menu'
+  keyboard.text('◀️ В меню', backCallback)
 
   try {
     await ctx.editMessageText(message, {
@@ -654,13 +791,18 @@ async function finishGame(
  */
 export async function handleMufradatQuit(ctx: BotContext, user: any): Promise<void> {
   const session = await getActiveSession(user.id)
+  const isPageBasedGame = session?.pageNumber != null
+
   if (session) {
     await deactivateSession(session.id)
   }
 
+  // For page-based games, return to page selection; for legacy, return to main menu
+  const backCallback = isPageBasedGame ? 'student:mufradat' : 'student:menu'
+
   await ctx.editMessageText(
     '🚪 Вы вышли из игры.\n\nРезультат не сохранён.',
-    { reply_markup: new InlineKeyboard().text('◀️ В меню', 'student:menu') }
+    { reply_markup: new InlineKeyboard().text('◀️ В меню', backCallback) }
   )
 }
 

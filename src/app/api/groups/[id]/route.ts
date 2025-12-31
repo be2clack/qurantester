@@ -17,6 +17,7 @@ const updateGroupSchema = z.object({
   stage1Hours: z.number().min(1).max(720).optional(),  // max 30 days
   stage2Hours: z.number().min(1).max(720).optional(),
   stage3Hours: z.number().min(1).max(720).optional(),
+  deadlineEnabled: z.boolean().optional(),
   // REVISION settings
   revisionPagesPerDay: z.number().min(1).max(20).optional(),
   revisionAllPages: z.boolean().optional(),

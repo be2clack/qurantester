@@ -19,6 +19,8 @@ export interface SessionData {
   progressPageOffset?: number
   // Revision data
   revisionPageNumber?: number
+  // Translation data
+  translationSelectedPage?: number
 }
 
 // Bot context with session

@@ -90,11 +90,14 @@ export function getPageLineCount(pageNumber: number): number {
 }
 
 // Get lines per batch based on group level
+// NOTE: This is a base value. For Level 2 and 3, actual batching is more nuanced:
+// - Level 2: Stage 1.1 uses 3+4 (not 3+3+1), Stage 2.1 uses 4+4 (not 3+3+2)
+// - Level 3: Stage 1.1 and 2.1 are done all at once (7 and 8 lines respectively)
 export function getLinesPerBatch(level: GroupLevel): number {
   switch (level) {
     case 'LEVEL_1': return 1   // 1 line at a time
-    case 'LEVEL_2': return 3   // 3 lines at a time
-    case 'LEVEL_3': return 7   // 7 lines at a time
+    case 'LEVEL_2': return 3   // Base: 3 lines (but actual batching is smart: 3+4 or 4+4)
+    case 'LEVEL_3': return 7   // Base: 7 lines (but actually does whole stage at once)
     default: return 1
   }
 }

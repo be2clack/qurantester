@@ -150,6 +150,10 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
       case 'cancel':
         await handleCancel(ctx, user)
         break
+      case 'translation':
+        // Translation page selection callbacks
+        await handleTranslationCallback(ctx, user, action, id)
+        break
       case 'mufradat':
         // Mufradat game callbacks
         await handleMufradatCallback(ctx, user, action, id)
@@ -506,7 +510,10 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
   const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const progressBar = buildProgressBar(parseInt(progressPercent))
 
-  // Calculate deadline
+  // Build format hint - use group settings only
+  const group = task.group
+
+  // Calculate deadline (only show warning if deadlineEnabled)
   const now = new Date()
   const deadline = new Date(task.deadline)
   const timeLeft = deadline.getTime() - now.getTime()
@@ -522,12 +529,18 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     month: 'short',
     timeZone: 'Asia/Bishkek'
   })
-  const deadlineStr = timeLeft > 0
-    ? `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
-    : `⚠️ <b>Срок истёк!</b>`
 
-  // Build format hint - use group settings only
-  const group = task.group
+  // If deadlines are disabled, show time for info only (no warning)
+  const deadlineEnabled = group?.deadlineEnabled ?? true
+  let deadlineStr: string
+  if (timeLeft > 0) {
+    deadlineStr = `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
+  } else if (deadlineEnabled) {
+    deadlineStr = `⚠️ <b>Срок истёк!</b>`
+  } else {
+    // Deadline passed but not enforced - show info only
+    deadlineStr = `ℹ️ Время: <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
+  }
   let formatHint = ''
   if (group) {
     if (group.allowVoice && group.allowVideoNote) {
@@ -621,6 +634,10 @@ function getLinesForLevel(groupLevel: GroupLevel): number {
  * ЛОГИКА ЭТАПОВ:
  * - Этапы изучения (1.1, 2.1): сдаём по linesPerTask строк за раз, двигаемся по строкам
  * - Этапы соединения (1.2, 2.2, 3): сдаём ВСЕ строки диапазона сразу
+ *
+ * ОСОБЫЕ СЛУЧАИ ДЛЯ УРОВНЕЙ:
+ * - Level 2 (3 строки): в этапе 1.1 делим 7 строк на 3+4, в этапе 2.1 делим 8 строк на 4+4
+ * - Level 3 (7 строк): этап 1.1 - все 7 сразу, этап 2.1 - все 8 сразу
  */
 async function getLineRangeForStage(
   stage: StageNumber,
@@ -631,11 +648,26 @@ async function getLineRangeForStage(
   const totalLines = await getPageTotalLines(pageNumber)
   const linesPerTask = getLinesForLevel(groupLevel)
   const firstHalfEnd = Math.min(7, totalLines)
+  const secondHalfLines = totalLines > 7 ? totalLines - 7 : 0 // 8 lines for standard pages
 
   // For pages with <= 7 lines (like Fatiha), simplified flow
   if (totalLines <= 7) {
     // Learning stage: use linesPerTask from current position
     if (stage === StageNumber.STAGE_1_1) {
+      // Level 3: all lines at once
+      if (groupLevel === GroupLevel.LEVEL_3) {
+        return { startLine: 1, endLine: totalLines }
+      }
+      // Level 2: smart batching (e.g., 3+4 for 7 lines)
+      if (groupLevel === GroupLevel.LEVEL_2) {
+        const firstBatchSize = Math.floor(totalLines / 2)
+        if (currentLine <= firstBatchSize) {
+          return { startLine: 1, endLine: firstBatchSize }
+        } else {
+          return { startLine: firstBatchSize + 1, endLine: totalLines }
+        }
+      }
+      // Level 1: one line at a time
       const startLine = Math.max(currentLine, 1)
       const endLine = Math.min(startLine + linesPerTask - 1, totalLines)
       return { startLine, endLine }
@@ -647,16 +679,44 @@ async function getLineRangeForStage(
   switch (stage) {
     // ===== ЭТАПЫ ИЗУЧЕНИЯ (по группам строк) =====
     case StageNumber.STAGE_1_1:
-      // Изучение строк 1-7: сдаём по linesPerTask за раз
+      // Изучение строк 1-7
       {
+        // Level 3: все 7 строк сразу
+        if (groupLevel === GroupLevel.LEVEL_3) {
+          return { startLine: 1, endLine: firstHalfEnd }
+        }
+        // Level 2: делим на 3+4 (первый батч 3 строки, второй батч 4 строки)
+        if (groupLevel === GroupLevel.LEVEL_2) {
+          const firstBatchEnd = 3 // lines 1-3
+          if (currentLine <= firstBatchEnd) {
+            return { startLine: 1, endLine: firstBatchEnd }
+          } else {
+            return { startLine: firstBatchEnd + 1, endLine: firstHalfEnd } // lines 4-7
+          }
+        }
+        // Level 1: по одной строке
         const startLine = Math.max(currentLine, 1)
         const endLine = Math.min(startLine + linesPerTask - 1, firstHalfEnd)
         return { startLine, endLine }
       }
 
     case StageNumber.STAGE_2_1:
-      // Изучение строк 8-15: сдаём по linesPerTask за раз
+      // Изучение строк 8-15 (8 строк)
       {
+        // Level 3: все 8 строк сразу
+        if (groupLevel === GroupLevel.LEVEL_3) {
+          return { startLine: 8, endLine: totalLines }
+        }
+        // Level 2: делим на 4+4 (первый батч 8-11, второй батч 12-15)
+        if (groupLevel === GroupLevel.LEVEL_2) {
+          const midPoint = 8 + Math.floor(secondHalfLines / 2) - 1 // = 11 for 8 lines
+          if (currentLine <= midPoint) {
+            return { startLine: 8, endLine: midPoint }
+          } else {
+            return { startLine: midPoint + 1, endLine: totalLines }
+          }
+        }
+        // Level 1: по одной строке
         const startLine = Math.max(currentLine, 8)
         const endLine = Math.min(startLine + linesPerTask - 1, totalLines)
         return { startLine, endLine }
@@ -1028,7 +1088,7 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
   const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const progressBar = buildProgressBar(parseInt(progressPercent))
 
-  // Calculate deadline
+  // Calculate deadline (only show warning if deadlineEnabled)
   const now = new Date()
   const deadline = new Date(task.deadline)
   const timeLeft = deadline.getTime() - now.getTime()
@@ -1044,9 +1104,18 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
     month: 'short',
     timeZone: 'Asia/Bishkek'
   })
-  const deadlineStr = timeLeft > 0
-    ? `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
-    : `⚠️ <b>Срок истёк!</b>`
+
+  // If deadlines are disabled, show time for info only (no warning)
+  const deadlineEnabled = group.deadlineEnabled ?? true
+  let deadlineStr: string
+  if (timeLeft > 0) {
+    deadlineStr = `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
+  } else if (deadlineEnabled) {
+    deadlineStr = `⚠️ <b>Срок истёк!</b>`
+  } else {
+    // Deadline passed but not enforced - show info only
+    deadlineStr = `ℹ️ Время: <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
+  }
 
   // Build format hint
   let formatHint = ''
@@ -1975,14 +2044,50 @@ async function advanceStudentProgress(studentId: string, task: any): Promise<voi
     if (isLearningStage) {
       // ===== ЭТАПЫ ИЗУЧЕНИЯ (1.1, 2.1) =====
       // Проверяем есть ли ещё строки для изучения в текущем этапе
-      const nextLineInStage = task.endLine + 1
       const stageEndLine = currentStage === StageNumber.STAGE_1_1 ? firstHalfEnd : totalLines
+      const stageStartLine = currentStage === StageNumber.STAGE_1_1 ? 1 : 8
+      const stageTotalLines = stageEndLine - stageStartLine + 1
 
-      if (nextLineInStage <= stageEndLine) {
+      // Определяем следующий батч на основе уровня
+      let hasMoreBatches = false
+      let nextBatchStart = 0
+      let nextBatchEnd = 0
+
+      if (group.level === GroupLevel.LEVEL_3) {
+        // Level 3: один батч на весь этап
+        hasMoreBatches = false
+      } else if (group.level === GroupLevel.LEVEL_2) {
+        // Level 2: два батча
+        if (currentStage === StageNumber.STAGE_1_1) {
+          // Stage 1.1: 3+4 (строки 1-3, затем 4-7)
+          if (task.endLine <= 3) {
+            hasMoreBatches = true
+            nextBatchStart = 4
+            nextBatchEnd = firstHalfEnd
+          }
+        } else {
+          // Stage 2.1: 4+4 (строки 8-11, затем 12-15)
+          const midPoint = 8 + Math.floor((totalLines - 7) / 2) - 1 // = 11
+          if (task.endLine <= midPoint) {
+            hasMoreBatches = true
+            nextBatchStart = midPoint + 1
+            nextBatchEnd = totalLines
+          }
+        }
+      } else {
+        // Level 1: по одной строке
+        const nextLineInStage = task.endLine + 1
+        if (nextLineInStage <= stageEndLine) {
+          hasMoreBatches = true
+          nextBatchStart = nextLineInStage
+          nextBatchEnd = nextLineInStage
+        }
+      }
+
+      if (hasMoreBatches) {
         // Ещё есть строки - продвигаемся к следующей группе строк
-        newLine = nextLineInStage
-        const lineEnd = Math.min(newLine + linesPerTask - 1, stageEndLine)
-        const lineRange = newLine === lineEnd ? `строка ${newLine}` : `строки ${newLine}-${lineEnd}`
+        newLine = nextBatchStart
+        const lineRange = nextBatchStart === nextBatchEnd ? `строка ${nextBatchStart}` : `строки ${nextBatchStart}-${nextBatchEnd}`
         progressMessage = `📈 <b>Продолжайте изучение!</b>\n\nСледующее задание: ${lineRange}`
       } else {
         // Все строки этапа изучены - переход к соединению
@@ -2373,9 +2478,11 @@ async function handleReviewCallback(
 /**
  * Show mufradat menu - accessible to all students
  */
-async function showMufradatMenu(ctx: BotContext, user: any): Promise<void> {
-  // First, try to find a TRANSLATION group for this student
-  let studentGroup = await prisma.studentGroup.findFirst({
+async function showMufradatMenu(ctx: BotContext, user: any, offset: number = 0): Promise<void> {
+  const { getTranslationPageSelectKeyboard } = await import('../keyboards/main-menu')
+
+  // Get student's TRANSLATION group to get settings
+  const translationGroup = await prisma.studentGroup.findFirst({
     where: {
       studentId: user.id,
       isActive: true,
@@ -2384,41 +2491,109 @@ async function showMufradatMenu(ctx: BotContext, user: any): Promise<void> {
     include: { group: true }
   })
 
-  // If no TRANSLATION group, use MEMORIZATION group for context
-  if (!studentGroup) {
-    studentGroup = await prisma.studentGroup.findFirst({
-      where: {
-        studentId: user.id,
-        isActive: true,
-        group: { lessonType: LessonType.MEMORIZATION }
-      },
-      include: { group: true }
-    })
-  }
+  // Get student's MEMORIZATION group progress to determine learned pages
+  const memorizationGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.MEMORIZATION }
+    },
+    include: { group: true }
+  })
 
-  // If student has a group, show mufradat game menu
-  if (studentGroup) {
-    await showMufradatGameMenu(ctx, user, studentGroup)
+  // Use memorization progress or fallback to user's progress
+  const currentPage = memorizationGroup?.currentPage ?? user.currentPage
+  const groupId = translationGroup?.groupId || memorizationGroup?.groupId
+
+  if (!groupId) {
+    // No groups - show generic info
+    const message = `📝 <b>Переводы (Муфрадат)</b>\n\n` +
+      `🎮 Игра «Угадай слово» для изучения арабских слов.\n\n` +
+      `❗ <i>Чтобы играть, нужно присоединиться к группе.</i>`
+
+    try {
+      await ctx.editMessageText(message, {
+        parse_mode: 'HTML',
+        reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+      })
+    } catch {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+      })
+    }
     return
   }
 
-  // No groups - show generic mufradat info
-  const message = `📝 <b>Переводы (Муфрадат)</b>\n\n` +
-    `🎮 Игра «Угадай слово» для изучения арабских слов.\n\n` +
-    `❗ <i>Чтобы играть, нужно присоединиться к группе.</i>\n\n` +
-    `Используйте кнопку "📚 Мои группы" для просмотра групп.`
+  // Learned pages are all pages before current page (pages 1 to currentPage-1)
+  // If currentPage is 1, we still allow page 1
+  const learnedPages: number[] = []
+  const maxPage = Math.max(currentPage - 1, 1) // At least page 1
+  for (let i = 1; i <= maxPage; i++) {
+    learnedPages.push(i)
+  }
+
+  // Get today's date for daily progress
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  // Get today's progress for all pages
+  const todayProgress = await prisma.translationPageProgress.findMany({
+    where: {
+      studentId: user.id,
+      groupId,
+      date: today,
+    },
+    select: {
+      pageNumber: true,
+      bestScore: true,
+    }
+  })
+
+  // Build progress map
+  const pageProgress = new Map<number, number>()
+  for (const p of todayProgress) {
+    pageProgress.set(p.pageNumber, p.bestScore)
+  }
+
+  // Calculate overall stats for today
+  const pagesCompleted = todayProgress.filter(p => p.bestScore >= 80).length
+  const totalPages = learnedPages.length
+  const avgScore = todayProgress.length > 0
+    ? Math.round(todayProgress.reduce((sum, p) => sum + p.bestScore, 0) / todayProgress.length)
+    : 0
+
+  // Get total words learned stats (all time)
+  const allTimeStats = await prisma.translationPageProgress.aggregate({
+    where: { studentId: user.id },
+    _sum: { wordsCorrect: true },
+    _count: true,
+  })
+
+  let message = `📝 <b>Переводы (Муфрадат)</b>\n\n`
+  message += `📊 <b>Сегодня:</b>\n`
+  message += `   Страниц пройдено: ${pagesCompleted}/${totalPages}\n`
+  if (todayProgress.length > 0) {
+    message += `   Средний балл: ${avgScore}%\n`
+  }
+  message += `\n`
+  message += `📚 <b>Всего изучено:</b> ${allTimeStats._sum.wordsCorrect ?? 0} слов\n\n`
+  message += `<i>Выберите страницу для практики:</i>\n`
+  message += `<i>(✅ = пройдено сегодня, % = текущий прогресс)</i>`
+
+  const keyboard = getTranslationPageSelectKeyboard(learnedPages, offset, 15, pageProgress)
 
   try {
     await ctx.editMessageText(message, {
       parse_mode: 'HTML',
-      reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+      reply_markup: keyboard
     })
   } catch (error: any) {
     if (error?.description?.includes("can't be edited") ||
         error?.description?.includes('message to edit not found')) {
       await ctx.reply(message, {
         parse_mode: 'HTML',
-        reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+        reply_markup: keyboard
       })
     }
   }
@@ -3662,6 +3837,145 @@ async function handleMufradatCallback(
       break
     default:
       await ctx.answerCallbackQuery({ text: 'Неизвестное действие игры' })
+  }
+}
+
+// ============== TRANSLATION HANDLERS ==============
+
+async function handleTranslationCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  value?: string
+): Promise<void> {
+  switch (action) {
+    case 'offset':
+      // Pagination - value is offset
+      if (value) {
+        await showMufradatMenu(ctx, user, parseInt(value))
+      }
+      break
+    case 'page':
+      // Start game for specific page
+      if (value) {
+        await startTranslationGameForPage(ctx, user, parseInt(value))
+      }
+      break
+    case 'stats':
+      // Show detailed stats
+      await showTranslationDetailedStats(ctx, user)
+      break
+    default:
+      await ctx.answerCallbackQuery({ text: 'Неизвестное действие' })
+  }
+}
+
+/**
+ * Start translation game for a specific page
+ */
+async function startTranslationGameForPage(ctx: BotContext, user: any, pageNumber: number): Promise<void> {
+  // Get student's group
+  let studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      isActive: true,
+      group: { lessonType: LessonType.TRANSLATION }
+    },
+    include: { group: true }
+  })
+
+  if (!studentGroup) {
+    studentGroup = await prisma.studentGroup.findFirst({
+      where: {
+        studentId: user.id,
+        isActive: true,
+        group: { lessonType: LessonType.MEMORIZATION }
+      },
+      include: { group: true }
+    })
+  }
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена', show_alert: true })
+    return
+  }
+
+  // Store selected page in session for game
+  ctx.session.translationSelectedPage = pageNumber
+
+  // Start the mufradat game with pageNumber context
+  await startMufradatGame(ctx, user, studentGroup.groupId, pageNumber)
+}
+
+/**
+ * Show detailed translation statistics
+ */
+async function showTranslationDetailedStats(ctx: BotContext, user: any): Promise<void> {
+  // Get all-time stats
+  const allTimeProgress = await prisma.translationPageProgress.groupBy({
+    by: ['pageNumber'],
+    where: { studentId: user.id },
+    _sum: { wordsCorrect: true, wordsWrong: true, attempts: true },
+    _max: { bestScore: true },
+  })
+
+  // Get today's stats
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const todayProgress = await prisma.translationPageProgress.findMany({
+    where: {
+      studentId: user.id,
+      date: today,
+    },
+    select: {
+      pageNumber: true,
+      wordsCorrect: true,
+      wordsWrong: true,
+      bestScore: true,
+      attempts: true,
+    }
+  })
+
+  // Calculate totals
+  const totalWordsLearned = allTimeProgress.reduce((sum, p) => sum + (p._sum.wordsCorrect ?? 0), 0)
+  const totalAttempts = allTimeProgress.reduce((sum, p) => sum + (p._sum.attempts ?? 0), 0)
+  const pagesStudied = allTimeProgress.length
+  const todayPagesStudied = todayProgress.filter(p => p.bestScore > 0).length
+  const todayWordsLearned = todayProgress.reduce((sum, p) => sum + p.wordsCorrect, 0)
+
+  let message = `📊 <b>Статистика переводов</b>\n\n`
+  message += `<b>📅 Сегодня:</b>\n`
+  message += `   Страниц изучено: ${todayPagesStudied}\n`
+  message += `   Слов выучено: ${todayWordsLearned}\n\n`
+  message += `<b>📚 Всего:</b>\n`
+  message += `   Страниц изучено: ${pagesStudied}\n`
+  message += `   Слов выучено: ${totalWordsLearned}\n`
+  message += `   Попыток: ${totalAttempts}\n\n`
+
+  if (todayProgress.length > 0) {
+    message += `<b>📈 Результаты сегодня:</b>\n`
+    for (const p of todayProgress.slice(0, 10)) {
+      const bar = buildProgressBar(p.bestScore)
+      message += `   Стр. ${p.pageNumber}: ${bar}\n`
+    }
+    if (todayProgress.length > 10) {
+      message += `   <i>... и ещё ${todayProgress.length - 10} страниц</i>\n`
+    }
+  }
+
+  const keyboard = getBackKeyboard('student:mufradat', '◀️ Назад к страницам')
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch {
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
   }
 }
 

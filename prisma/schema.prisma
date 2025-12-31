@@ -128,6 +128,7 @@ model Group {
   stage1Hours          Int                   @default(24)
   stage2Hours          Int                   @default(48)
   stage3Hours          Int                   @default(48)
+  deadlineEnabled      Boolean               @default(true)
   wordsPassThreshold   Int                   @default(8)
   wordsPerDay          Int                   @default(10)
   mufradatTimeLimit    Int                   @default(180)
@@ -140,12 +141,13 @@ model Group {
   revisionAllPages     Boolean               @default(false) // If true, student must revise all pages up to their progress
   revisionButtonOnly   Boolean               @default(false) // If true, no voice needed - just click button to mark as revised
 
-  ustaz                User                  @relation(fields: [ustazId], references: [id])
-  lessons              Lesson[]
-  mufradatGameSessions MufradatGameSession[]
-  revisionLogs         DailyRevisionLog[]
-  students             StudentGroup[]
-  tasks                Task[]
+  ustaz                    User                      @relation(fields: [ustazId], references: [id])
+  lessons                  Lesson[]
+  mufradatGameSessions     MufradatGameSession[]
+  translationPageProgress  TranslationPageProgress[]
+  revisionLogs             DailyRevisionLog[]
+  students                 StudentGroup[]
+  tasks                    Task[]
 
   @@index([lessonType])
   @@index([ustazId])
@@ -181,6 +183,7 @@ model MufradatGameSession {
   studentId    String
   groupId      String
   taskId       String?
+  pageNumber   Int?     // For page-based translation practice
   words        String
   currentIndex Int      @default(0)
   correctCount Int      @default(0)
@@ -193,7 +196,7 @@ model MufradatGameSession {
   group        Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
   student      User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
-  @@unique([studentId, isActive])
+  @@index([studentId, isActive])
   @@index([isActive])
   @@index([studentId])
 }
@@ -214,6 +217,31 @@ model MufradatSubmission {
   @@index([date])
   @@index([passed])
   @@index([studentId])
+}
+
+// Daily translation page progress - tracks word learning per page, resets daily
+model TranslationPageProgress {
+  id              String   @id @default(cuid())
+  studentId       String
+  groupId         String
+  pageNumber      Int
+  date            DateTime @db.Date    // Daily reset - new record each day
+  wordsTotal      Int      @default(0) // Total words available on this page
+  wordsCorrect    Int      @default(0) // Words correctly answered today
+  wordsWrong      Int      @default(0) // Words answered incorrectly today
+  attempts        Int      @default(0) // Number of game attempts today
+  bestScore       Int      @default(0) // Best score % today (0-100)
+  lastPlayedAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  student         User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  group           Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, groupId, pageNumber, date])
+  @@index([studentId, date])
+  @@index([groupId])
+  @@index([pageNumber])
 }
 
 model QRCPreCheck {
@@ -410,11 +438,12 @@ model User {
   passwordHash         String?
   gender               Gender?
   authTokens           AuthToken[]
-  ustazGroups          Group[]
-  mufradatGameSessions MufradatGameSession[]
-  mufradatSubmissions  MufradatSubmission[]
-  revisionLogs         DailyRevisionLog[]
-  revisionSubmissions  RevisionSubmission[]
+  ustazGroups              Group[]
+  mufradatGameSessions     MufradatGameSession[]
+  mufradatSubmissions      MufradatSubmission[]
+  translationPageProgress  TranslationPageProgress[]
+  revisionLogs             DailyRevisionLog[]
+  revisionSubmissions      RevisionSubmission[]
   studentGroups        StudentGroup[]
   submissions          Submission[]
   tasks                Task[]

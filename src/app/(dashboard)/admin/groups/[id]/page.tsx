@@ -135,6 +135,7 @@ interface GroupData {
   stage1Hours: number
   stage2Hours: number
   stage3Hours: number
+  deadlineEnabled: boolean
   allowVoice: boolean
   allowVideoNote: boolean
   allowText: boolean
@@ -253,6 +254,7 @@ export default function EditGroupPage() {
     stage1Hours: 24,  // 24 часа = 1 день
     stage2Hours: 48,  // 48 часов = 2 дня
     stage3Hours: 48,
+    deadlineEnabled: true,
     // REVISION settings (Повторение)
     revisionPagesPerDay: 3,
     revisionAllPages: false,
@@ -319,6 +321,7 @@ export default function EditGroupPage() {
           stage1Hours: groupData.stage1Hours || 24,
           stage2Hours: groupData.stage2Hours || 48,
           stage3Hours: groupData.stage3Hours || 48,
+          deadlineEnabled: groupData.deadlineEnabled ?? true,
           // REVISION settings
           revisionPagesPerDay: groupData.revisionPagesPerDay || 3,
           revisionAllPages: groupData.revisionAllPages ?? false,
@@ -385,6 +388,7 @@ export default function EditGroupPage() {
           stage1Hours: formData.stage1Hours,
           stage2Hours: formData.stage2Hours,
           stage3Hours: formData.stage3Hours,
+          deadlineEnabled: formData.deadlineEnabled,
           // REVISION settings
           revisionPagesPerDay: formData.revisionPagesPerDay,
           revisionAllPages: formData.revisionAllPages,
@@ -470,6 +474,7 @@ export default function EditGroupPage() {
           stage1Hours: formData.stage1Hours,
           stage2Hours: formData.stage2Hours,
           stage3Hours: formData.stage3Hours,
+          deadlineEnabled: formData.deadlineEnabled,
           // REVISION settings
           revisionPagesPerDay: formData.revisionPagesPerDay,
           revisionAllPages: formData.revisionAllPages,
@@ -947,11 +952,31 @@ export default function EditGroupPage() {
                 <p className="text-xs text-muted-foreground">Сколько раз студент должен повторить строку для заучивания</p>
               </div>
 
+              {/* Deadline Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-lg border bg-background">
+                <div className="space-y-0.5">
+                  <Label htmlFor="deadlineEnabled" className="flex items-center gap-2">
+                    <Clock className="h-4 w-4 text-amber-500" />
+                    Включить дедлайны
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {formData.deadlineEnabled
+                      ? 'Студенты должны сдавать работы вовремя'
+                      : 'Студенты могут сдавать в любое время (время фиксируется для статистики)'}
+                  </p>
+                </div>
+                <Switch
+                  id="deadlineEnabled"
+                  checked={formData.deadlineEnabled}
+                  onCheckedChange={(checked) => setFormData({ ...formData, deadlineEnabled: checked })}
+                />
+              </div>
+
               {/* Hours per Stage */}
-              <div className="space-y-2">
+              <div className={`space-y-2 ${!formData.deadlineEnabled ? 'opacity-50' : ''}`}>
                 <Label className="flex items-center gap-2">
                   <Clock className="h-4 w-4" />
-                  Часов на этап (время в зависимости от уровня)
+                  Часов на этап {!formData.deadlineEnabled && '(только для статистики)'}
                 </Label>
                 <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-1">

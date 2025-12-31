@@ -508,6 +508,77 @@ export function getProgressStageKeyboard(selectedPage: number, selectedLine: num
     .text('◀️ Назад к строке', `reg:back_to_progress_line:${selectedPage}`)
 }
 
+// ============== TRANSLATION KEYBOARDS ==============
+
+/**
+ * Keyboard for selecting a page to practice translations
+ * Shows pages with completion percentages
+ * @param learnedPages - pages the student has completed (up to current page - 1)
+ * @param pageProgress - map of pageNumber to percentage completion today
+ */
+export function getTranslationPageSelectKeyboard(
+  learnedPages: number[],
+  currentOffset: number = 0,
+  pageSize: number = 15,
+  pageProgress: Map<number, number> = new Map()
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  // Get slice of pages to show
+  const pagesToShow = learnedPages.slice(currentOffset, currentOffset + pageSize)
+
+  // Create rows of 5 buttons
+  let row: { text: string; callback: string }[] = []
+  for (const page of pagesToShow) {
+    const percent = pageProgress.get(page) ?? 0
+    // Show emoji based on completion: ✅ = 100%, partial shows %
+    let text: string
+    if (percent >= 100) {
+      text = `✅${page}`
+    } else if (percent > 0) {
+      text = `${page}(${percent}%)`
+    } else {
+      text = String(page)
+    }
+    row.push({ text, callback: `translation:page:${page}` })
+    if (row.length === 5) {
+      for (const btn of row) {
+        keyboard.text(btn.text, btn.callback)
+      }
+      keyboard.row()
+      row = []
+    }
+  }
+  // Add remaining buttons
+  if (row.length > 0) {
+    for (const btn of row) {
+      keyboard.text(btn.text, btn.callback)
+    }
+    keyboard.row()
+  }
+
+  // Pagination
+  const hasMore = learnedPages.length > currentOffset + pageSize
+  const hasPrev = currentOffset > 0
+
+  if (hasPrev || hasMore) {
+    if (hasPrev) {
+      keyboard.text('◀️', `translation:offset:${currentOffset - pageSize}`)
+    }
+    keyboard.text(`${Math.floor(currentOffset / pageSize) + 1}/${Math.ceil(learnedPages.length / pageSize)}`, 'noop')
+    if (hasMore) {
+      keyboard.text('▶️', `translation:offset:${currentOffset + pageSize}`)
+    }
+    keyboard.row()
+  }
+
+  // Stats button and back
+  keyboard.text('📊 Статистика', 'translation:stats').row()
+  keyboard.text('◀️ Назад', 'student:menu')
+
+  return keyboard
+}
+
 // ============== REVISION KEYBOARDS ==============
 
 /**

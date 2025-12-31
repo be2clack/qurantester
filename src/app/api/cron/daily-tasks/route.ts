@@ -20,11 +20,29 @@ export async function POST(req: NextRequest) {
       updatedStats: 0,
     }
 
-    // 1. Mark expired tasks as FAILED
+    // 1. Mark expired tasks as FAILED (only for groups with deadlineEnabled)
+    // First, get all tasks that are expired AND belong to groups with deadlines enabled
     const expiredTasks = await prisma.task.updateMany({
       where: {
         status: TaskStatus.IN_PROGRESS,
-        deadline: { lt: new Date() }
+        deadline: { lt: new Date() },
+        // Only fail tasks from groups where deadlines are enabled
+        OR: [
+          // Tasks linked to a group directly
+          {
+            group: {
+              deadlineEnabled: true
+            }
+          },
+          // Tasks linked through a lesson
+          {
+            lesson: {
+              group: {
+                deadlineEnabled: true
+              }
+            }
+          }
+        ]
       },
       data: {
         status: TaskStatus.FAILED
