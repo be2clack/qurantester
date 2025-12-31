@@ -855,10 +855,14 @@ export async function processSubmissionAndNotify(
     const verificationMode = group.verificationMode || 'MANUAL'
     const aiProvider = group.aiProvider || 'NONE'
 
-    // Run AI verification if enabled and submission has audio
+    // AI verification only for learning stages (1.1 and 2.1)
+    // Connection stages (1.2, 2.2) and full page stage (3) - manual review only
+    const isLearningStage = task.stage === 'STAGE_1_1' || task.stage === 'STAGE_2_1'
+
+    // Run AI verification if enabled, submission has audio, AND it's a learning stage
     let aiResult: { score: number; transcript: string; errors: any[] } | null = null
 
-    if (aiProvider !== 'NONE' && (submission.fileType === 'voice' || submission.fileType === 'video_note') && submission.fileId) {
+    if (aiProvider !== 'NONE' && isLearningStage && (submission.fileType === 'voice' || submission.fileType === 'video_note') && submission.fileId) {
       try {
         if (aiProvider === 'QURANI_AI') {
           console.log('[AI] Processing submission with Qurani.ai QRC...')
@@ -1262,6 +1266,7 @@ async function notifyUstazAboutSubmission(
 /**
  * Show a specific submission to ustaz with review buttons
  * Called when starting review or showing next in queue
+ * Returns delivery record ID if successful, null if failed
  */
 async function showSubmissionToUstaz(
   ustazChatId: number,
@@ -1269,10 +1274,27 @@ async function showSubmissionToUstaz(
   task: any,
   student: any,
   group: any
-): Promise<void> {
+): Promise<string | null> {
   const { bot } = await import('../bot')
   const { InlineKeyboard } = await import('grammy')
   const { trackMessageForChat } = await import('../utils/message-cleaner')
+
+  // Create or update delivery tracking record
+  let deliveryRecord = await prisma.submissionDelivery.upsert({
+    where: { submissionId: submission.id },
+    create: {
+      submissionId: submission.id,
+      studentId: student.id,
+      ustazId: group.ustaz.id,
+      deliveryAttempts: 1,
+      lastAttemptAt: new Date(),
+    },
+    update: {
+      deliveryAttempts: { increment: 1 },
+      lastAttemptAt: new Date(),
+      lastError: null, // Clear previous error on retry
+    }
+  })
 
   // Get queue count for header
   const groups = await prisma.group.findMany({
@@ -1364,30 +1386,61 @@ async function showSubmissionToUstaz(
   }
 
   // Send the file with caption and review buttons
-  if (submission.fileType === 'voice') {
-    const sentMsg = await bot.api.sendVoice(ustazChatId, submission.fileId, {
-      caption,
-      parse_mode: 'HTML',
-      reply_markup: reviewKeyboard
+  // Track delivery success/failure
+  try {
+    let ustazMessageId: number | null = null
+
+    if (submission.fileType === 'voice') {
+      const sentMsg = await bot.api.sendVoice(ustazChatId, submission.fileId, {
+        caption,
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+      ustazMessageId = sentMsg.message_id
+      await trackMessageForChat(ustazChatId, sentMsg.message_id, group.ustaz.id, 'submission_review')
+    } else if (submission.fileType === 'video_note') {
+      const videoMsg = await bot.api.sendVideoNote(ustazChatId, submission.fileId)
+      ustazMessageId = videoMsg.message_id
+      await trackMessageForChat(ustazChatId, videoMsg.message_id, group.ustaz.id, 'submission_review')
+      const captionMsg = await bot.api.sendMessage(ustazChatId, caption, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard,
+        reply_parameters: { message_id: videoMsg.message_id }
+      })
+      await trackMessageForChat(ustazChatId, captionMsg.message_id, group.ustaz.id, 'submission_review')
+    } else if (submission.fileType === 'text') {
+      const textContent = submission.fileId.replace('text:', '')
+      const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
+      const sentMsg = await bot.api.sendMessage(ustazChatId, textMessage, {
+        parse_mode: 'HTML',
+        reply_markup: reviewKeyboard
+      })
+      ustazMessageId = sentMsg.message_id
+      await trackMessageForChat(ustazChatId, sentMsg.message_id, group.ustaz.id, 'submission_review')
+    }
+
+    // Mark delivery as successful
+    await prisma.submissionDelivery.update({
+      where: { id: deliveryRecord.id },
+      data: {
+        sentToUstaz: true,
+        ustazMessageId: ustazMessageId ? BigInt(ustazMessageId) : null,
+        deliveredAt: new Date(),
+      }
     })
-    await trackMessageForChat(ustazChatId, sentMsg.message_id, group.ustaz.id, 'submission_review')
-  } else if (submission.fileType === 'video_note') {
-    const videoMsg = await bot.api.sendVideoNote(ustazChatId, submission.fileId)
-    await trackMessageForChat(ustazChatId, videoMsg.message_id, group.ustaz.id, 'submission_review')
-    const captionMsg = await bot.api.sendMessage(ustazChatId, caption, {
-      parse_mode: 'HTML',
-      reply_markup: reviewKeyboard,
-      reply_parameters: { message_id: videoMsg.message_id }
+
+    return deliveryRecord.id
+  } catch (error: any) {
+    // Mark delivery as failed
+    console.error(`[Delivery] Failed to send to ustaz ${ustazChatId}:`, error.message)
+    await prisma.submissionDelivery.update({
+      where: { id: deliveryRecord.id },
+      data: {
+        sentToUstaz: false,
+        lastError: error.message?.substring(0, 500) || 'Unknown error',
+      }
     })
-    await trackMessageForChat(ustazChatId, captionMsg.message_id, group.ustaz.id, 'submission_review')
-  } else if (submission.fileType === 'text') {
-    const textContent = submission.fileId.replace('text:', '')
-    const textMessage = caption + `\n\n💬 <i>${textContent}</i>`
-    const sentMsg = await bot.api.sendMessage(ustazChatId, textMessage, {
-      parse_mode: 'HTML',
-      reply_markup: reviewKeyboard
-    })
-    await trackMessageForChat(ustazChatId, sentMsg.message_id, group.ustaz.id, 'submission_review')
+    return null
   }
 }
 
@@ -1450,6 +1503,141 @@ export async function showNextPendingSubmissionToUstaz(ustazChatId: number, usta
   } catch (error) {
     console.error('Failed to show next submission:', error)
     return false
+  }
+}
+
+// ============== DELIVERY STATUS CHECK ==============
+
+/**
+ * Check delivery status for student's pending submissions
+ * Returns info about failed deliveries and allows retry
+ */
+export async function checkDeliveryStatus(studentId: string): Promise<{
+  totalPending: number
+  delivered: number
+  failed: number
+  failedSubmissions: Array<{
+    id: string
+    submissionId: string
+    pageNumber: number
+    startLine: number
+    endLine: number
+    error: string | null
+    attempts: number
+    lastAttemptAt: Date | null
+  }>
+}> {
+  // Get all pending submissions for this student
+  const pendingSubmissions = await prisma.submission.findMany({
+    where: {
+      studentId,
+      status: SubmissionStatus.PENDING,
+    },
+    include: {
+      task: {
+        select: {
+          page: { select: { pageNumber: true } },
+          startLine: true,
+          endLine: true,
+        }
+      },
+      delivery: true,
+    }
+  })
+
+  const totalPending = pendingSubmissions.length
+  let delivered = 0
+  let failed = 0
+  const failedSubmissions: Array<{
+    id: string
+    submissionId: string
+    pageNumber: number
+    startLine: number
+    endLine: number
+    error: string | null
+    attempts: number
+    lastAttemptAt: Date | null
+  }> = []
+
+  for (const sub of pendingSubmissions) {
+    if (sub.delivery) {
+      if (sub.delivery.sentToUstaz) {
+        delivered++
+      } else if (sub.delivery.deliveryAttempts > 0) {
+        failed++
+        failedSubmissions.push({
+          id: sub.delivery.id,
+          submissionId: sub.id,
+          pageNumber: sub.task?.page?.pageNumber || 0,
+          startLine: sub.task?.startLine || 0,
+          endLine: sub.task?.endLine || 0,
+          error: sub.delivery.lastError,
+          attempts: sub.delivery.deliveryAttempts,
+          lastAttemptAt: sub.delivery.lastAttemptAt,
+        })
+      }
+    }
+  }
+
+  return { totalPending, delivered, failed, failedSubmissions }
+}
+
+/**
+ * Retry failed delivery for a specific submission
+ */
+export async function retryDelivery(submissionId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const submission = await prisma.submission.findUnique({
+      where: { id: submissionId },
+      include: {
+        student: true,
+        task: {
+          include: {
+            page: true,
+            group: { include: { ustaz: true } },
+            lesson: { include: { group: { include: { ustaz: true } } } },
+          }
+        }
+      }
+    })
+
+    if (!submission) {
+      return { success: false, error: 'Работа не найдена' }
+    }
+
+    const task = submission.task
+    const group = task?.group || task?.lesson?.group
+    const ustaz = group?.ustaz
+
+    if (!ustaz?.telegramId) {
+      return { success: false, error: 'Устаз не найден' }
+    }
+
+    const ustazChatId = Number(ustaz.telegramId)
+    const botToken = process.env.TELEGRAM_BOT_TOKEN
+
+    // Delete any old messages from previous attempts
+    if (botToken) {
+      await deleteMessagesByTypeForChat(ustazChatId, 'submission_review', botToken)
+    }
+
+    // Retry sending
+    const deliveryId = await showSubmissionToUstaz(
+      ustazChatId,
+      submission,
+      task,
+      submission.student,
+      { ...group, ustaz }
+    )
+
+    if (deliveryId) {
+      return { success: true }
+    } else {
+      return { success: false, error: 'Не удалось отправить' }
+    }
+  } catch (error: any) {
+    console.error('[Delivery] Retry failed:', error)
+    return { success: false, error: error.message || 'Ошибка при повторной отправке' }
   }
 }
 

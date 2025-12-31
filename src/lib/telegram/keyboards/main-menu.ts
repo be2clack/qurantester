@@ -58,6 +58,8 @@ export interface StudentMenuInfo {
   totalTasksCompleted?: number
   // New: lesson types available to student
   lessonTypes?: LessonTypeInfo[]
+  // Sync status - show button if there are pending submissions
+  hasPendingSubmissions?: boolean
 }
 
 /**
@@ -174,6 +176,13 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📚 Мои группы', 'student:groups').row()
         .text('📈 Мой прогресс', 'student:progress')
         .text('📋 История', 'student:tasks').row()
+
+      // Show sync status button if there are pending submissions
+      if (menuInfo?.hasPendingSubmissions) {
+        keyboard.text('🔄 Статус синхронизации', 'student:sync').row()
+      }
+
+      keyboard
         .webApp('📖 Коран', QURAN_WEB_APP_URL)
         .webApp('🌐 Веб', WEB_APP_URL)
       break
@@ -660,6 +669,199 @@ export function getRevisionReviewKeyboard(revisionId: string, studentUsername?: 
   if (studentUsername) {
     keyboard.row().url(`💬 Написать студенту`, `https://t.me/${studentUsername}`)
   }
+
+  return keyboard
+}
+
+// ============== MEMORIZATION STAGE UI ==============
+
+/**
+ * Stage progress info for display
+ */
+export interface StageProgressInfo {
+  stage: string  // STAGE_1_1, STAGE_1_2, etc
+  totalLines: number
+  completedLines: number
+  hasActiveTask: boolean
+  isCurrentStage: boolean
+  status: 'completed' | 'in_progress' | 'pending' | 'locked'
+}
+
+/**
+ * Line progress info for display
+ */
+export interface LineProgressInfo {
+  lineNumber: number
+  status: 'not_started' | 'in_progress' | 'pending' | 'completed' | 'failed'
+  passedCount: number
+  requiredCount: number
+  isActive: boolean  // Can be clicked
+}
+
+/**
+ * Get stage display name (short)
+ */
+export function getStageShortName(stage: string): string {
+  const names: Record<string, string> = {
+    STAGE_1_1: 'Заучивание (1.1)',
+    STAGE_1_2: 'Соединение (1.2)',
+    STAGE_2_1: 'Заучивание (2.1)',
+    STAGE_2_2: 'Соединение (2.2)',
+    STAGE_3: 'Повторение (3)',
+  }
+  return names[stage] || stage
+}
+
+/**
+ * Get status icon for stage
+ */
+export function getStageStatusIcon(status: string): string {
+  switch (status) {
+    case 'completed': return '✅'
+    case 'in_progress': return '📝'
+    case 'pending': return '⏳'
+    case 'locked': return '🔒'
+    default: return '📖'
+  }
+}
+
+/**
+ * Get status icon for line
+ */
+export function getLineStatusIcon(status: string): string {
+  switch (status) {
+    case 'completed': return '✅'
+    case 'in_progress': return '📝'
+    case 'pending': return '⏳'
+    case 'failed': return '❌'
+    case 'not_started': return '○'
+    default: return '○'
+  }
+}
+
+/**
+ * Keyboard for showing memorization stages for a page
+ */
+export function getMemorizationStagesKeyboard(
+  groupId: string,
+  pageNumber: number,
+  surahName: string,
+  stages: StageProgressInfo[],
+  currentStageName: string
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  for (const stage of stages) {
+    const icon = getStageStatusIcon(stage.status)
+    const name = getStageShortName(stage.stage)
+
+    // Show progress for learning stages (1.1, 2.1)
+    let label: string
+    const isLearningStage = stage.stage === 'STAGE_1_1' || stage.stage === 'STAGE_2_1'
+
+    if (isLearningStage && stage.totalLines > 0) {
+      label = `${icon} ${name} (${stage.completedLines}/${stage.totalLines})`
+    } else if (stage.status === 'completed') {
+      label = `${icon} ${name}`
+    } else if (stage.status === 'pending') {
+      label = `${icon} ${name} ⏳`
+    } else if (stage.status === 'locked') {
+      label = `🔒 ${name}`
+    } else {
+      label = `${icon} ${name}`
+    }
+
+    // Locked stages are not clickable
+    if (stage.status === 'locked') {
+      keyboard.text(label, 'noop').row()
+    } else {
+      keyboard.text(label, `mem_stage:${groupId}:${pageNumber}:${stage.stage}`).row()
+    }
+  }
+
+  keyboard.text('◀️ В меню', 'student:menu')
+
+  return keyboard
+}
+
+/**
+ * Keyboard for showing lines within a learning stage (1.1 or 2.1)
+ */
+export function getMemorizationLinesKeyboard(
+  groupId: string,
+  pageNumber: number,
+  stage: string,
+  lines: LineProgressInfo[]
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  // Show lines in rows of 4
+  let row: LineProgressInfo[] = []
+  for (const line of lines) {
+    row.push(line)
+    if (row.length === 4) {
+      for (const l of row) {
+        const icon = getLineStatusIcon(l.status)
+        const label = `${icon} ${l.lineNumber}`
+        if (l.isActive) {
+          keyboard.text(label, `mem_line:${groupId}:${pageNumber}:${stage}:${l.lineNumber}`)
+        } else {
+          keyboard.text(label, 'noop')
+        }
+      }
+      keyboard.row()
+      row = []
+    }
+  }
+  // Add remaining buttons
+  if (row.length > 0) {
+    for (const l of row) {
+      const icon = getLineStatusIcon(l.status)
+      const label = `${icon} ${l.lineNumber}`
+      if (l.isActive) {
+        keyboard.text(label, `mem_line:${groupId}:${pageNumber}:${stage}:${l.lineNumber}`)
+      } else {
+        keyboard.text(label, 'noop')
+      }
+    }
+    keyboard.row()
+  }
+
+  keyboard.text('◀️ К этапам', `mem_stages:${groupId}:${pageNumber}`)
+
+  return keyboard
+}
+
+/**
+ * Keyboard for connection/full page stages (1.2, 2.2, 3)
+ * These stages don't have individual lines - just start submission
+ */
+export function getMemorizationConnectionKeyboard(
+  groupId: string,
+  pageNumber: number,
+  stage: string,
+  passedCount: number,
+  requiredCount: number,
+  pendingCount: number,
+  status: 'not_started' | 'in_progress' | 'pending' | 'completed'
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard()
+
+  if (status === 'pending') {
+    keyboard.text('⏳ Ожидает проверку устаза', 'noop').row()
+  } else if (status === 'completed') {
+    keyboard.text('✅ Этап завершён', 'noop').row()
+    keyboard.text('▶️ Следующий этап', `mem_next_stage:${groupId}:${pageNumber}:${stage}`).row()
+  } else {
+    const remaining = requiredCount - passedCount - pendingCount
+    if (remaining > 0) {
+      keyboard.text(`▶️ Начать сдачу (${passedCount}/${requiredCount})`, `mem_start:${groupId}:${pageNumber}:${stage}`).row()
+    } else if (pendingCount > 0) {
+      keyboard.text('⏳ Все отправлено, ждите проверку', 'noop').row()
+    }
+  }
+
+  keyboard.text('◀️ К этапам', `mem_stages:${groupId}:${pageNumber}`)
 
   return keyboard
 }

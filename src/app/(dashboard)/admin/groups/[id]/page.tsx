@@ -265,6 +265,9 @@ export default function EditGroupPage() {
     lessonType: 'MEMORIZATION',
     // MEMORIZATION settings (Заучивание)
     repetitionCount: 80,
+    repetitionCountLearning: 80,    // For stages 1.1, 2.1
+    repetitionCountConnection: 80,  // For stages 1.2, 2.2
+    repetitionCountFull: 80,        // For stage 3
     stage1Hours: 24,  // 24 часа = 1 день
     stage2Hours: 48,  // 48 часов = 2 дня
     stage3Hours: 48,
@@ -332,6 +335,9 @@ export default function EditGroupPage() {
           lessonType: groupData.lessonType || 'MEMORIZATION',
           // MEMORIZATION settings
           repetitionCount: groupData.repetitionCount || 80,
+          repetitionCountLearning: groupData.repetitionCountLearning || groupData.repetitionCount || 80,
+          repetitionCountConnection: groupData.repetitionCountConnection || groupData.repetitionCount || 80,
+          repetitionCountFull: groupData.repetitionCountFull || groupData.repetitionCount || 80,
           stage1Hours: groupData.stage1Hours || 24,
           stage2Hours: groupData.stage2Hours || 48,
           stage3Hours: groupData.stage3Hours || 48,
@@ -399,6 +405,9 @@ export default function EditGroupPage() {
           lessonType: formData.lessonType,
           // MEMORIZATION settings
           repetitionCount: formData.repetitionCount,
+          repetitionCountLearning: formData.repetitionCountLearning,
+          repetitionCountConnection: formData.repetitionCountConnection,
+          repetitionCountFull: formData.repetitionCountFull,
           stage1Hours: formData.stage1Hours,
           stage2Hours: formData.stage2Hours,
           stage3Hours: formData.stage3Hours,
@@ -485,6 +494,9 @@ export default function EditGroupPage() {
           lessonType: formData.lessonType,
           // MEMORIZATION settings
           repetitionCount: formData.repetitionCount,
+          repetitionCountLearning: formData.repetitionCountLearning,
+          repetitionCountConnection: formData.repetitionCountConnection,
+          repetitionCountFull: formData.repetitionCountFull,
           stage1Hours: formData.stage1Hours,
           stage2Hours: formData.stage2Hours,
           stage3Hours: formData.stage3Hours,
@@ -952,18 +964,46 @@ export default function EditGroupPage() {
                 <h4 className="font-semibold text-emerald-800 dark:text-emerald-300">Заучивание</h4>
               </div>
 
-              {/* Repetition Count */}
+              {/* Repetition Counts per Stage Type */}
               <div className="space-y-2">
-                <Label htmlFor="repetitionCount">Количество повторений</Label>
-                <Input
-                  id="repetitionCount"
-                  type="number"
-                  min={1}
-                  max={200}
-                  value={formData.repetitionCount}
-                  onChange={(e) => setFormData({ ...formData, repetitionCount: parseInt(e.target.value) || 80 })}
-                />
-                <p className="text-xs text-muted-foreground">Сколько раз студент должен повторить строку для заучивания</p>
+                <Label className="flex items-center gap-2">
+                  <span>Количество повторений по этапам</span>
+                </Label>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Заучивание (1.1, 2.1)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={formData.repetitionCountLearning}
+                      onChange={(e) => setFormData({ ...formData, repetitionCountLearning: parseInt(e.target.value) || 80 })}
+                    />
+                    <p className="text-xs text-muted-foreground">Построчно</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Соединение (1.2, 2.2)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={formData.repetitionCountConnection}
+                      onChange={(e) => setFormData({ ...formData, repetitionCountConnection: parseInt(e.target.value) || 80 })}
+                    />
+                    <p className="text-xs text-muted-foreground">Половина страницы</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Повторение (3)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={formData.repetitionCountFull}
+                      onChange={(e) => setFormData({ ...formData, repetitionCountFull: parseInt(e.target.value) || 80 })}
+                    />
+                    <p className="text-xs text-muted-foreground">Вся страница</p>
+                  </div>
+                </div>
               </div>
 
               {/* Deadline Toggle */}

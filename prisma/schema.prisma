@@ -105,6 +105,10 @@ model Group {
   updatedAt            DateTime              @updatedAt
   lessonType           LessonType            @default(MEMORIZATION)
   repetitionCount      Int                   @default(80)
+  // Separate repetition counts per stage type
+  repetitionCountLearning    Int             @default(80)  // For stages 1.1, 2.1 (learning individual lines)
+  repetitionCountConnection  Int             @default(80)  // For stages 1.2, 2.2 (connecting lines together)
+  repetitionCountFull        Int             @default(80)  // For stage 3 (full page)
   showText             Boolean               @default(false)
   showImage            Boolean               @default(false)
   showAudio            Boolean               @default(false)
@@ -148,6 +152,9 @@ model Group {
   revisionLogs             DailyRevisionLog[]
   students                 StudentGroup[]
   tasks                    Task[]
+  // New relations for improved memorization tracking
+  pageRevisionStats        PageRevisionStats[]
+  lineProgress             LineProgress[]
 
   @@index([lessonType])
   @@index([ustazId])
@@ -369,6 +376,8 @@ model Submission {
   submissionType String           @default("AUDIO")
   student        User             @relation(fields: [studentId], references: [id], onDelete: Cascade)
   task           Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  // Delivery tracking
+  delivery       SubmissionDelivery?
 
   @@index([status])
   @@index([studentId])
@@ -452,6 +461,11 @@ model User {
   statistics           UserStatistics?
   parentOf             User[]                @relation("ParentChild")
   childOf              User[]                @relation("ParentChild")
+  // New relations for improved memorization tracking
+  pageRevisionStats    PageRevisionStats[]
+  lineProgress         LineProgress[]
+  studentDeliveries    SubmissionDelivery[] @relation("StudentDeliveries")
+  ustazDeliveries      SubmissionDelivery[] @relation("UstazDeliveries")
 
   @@index([phone])
   @@index([role])
@@ -529,9 +543,105 @@ model DailyRevisionLog {
   @@index([groupId, date])
 }
 
+// Page revision statistics - tracks how many times each page was revised
+model PageRevisionStats {
+  id              String          @id @default(cuid())
+  studentId       String
+  groupId         String
+  pageNumber      Int
+  // Counters by period
+  todayCount      Int             @default(0)
+  weekCount       Int             @default(0)
+  monthCount      Int             @default(0)
+  yearCount       Int             @default(0)
+  totalCount      Int             @default(0)
+  // Last revision info
+  lastRevisedAt   DateTime?
+  lastResult      SubmissionStatus?  // PASSED or FAILED
+  // Period tracking
+  lastUpdatedDay  DateTime        @db.Date  // For daily reset
+  lastUpdatedWeek Int             @default(0)  // Week of year
+  lastUpdatedMonth Int            @default(0)  // Month (1-12)
+  lastUpdatedYear Int             @default(0)  // Year
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  student         User            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  group           Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, groupId, pageNumber])
+  @@index([studentId])
+  @@index([groupId])
+  @@index([pageNumber])
+}
+
+// Line progress tracking for memorization - tracks which lines are completed per stage
+model LineProgress {
+  id              String          @id @default(cuid())
+  studentId       String
+  groupId         String
+  pageNumber      Int
+  lineNumber      Int
+  stage           StageNumber
+  // Progress
+  passedCount     Int             @default(0)    // How many times passed
+  requiredCount   Int             @default(80)   // Required repetitions
+  status          LineProgressStatus @default(NOT_STARTED)
+  // Timestamps
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  student         User            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  group           Group           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, groupId, pageNumber, lineNumber, stage])
+  @@index([studentId, groupId, pageNumber, stage])
+  @@index([status])
+}
+
+// Submission delivery tracking - ensures ustaz receives notifications
+model SubmissionDelivery {
+  id              String          @id @default(cuid())
+  submissionId    String          @unique
+  studentId       String
+  ustazId         String
+  // Delivery status
+  sentToUstaz     Boolean         @default(false)
+  ustazMessageId  BigInt?         // Telegram message ID sent to ustaz
+  deliveredAt     DateTime?       // When delivered to ustaz
+  // Verification
+  ustazViewed     Boolean         @default(false)
+  viewedAt        DateTime?
+  // Error tracking
+  deliveryAttempts Int            @default(0)
+  lastAttemptAt   DateTime?
+  lastError       String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  submission      Submission      @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  student         User            @relation("StudentDeliveries", fields: [studentId], references: [id], onDelete: Cascade)
+  ustaz           User            @relation("UstazDeliveries", fields: [ustazId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([studentId])
+  @@index([ustazId])
+  @@index([sentToUstaz])
+}
+
 enum RevisionStatus {
   PENDING     // Student marked, ustaz not yet acknowledged
   ACKNOWLEDGED // Ustaz clicked OK
+}
+
+enum LineProgressStatus {
+  NOT_STARTED   // Line not yet started
+  IN_PROGRESS   // Currently working on this line
+  PENDING       // Waiting for ustaz review
+  COMPLETED     // Line completed (all repetitions passed)
+  FAILED        // Failed and needs resubmission
 }
 
 enum AIProvider {

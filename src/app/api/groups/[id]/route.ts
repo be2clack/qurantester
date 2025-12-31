@@ -14,6 +14,9 @@ const updateGroupSchema = z.object({
   isActive: z.boolean().optional(),
   // MEMORIZATION settings
   repetitionCount: z.number().min(1).max(200).optional(),
+  repetitionCountLearning: z.number().min(1).max(200).optional(),    // For stages 1.1, 2.1
+  repetitionCountConnection: z.number().min(1).max(200).optional(),  // For stages 1.2, 2.2
+  repetitionCountFull: z.number().min(1).max(200).optional(),        // For stage 3
   stage1Hours: z.number().min(1).max(720).optional(),  // max 30 days
   stage2Hours: z.number().min(1).max(720).optional(),
   stage3Hours: z.number().min(1).max(720).optional(),

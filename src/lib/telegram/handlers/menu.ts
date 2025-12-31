@@ -13,10 +13,16 @@ import {
   getRevisionPageSelectKeyboard,
   getRevisionSubmitKeyboard,
   getRevisionReviewKeyboard,
+  getMemorizationStagesKeyboard,
+  getMemorizationLinesKeyboard,
+  getMemorizationConnectionKeyboard,
+  getStageShortName,
   StudentMenuInfo,
   LessonTypeInfo,
   getLessonTypeName,
   getLinesForLevelName,
+  type StageProgressInfo,
+  type LineProgressInfo,
 } from '../keyboards/main-menu'
 import { generateWebAuthLink } from '@/lib/auth'
 import { STAGES } from '@/lib/constants/quran'
@@ -44,7 +50,7 @@ import {
   handleBackToProgressLine,
   handleBackToGroupConfirmFromProgress,
 } from './registration'
-import { processSubmissionAndNotify, showNextPendingSubmissionToUstaz } from './submission'
+import { processSubmissionAndNotify, showNextPendingSubmissionToUstaz, checkDeliveryStatus, retryDelivery } from './submission'
 import {
   startMufradatGame,
   handleMufradatAnswer,
@@ -158,6 +164,26 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         // Mufradat game callbacks
         await handleMufradatCallback(ctx, user, action, id)
         break
+      case 'mem_stages':
+        // Show memorization stages for a page
+        await handleMemStagesCallback(ctx, user, action, id)
+        break
+      case 'mem_stage':
+        // Show specific stage details (lines or connection)
+        await handleMemStageCallback(ctx, user, action, id)
+        break
+      case 'mem_line':
+        // Start task for specific line
+        await handleMemLineCallback(ctx, user, action, id)
+        break
+      case 'mem_start':
+        // Start connection/full page submission
+        await handleMemStartCallback(ctx, user, action, id)
+        break
+      case 'mem_next_stage':
+        // Advance to next stage
+        await handleMemNextStageCallback(ctx, user, action, id)
+        break
       case 'noop':
         // Do nothing, just answer callback
         break
@@ -225,6 +251,12 @@ async function handleStudentCallback(
       break
     case 'mufradat':
       await showMufradatMenu(ctx, user)
+      break
+    case 'sync':
+      await showSyncStatus(ctx, user)
+      break
+    case 'retry_delivery':
+      await handleRetryDelivery(ctx, user, id)
       break
     default:
       await showStudentMenuEdit(ctx, user)
@@ -348,6 +380,14 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
     rankInGroup = sorted.findIndex(s => s.studentId === user.id) + 1
   }
 
+  // Check for pending submissions to show sync button
+  const pendingSubmissionsCount = await prisma.submission.count({
+    where: {
+      studentId: user.id,
+      status: SubmissionStatus.PENDING,
+    }
+  })
+
   const menuInfo: StudentMenuInfo = {
     hasActiveTask: !!activeTask,
     currentCount: activeTask?.currentCount,
@@ -360,6 +400,7 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
     totalInGroup,
     totalTasksCompleted: fullUser.statistics?.totalTasksCompleted,
     lessonTypes: lessonTypes.length > 0 ? lessonTypes : undefined,
+    hasPendingSubmissions: pendingSubmissionsCount > 0,
   }
 
   const stageName = STAGES[fullUser.currentStage as keyof typeof STAGES]?.nameRuFull || fullUser.currentStage
@@ -1040,6 +1081,13 @@ async function handleLessonTypeCallback(
     return
   }
 
+  // For MEMORIZATION lesson type, show new stages UI
+  if (studentGroup.group.lessonType === LessonType.MEMORIZATION) {
+    await showMemorizationStages(ctx, user, studentGroup)
+    return
+  }
+
+  // For other lesson types (REVISION), use old flow
   // Check for active task in this group
   const activeTask = await prisma.task.findFirst({
     where: {
@@ -2468,6 +2516,147 @@ async function handleReviewCallback(
           parse_mode: 'HTML',
           reply_markup: doneKeyboard
         }
+      )
+    }
+  }
+}
+
+// ============== SYNC STATUS HANDLERS ==============
+
+/**
+ * Show sync status for student's submissions
+ */
+async function showSyncStatus(ctx: BotContext, user: any): Promise<void> {
+  const status = await checkDeliveryStatus(user.id)
+
+  let message = `🔄 <b>Статус синхронизации</b>\n\n`
+
+  if (status.totalPending === 0) {
+    message += `✅ Нет работ на проверке.\n`
+    message += `<i>Все ваши работы уже проверены устазом.</i>`
+  } else {
+    message += `📥 На проверке: <b>${status.totalPending}</b>\n`
+    if (status.delivered > 0) {
+      message += `✅ Доставлено устазу: <b>${status.delivered}</b>\n`
+    }
+    if (status.failed > 0) {
+      message += `⚠️ Ошибки доставки: <b>${status.failed}</b>\n`
+    }
+
+    // Show failed submissions with retry option
+    if (status.failedSubmissions.length > 0) {
+      message += `\n❌ <b>Проблемы с доставкой:</b>\n`
+      for (const failed of status.failedSubmissions.slice(0, 5)) {
+        message += `• Стр. ${failed.pageNumber}, строки ${failed.startLine}-${failed.endLine}\n`
+        if (failed.error) {
+          message += `  <i>${failed.error.substring(0, 50)}${failed.error.length > 50 ? '...' : ''}</i>\n`
+        }
+      }
+      message += `\n<i>Нажмите кнопку ниже для повторной отправки.</i>`
+    }
+  }
+
+  const keyboard = new InlineKeyboard()
+
+  // Add retry buttons for failed submissions
+  if (status.failedSubmissions.length > 0) {
+    keyboard.text('🔄 Повторить все', `student:retry_delivery:all`)
+    keyboard.row()
+  }
+
+  keyboard.text('◀️ Назад', 'student:menu')
+
+  await sendAndTrack(
+    ctx,
+    message,
+    {
+      reply_markup: keyboard,
+      parse_mode: 'HTML'
+    },
+    user.id,
+    'menu'
+  )
+}
+
+/**
+ * Handle retry delivery request
+ */
+async function handleRetryDelivery(ctx: BotContext, user: any, id?: string): Promise<void> {
+  if (id === 'all') {
+    // Retry all failed deliveries
+    const status = await checkDeliveryStatus(user.id)
+    let successCount = 0
+    let failCount = 0
+
+    for (const failed of status.failedSubmissions) {
+      const result = await retryDelivery(failed.submissionId)
+      if (result.success) {
+        successCount++
+      } else {
+        failCount++
+      }
+    }
+
+    const keyboard = new InlineKeyboard()
+      .text('🔄 Проверить снова', 'student:sync')
+      .row()
+      .text('◀️ В меню', 'student:menu')
+
+    let message = ''
+    if (successCount > 0 && failCount === 0) {
+      message = `✅ <b>Успешно!</b>\n\n` +
+        `Все ${successCount} работ отправлены устазу повторно.`
+    } else if (successCount > 0) {
+      message = `⚠️ <b>Частично успешно</b>\n\n` +
+        `Отправлено: <b>${successCount}</b>\n` +
+        `Ошибки: <b>${failCount}</b>\n\n` +
+        `<i>Попробуйте ещё раз позже.</i>`
+    } else {
+      message = `❌ <b>Ошибка</b>\n\n` +
+        `Не удалось отправить работы устазу.\n` +
+        `<i>Попробуйте позже или обратитесь к администратору.</i>`
+    }
+
+    await sendAndTrack(
+      ctx,
+      message,
+      {
+        reply_markup: keyboard,
+        parse_mode: 'HTML'
+      },
+      user.id,
+      'menu'
+    )
+  } else if (id) {
+    // Retry specific submission
+    const result = await retryDelivery(id)
+
+    const keyboard = new InlineKeyboard()
+      .text('🔄 Статус синхронизации', 'student:sync')
+      .row()
+      .text('◀️ В меню', 'student:menu')
+
+    if (result.success) {
+      await sendAndTrack(
+        ctx,
+        `✅ <b>Работа отправлена!</b>\n\nУстаз получит уведомление о проверке.`,
+        {
+          reply_markup: keyboard,
+          parse_mode: 'HTML'
+        },
+        user.id,
+        'menu'
+      )
+    } else {
+      await sendAndTrack(
+        ctx,
+        `❌ <b>Ошибка отправки</b>\n\n${result.error || 'Попробуйте позже.'}`,
+        {
+          reply_markup: keyboard,
+          parse_mode: 'HTML'
+        },
+        user.id,
+        'menu'
       )
     }
   }
@@ -3976,6 +4165,802 @@ async function showTranslationDetailedStats(ctx: BotContext, user: any): Promise
       parse_mode: 'HTML',
       reply_markup: keyboard
     })
+  }
+}
+
+// ============== MEMORIZATION STAGES UI ==============
+
+/**
+ * Show memorization stages for current page
+ */
+async function showMemorizationStages(ctx: BotContext, user: any, studentGroup: any): Promise<void> {
+  const group = studentGroup.group
+  const pageNumber = studentGroup.currentPage
+  const currentStage = studentGroup.currentStage as StageNumber
+
+  // Get surah name for this page
+  const surah = getPrimarySurahByPage(pageNumber)
+  const surahName = surah ? `Сура ${surah.nameArabic}` : `Страница ${pageNumber}`
+
+  // Calculate total lines for this page
+  const totalLines = await getPageTotalLines(pageNumber)
+  const linesPerTask = getLinesForLevel(group.level as GroupLevel)
+
+  // Build stages info
+  const stages: StageProgressInfo[] = await buildStagesProgress(
+    user.id,
+    group.id,
+    pageNumber,
+    currentStage,
+    totalLines,
+    linesPerTask
+  )
+
+  const message = `📖 <b>Страница ${pageNumber}</b> - ${surahName}\n\n` +
+    `📊 Выберите этап для сдачи:\n\n` +
+    `<i>Текущий этап: ${getStageShortName(currentStage)}</i>`
+
+  const keyboard = getMemorizationStagesKeyboard(
+    group.id,
+    pageNumber,
+    surahName,
+    stages,
+    getStageShortName(currentStage)
+  )
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch {
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  }
+}
+
+/**
+ * Build progress info for all stages
+ */
+async function buildStagesProgress(
+  studentId: string,
+  groupId: string,
+  pageNumber: number,
+  currentStage: StageNumber,
+  totalLines: number,
+  linesPerTask: number
+): Promise<StageProgressInfo[]> {
+  const stages: StageProgressInfo[] = []
+  const stageOrder = [
+    StageNumber.STAGE_1_1,
+    StageNumber.STAGE_1_2,
+    StageNumber.STAGE_2_1,
+    StageNumber.STAGE_2_2,
+    StageNumber.STAGE_3
+  ]
+
+  // For short pages (<=7 lines), skip stages 1.2, 2.1, 2.2
+  const isShortPage = totalLines <= 7
+  const validStages = isShortPage
+    ? [StageNumber.STAGE_1_1, StageNumber.STAGE_3]
+    : stageOrder
+
+  const currentStageIndex = validStages.indexOf(currentStage)
+
+  for (const stage of validStages) {
+    const stageIndex = validStages.indexOf(stage)
+    const isCurrentStage = stage === currentStage
+    const isLearningStage = stage === StageNumber.STAGE_1_1 || stage === StageNumber.STAGE_2_1
+    const isPastStage = stageIndex < currentStageIndex
+    const isLockedStage = stageIndex > currentStageIndex
+
+    // Calculate lines for learning stages
+    let linesCount = 0
+    let completedLines = 0
+
+    if (isLearningStage) {
+      if (stage === StageNumber.STAGE_1_1) {
+        linesCount = Math.min(7, totalLines)
+      } else {
+        linesCount = Math.max(0, totalLines - 7)
+      }
+
+      if (isPastStage) {
+        completedLines = linesCount
+      } else if (isCurrentStage) {
+        // Count completed line progress records
+        const lineProgress = await prisma.lineProgress.count({
+          where: {
+            studentId,
+            groupId,
+            pageNumber,
+            stage,
+            status: 'COMPLETED'
+          }
+        })
+        completedLines = lineProgress
+      }
+    }
+
+    // Check for pending tasks
+    const hasPendingTask = await prisma.task.findFirst({
+      where: {
+        studentId,
+        groupId,
+        stage,
+        page: { pageNumber },
+        status: TaskStatus.IN_PROGRESS
+      }
+    })
+
+    // Check for pending submissions
+    const hasPendingSubmission = hasPendingTask ? await prisma.submission.findFirst({
+      where: {
+        taskId: hasPendingTask.id,
+        status: SubmissionStatus.PENDING
+      }
+    }) : null
+
+    let status: 'completed' | 'in_progress' | 'pending' | 'locked'
+    if (isLockedStage) {
+      status = 'locked'
+    } else if (isPastStage) {
+      status = 'completed'
+    } else if (hasPendingSubmission) {
+      status = 'pending'
+    } else if (hasPendingTask) {
+      status = 'in_progress'
+    } else if (isCurrentStage) {
+      status = 'in_progress'
+    } else {
+      status = 'completed'
+    }
+
+    stages.push({
+      stage,
+      totalLines: linesCount,
+      completedLines,
+      hasActiveTask: !!hasPendingTask,
+      isCurrentStage,
+      status
+    })
+  }
+
+  return stages
+}
+
+/**
+ * Handle mem_stages callback - show stages for a page
+ */
+async function handleMemStagesCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  id?: string
+): Promise<void> {
+  // Parse: groupId:pageNumber
+  const [groupId, pageNumberStr] = [action, id]
+  const pageNumber = parseInt(pageNumberStr || '1')
+
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: { group: true }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена' })
+    return
+  }
+
+  await showMemorizationStages(ctx, user, studentGroup)
+}
+
+/**
+ * Handle mem_stage callback - show specific stage details
+ */
+async function handleMemStageCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  id?: string
+): Promise<void> {
+  // Parse: groupId:pageNumber:stage from full callback data
+  const fullData = ctx.callbackQuery?.data || ''
+  const parts = fullData.split(':')
+  // mem_stage:groupId:pageNumber:stage
+  if (parts.length < 4) {
+    await ctx.answerCallbackQuery({ text: 'Неверные данные' })
+    return
+  }
+
+  const groupId = parts[1]
+  const pageNumber = parseInt(parts[2])
+  const stage = parts[3] as StageNumber
+
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: { group: true }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена' })
+    return
+  }
+
+  const group = studentGroup.group
+  const isLearningStage = stage === StageNumber.STAGE_1_1 || stage === StageNumber.STAGE_2_1
+
+  if (isLearningStage) {
+    // Show individual lines for learning stages
+    await showMemorizationLines(ctx, user, studentGroup, pageNumber, stage)
+  } else {
+    // Show connection/full page submission UI
+    await showMemorizationConnection(ctx, user, studentGroup, pageNumber, stage)
+  }
+}
+
+/**
+ * Show lines for a learning stage (1.1 or 2.1)
+ */
+async function showMemorizationLines(
+  ctx: BotContext,
+  user: any,
+  studentGroup: any,
+  pageNumber: number,
+  stage: StageNumber
+): Promise<void> {
+  const group = studentGroup.group
+  const totalLines = await getPageTotalLines(pageNumber)
+  const linesPerTask = getLinesForLevel(group.level as GroupLevel)
+
+  // Calculate line range for this stage
+  let startLine: number
+  let endLine: number
+
+  if (stage === StageNumber.STAGE_1_1) {
+    startLine = 1
+    endLine = Math.min(7, totalLines)
+  } else {
+    startLine = 8
+    endLine = totalLines
+  }
+
+  // Get line progress
+  const lineProgressRecords = await prisma.lineProgress.findMany({
+    where: {
+      studentId: user.id,
+      groupId: group.id,
+      pageNumber,
+      stage,
+    }
+  })
+
+  // Check for active tasks per line
+  const activeTasks = await prisma.task.findMany({
+    where: {
+      studentId: user.id,
+      groupId: group.id,
+      stage,
+      page: { pageNumber },
+      status: TaskStatus.IN_PROGRESS
+    },
+    include: {
+      submissions: {
+        where: { status: SubmissionStatus.PENDING }
+      }
+    }
+  })
+
+  // Build lines info
+  const lines: LineProgressInfo[] = []
+  let lastCompletedLine = startLine - 1
+
+  // Find last completed line
+  for (const lp of lineProgressRecords) {
+    if (lp.status === 'COMPLETED' && lp.lineNumber > lastCompletedLine) {
+      lastCompletedLine = lp.lineNumber
+    }
+  }
+
+  for (let lineNum = startLine; lineNum <= endLine; lineNum += linesPerTask) {
+    const lineEndNum = Math.min(lineNum + linesPerTask - 1, endLine)
+    const progress = lineProgressRecords.find(lp => lp.lineNumber === lineNum)
+    const activeTask = activeTasks.find(t => t.startLine === lineNum)
+    const hasPendingSubmission = activeTask && activeTask.submissions.length > 0
+
+    let status: 'not_started' | 'in_progress' | 'pending' | 'completed' | 'failed'
+    if (progress?.status === 'COMPLETED') {
+      status = 'completed'
+    } else if (progress?.status === 'FAILED') {
+      status = 'failed'
+    } else if (hasPendingSubmission) {
+      status = 'pending'
+    } else if (activeTask) {
+      status = 'in_progress'
+    } else if (progress?.status === 'IN_PROGRESS') {
+      status = 'in_progress'
+    } else {
+      status = 'not_started'
+    }
+
+    // Line is active if: completed a previous line OR it's the first line
+    const isActive = status === 'completed' ||
+      status === 'in_progress' ||
+      status === 'pending' ||
+      status === 'failed' ||
+      lineNum <= lastCompletedLine + linesPerTask
+
+    lines.push({
+      lineNumber: lineNum,
+      status,
+      passedCount: progress?.passedCount || 0,
+      requiredCount: group.repetitionCountLearning || group.repetitionCount || 80,
+      isActive
+    })
+  }
+
+  const stageName = getStageShortName(stage)
+  const message = `📖 <b>Страница ${pageNumber}</b> - ${stageName}\n\n` +
+    `📝 Выберите строку для сдачи:\n\n` +
+    `<i>Легенда: ✅ сдано, ⏳ на проверке, ❌ пересдача, ○ не начато</i>`
+
+  const keyboard = getMemorizationLinesKeyboard(group.id, pageNumber, stage, lines)
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch {
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  }
+}
+
+/**
+ * Show connection/full page stage UI (1.2, 2.2, 3)
+ */
+async function showMemorizationConnection(
+  ctx: BotContext,
+  user: any,
+  studentGroup: any,
+  pageNumber: number,
+  stage: StageNumber
+): Promise<void> {
+  const group = studentGroup.group
+  const stageName = getStageShortName(stage)
+
+  // Get required count based on stage type
+  let requiredCount: number
+  if (stage === StageNumber.STAGE_1_2 || stage === StageNumber.STAGE_2_2) {
+    requiredCount = group.repetitionCountConnection || group.repetitionCount || 80
+  } else {
+    requiredCount = group.repetitionCountFull || group.repetitionCount || 80
+  }
+
+  // Check for active task
+  const activeTask = await prisma.task.findFirst({
+    where: {
+      studentId: user.id,
+      groupId: group.id,
+      stage,
+      page: { pageNumber },
+      status: TaskStatus.IN_PROGRESS
+    }
+  })
+
+  let passedCount = 0
+  let pendingCount = 0
+
+  if (activeTask) {
+    passedCount = activeTask.passedCount
+    pendingCount = await prisma.submission.count({
+      where: {
+        taskId: activeTask.id,
+        status: SubmissionStatus.PENDING
+      }
+    })
+  }
+
+  let status: 'not_started' | 'in_progress' | 'pending' | 'completed'
+  if (passedCount >= requiredCount) {
+    status = 'completed'
+  } else if (pendingCount > 0) {
+    status = 'pending'
+  } else if (activeTask) {
+    status = 'in_progress'
+  } else {
+    status = 'not_started'
+  }
+
+  const remaining = requiredCount - passedCount - pendingCount
+  const progressPercent = Math.round((passedCount / requiredCount) * 100)
+  const progressBar = buildProgressBar(progressPercent)
+
+  let message = `📖 <b>Страница ${pageNumber}</b> - ${stageName}\n\n`
+  message += `${progressBar}\n`
+  message += `✅ Принято: <b>${passedCount}/${requiredCount}</b>\n`
+
+  if (pendingCount > 0) {
+    message += `⏳ На проверке: <b>${pendingCount}</b>\n`
+  }
+
+  if (remaining > 0) {
+    message += `📤 Осталось: <b>${remaining}</b>\n`
+  }
+
+  if (status === 'pending') {
+    message += `\n<i>Ожидайте проверку устаза.</i>`
+  } else if (status === 'completed') {
+    message += `\n🎉 <b>Этап завершён!</b>`
+  } else {
+    message += `\n<i>Отправьте запись всей страницы.</i>`
+  }
+
+  const keyboard = getMemorizationConnectionKeyboard(
+    group.id,
+    pageNumber,
+    stage,
+    passedCount,
+    requiredCount,
+    pendingCount,
+    status
+  )
+
+  try {
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  } catch {
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    })
+  }
+}
+
+/**
+ * Handle mem_line callback - start task for specific line
+ */
+async function handleMemLineCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  id?: string
+): Promise<void> {
+  // Parse: mem_line:groupId:pageNumber:stage:lineNumber
+  const fullData = ctx.callbackQuery?.data || ''
+  const parts = fullData.split(':')
+  if (parts.length < 5) {
+    await ctx.answerCallbackQuery({ text: 'Неверные данные' })
+    return
+  }
+
+  const groupId = parts[1]
+  const pageNumber = parseInt(parts[2])
+  const stage = parts[3] as StageNumber
+  const lineNumber = parseInt(parts[4])
+
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: { group: true }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена' })
+    return
+  }
+
+  const group = studentGroup.group
+
+  // Check if already has an active task
+  const existingTask = await prisma.task.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      status: TaskStatus.IN_PROGRESS,
+    }
+  })
+
+  if (existingTask) {
+    // Show existing task
+    await showTaskForGroup(ctx, user, existingTask, studentGroup)
+    return
+  }
+
+  // Create or get the QuranPage
+  let page = await prisma.quranPage.findUnique({
+    where: { pageNumber }
+  })
+
+  if (!page) {
+    page = await getOrCreateQuranPage(pageNumber)
+  }
+
+  // Calculate line range
+  const linesPerTask = getLinesForLevel(group.level as GroupLevel)
+  const totalLines = await getPageTotalLines(pageNumber)
+
+  let endLine: number
+  if (stage === StageNumber.STAGE_1_1) {
+    endLine = Math.min(lineNumber + linesPerTask - 1, Math.min(7, totalLines))
+  } else {
+    endLine = Math.min(lineNumber + linesPerTask - 1, totalLines)
+  }
+
+  // Calculate deadline
+  const stageHours = getStageHoursFromGroup(stage, group)
+  const deadline = new Date()
+  deadline.setTime(deadline.getTime() + stageHours * 60 * 60 * 1000)
+
+  // Get required count for learning stage
+  const requiredCount = group.repetitionCountLearning || group.repetitionCount || 80
+
+  // Create task
+  const task = await prisma.task.create({
+    data: {
+      groupId: group.id,
+      studentId: user.id,
+      pageId: page.id,
+      startLine: lineNumber,
+      endLine,
+      stage,
+      status: TaskStatus.IN_PROGRESS,
+      requiredCount,
+      deadline,
+    },
+    include: {
+      page: true,
+      group: true,
+    }
+  })
+
+  // Create/update line progress
+  await prisma.lineProgress.upsert({
+    where: {
+      studentId_groupId_pageNumber_lineNumber_stage: {
+        studentId: user.id,
+        groupId: group.id,
+        pageNumber,
+        lineNumber,
+        stage
+      }
+    },
+    create: {
+      studentId: user.id,
+      groupId: group.id,
+      pageNumber,
+      lineNumber,
+      stage,
+      status: 'IN_PROGRESS',
+      requiredCount,
+      startedAt: new Date()
+    },
+    update: {
+      status: 'IN_PROGRESS',
+      startedAt: new Date()
+    }
+  })
+
+  await showTaskForGroup(ctx, user, task, studentGroup)
+}
+
+/**
+ * Handle mem_start callback - start connection/full page task
+ */
+async function handleMemStartCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  id?: string
+): Promise<void> {
+  // Parse: mem_start:groupId:pageNumber:stage
+  const fullData = ctx.callbackQuery?.data || ''
+  const parts = fullData.split(':')
+  if (parts.length < 4) {
+    await ctx.answerCallbackQuery({ text: 'Неверные данные' })
+    return
+  }
+
+  const groupId = parts[1]
+  const pageNumber = parseInt(parts[2])
+  const stage = parts[3] as StageNumber
+
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: { group: true }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена' })
+    return
+  }
+
+  const group = studentGroup.group
+
+  // Check if already has an active task
+  const existingTask = await prisma.task.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      status: TaskStatus.IN_PROGRESS,
+    },
+    include: { page: true, group: true }
+  })
+
+  if (existingTask) {
+    await showTaskForGroup(ctx, user, existingTask, studentGroup)
+    return
+  }
+
+  // Create or get the QuranPage
+  let page = await prisma.quranPage.findUnique({
+    where: { pageNumber }
+  })
+
+  if (!page) {
+    page = await getOrCreateQuranPage(pageNumber)
+  }
+
+  // Get line range for full stage
+  const totalLines = await getPageTotalLines(pageNumber)
+  let startLine: number
+  let endLine: number
+
+  if (stage === StageNumber.STAGE_1_2) {
+    startLine = 1
+    endLine = Math.min(7, totalLines)
+  } else if (stage === StageNumber.STAGE_2_2) {
+    startLine = 8
+    endLine = totalLines
+  } else {
+    // STAGE_3
+    startLine = 1
+    endLine = totalLines
+  }
+
+  // Get required count based on stage
+  let requiredCount: number
+  if (stage === StageNumber.STAGE_1_2 || stage === StageNumber.STAGE_2_2) {
+    requiredCount = group.repetitionCountConnection || group.repetitionCount || 80
+  } else {
+    requiredCount = group.repetitionCountFull || group.repetitionCount || 80
+  }
+
+  // Calculate deadline
+  const stageHours = getStageHoursFromGroup(stage, group)
+  const deadline = new Date()
+  deadline.setTime(deadline.getTime() + stageHours * 60 * 60 * 1000)
+
+  // Create task
+  const task = await prisma.task.create({
+    data: {
+      groupId: group.id,
+      studentId: user.id,
+      pageId: page.id,
+      startLine,
+      endLine,
+      stage,
+      status: TaskStatus.IN_PROGRESS,
+      requiredCount,
+      deadline,
+    },
+    include: {
+      page: true,
+      group: true,
+    }
+  })
+
+  await showTaskForGroup(ctx, user, task, studentGroup)
+}
+
+/**
+ * Handle mem_next_stage callback - advance to next stage
+ */
+async function handleMemNextStageCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  id?: string
+): Promise<void> {
+  // Parse: mem_next_stage:groupId:pageNumber:stage
+  const fullData = ctx.callbackQuery?.data || ''
+  const parts = fullData.split(':')
+  if (parts.length < 4) {
+    await ctx.answerCallbackQuery({ text: 'Неверные данные' })
+    return
+  }
+
+  const groupId = parts[1]
+  const pageNumber = parseInt(parts[2])
+  const currentStage = parts[3] as StageNumber
+
+  const studentGroup = await prisma.studentGroup.findFirst({
+    where: {
+      studentId: user.id,
+      groupId,
+      isActive: true
+    },
+    include: { group: true }
+  })
+
+  if (!studentGroup) {
+    await ctx.answerCallbackQuery({ text: 'Группа не найдена' })
+    return
+  }
+
+  // Calculate next stage
+  const totalLines = await getPageTotalLines(pageNumber)
+  const isShortPage = totalLines <= 7
+  const nextStage = getNextStage(currentStage, isShortPage)
+
+  if (nextStage) {
+    // Update student progress
+    await prisma.studentGroup.update({
+      where: { id: studentGroup.id },
+      data: {
+        currentStage: nextStage,
+        currentLine: nextStage === StageNumber.STAGE_2_1 ? 8 : 1
+      }
+    })
+
+    // Refresh the view
+    studentGroup.currentStage = nextStage
+    await showMemorizationStages(ctx, user, studentGroup)
+  } else {
+    // Page complete - move to next page
+    await prisma.studentGroup.update({
+      where: { id: studentGroup.id },
+      data: {
+        currentPage: pageNumber + 1,
+        currentStage: StageNumber.STAGE_1_1,
+        currentLine: 1
+      }
+    })
+
+    studentGroup.currentPage = pageNumber + 1
+    studentGroup.currentStage = StageNumber.STAGE_1_1
+    await showMemorizationStages(ctx, user, studentGroup)
+  }
+}
+
+/**
+ * Get next stage in sequence
+ */
+function getNextStage(currentStage: StageNumber, isShortPage: boolean): StageNumber | null {
+  if (isShortPage) {
+    if (currentStage === StageNumber.STAGE_1_1) return StageNumber.STAGE_3
+    return null // Page complete
+  }
+
+  switch (currentStage) {
+    case StageNumber.STAGE_1_1: return StageNumber.STAGE_1_2
+    case StageNumber.STAGE_1_2: return StageNumber.STAGE_2_1
+    case StageNumber.STAGE_2_1: return StageNumber.STAGE_2_2
+    case StageNumber.STAGE_2_2: return StageNumber.STAGE_3
+    case StageNumber.STAGE_3: return null // Page complete
+    default: return null
   }
 }
 
