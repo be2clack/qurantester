@@ -1337,7 +1337,7 @@ async function showSubmissionToUstaz(
   let caption = `📥 <b>Проверка работ</b> (${queueCount} в очереди)\n\n`
   caption += `📚 <b>${groupName}</b>\n`
   caption += `👤 ${studentName}\n`
-  caption += `📖 Стр. ${task.page.pageNumber}, ${lineRange}\n`
+  caption += `📖 Стр. ${task.page?.pageNumber || 1}, ${lineRange}\n`
   caption += `🎯 ${stageName}\n\n`
   caption += `${progressBar} ${progressPercent}%\n`
   caption += `📊 <b>${task.currentCount}/${task.requiredCount}</b>`
@@ -1376,7 +1376,7 @@ async function showSubmissionToUstaz(
 
   // Quran button - opens page with highlighted lines
   const webAppUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'
-  const quranUrl = `${webAppUrl}/telegram?redirect=/ustaz/quran?page=${task.page.pageNumber}%26startLine=${task.startLine}%26endLine=${task.endLine}`
+  const quranUrl = `${webAppUrl}/telegram?redirect=/ustaz/quran?page=${task.page?.pageNumber || 1}%26startLine=${task.startLine}%26endLine=${task.endLine}`
   reviewKeyboard.row().webApp('📖 Коран', quranUrl)
 
   if (student.telegramUsername) {
