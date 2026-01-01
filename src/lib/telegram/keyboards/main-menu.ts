@@ -305,22 +305,24 @@ export function getActiveTaskKeyboard(
   taskId: string,
   hasPendingSubmission: boolean = false,
   isTaskComplete: boolean = false,
-  allSentWaitingReview: boolean = false
+  allSentWaitingReview: boolean = false,
+  backCallback: string = 'student:menu',
+  backLabel: string = '◀️ В меню'
 ): InlineKeyboard {
   const keyboard = new InlineKeyboard()
 
   if (isTaskComplete) {
     // Task is complete - show button to advance to next stage
     keyboard.text('▶️ Перейти к следующему этапу', `task:advance:${taskId}`).row()
-    keyboard.text('◀️ В меню', 'student:menu')
+    keyboard.text(backLabel, backCallback)
   } else if (allSentWaitingReview) {
-    // All submissions sent, waiting for ustaz review - just close button
-    keyboard.text('✖️ Закрыть', 'close_notification')
+    // All submissions sent, waiting for ustaz review
+    keyboard.text(backLabel, backCallback)
   } else if (hasPendingSubmission) {
     keyboard.text('↩️ Отменить последнюю запись', `task:cancel_last:${taskId}`).row()
-    keyboard.text('◀️ В меню', 'student:menu')
+    keyboard.text(backLabel, backCallback)
   } else {
-    keyboard.text('◀️ В меню', 'student:menu')
+    keyboard.text(backLabel, backCallback)
   }
 
   return keyboard
@@ -747,7 +749,8 @@ export function getMemorizationStagesKeyboard(
   pageNumber: number,
   surahName: string,
   stages: StageProgressInfo[],
-  currentStageName: string
+  currentStageName: string,
+  hasMultipleGroups: boolean = false
 ): InlineKeyboard {
   const keyboard = new InlineKeyboard()
 
@@ -779,7 +782,12 @@ export function getMemorizationStagesKeyboard(
     }
   }
 
-  keyboard.text('◀️ В меню', 'student:menu')
+  // Back button - to groups if multiple, otherwise to menu
+  if (hasMultipleGroups) {
+    keyboard.text('◀️ К группам', 'student:groups')
+  } else {
+    keyboard.text('◀️ В меню', 'student:menu')
+  }
 
   return keyboard
 }

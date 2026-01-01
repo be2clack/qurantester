@@ -1014,7 +1014,7 @@ async function notifyUstazAboutMufradatGame(
     let caption = `📥 <b>Муфрадат - требует проверки</b>\n\n`
     caption += `📚 <b>${groupName}</b>\n`
     caption += `👤 ${studentName}\n`
-    caption += `📖 Стр. ${task.page.pageNumber}\n\n`
+    caption += `📖 Стр. ${task.page?.pageNumber || 1}\n\n`
     caption += `🎮 <b>Результат игры:</b>\n`
     caption += `   ✅ Правильно: ${session.correctCount}/${words.length}\n`
     caption += `   📊 Балл: <b>${score}%</b>\n\n`

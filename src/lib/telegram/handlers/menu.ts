@@ -533,6 +533,56 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     return
   }
 
+  // Check QRC pre-check for learning stages (1.1 and 2.1)
+  const group = task.group
+  if (group?.qrcPreCheckEnabled) {
+    const isLearningStage = task.stage === 'STAGE_1_1' || task.stage === 'STAGE_2_1'
+
+    if (isLearningStage) {
+      // Check if pre-check is passed
+      const preCheck = await prisma.qRCPreCheck.findUnique({
+        where: {
+          studentId_groupId_pageNumber_startLine_endLine_stage: {
+            studentId: user.id,
+            groupId: group.id,
+            pageNumber: task.page?.pageNumber || 1,
+            startLine: task.startLine,
+            endLine: task.endLine,
+            stage: task.stage as StageNumber,
+          }
+        }
+      })
+
+      if (!preCheck?.passed) {
+        // Show AI pre-check interface
+        const lineRange = task.startLine === task.endLine
+          ? `строка ${task.startLine}`
+          : `строки ${task.startLine}-${task.endLine}`
+
+        let message = `📝 <b>Текущее задание</b>\n\n`
+        message += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n`
+        message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRuFull || task.stage}\n\n`
+
+        message += `🤖 <b>Требуется AI предпроверка</b>\n\n`
+        message += `Перед отправкой работ на проверку устазу, пройдите AI проверку чтения.\n\n`
+        message += `<i>Порог прохождения: ${group.qrcPassThreshold || 70}%</i>`
+
+        const keyboard = new InlineKeyboard()
+        const messageId = ctx.callbackQuery?.message?.message_id || 0
+        const webAppUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'}/telegram/qrc-check?groupId=${group.id}&page=${task.page?.pageNumber || 1}&startLine=${task.startLine}&endLine=${task.endLine}&stage=${task.stage}&msgId=${messageId}`
+        keyboard.webApp('🎙 Пройти AI проверку', webAppUrl).row()
+        // Back to lines list for learning stages
+        keyboard.text('◀️ К строкам', `mem_stage:${group.id}:${task.page?.pageNumber || 1}:${task.stage}`)
+
+        await ctx.editMessageText(message, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        })
+        return
+      }
+    }
+  }
+
   const lineRange = task.startLine === task.endLine
     ? `строка ${task.startLine}`
     : `строки ${task.startLine}-${task.endLine}`
@@ -551,8 +601,7 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
   const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const progressBar = buildProgressBar(parseInt(progressPercent))
 
-  // Build format hint - use group settings only
-  const group = task.group
+  // Build format hint - use group settings only (group already defined above)
 
   // Calculate deadline (only show warning if deadlineEnabled)
   const now = new Date()
@@ -571,16 +620,15 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     timeZone: 'Asia/Bishkek'
   })
 
-  // If deadlines are disabled, show time for info only (no warning)
+  // If deadlines are disabled, don't show deadline at all
   const deadlineEnabled = group?.deadlineEnabled ?? true
-  let deadlineStr: string
-  if (timeLeft > 0) {
-    deadlineStr = `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
-  } else if (deadlineEnabled) {
-    deadlineStr = `⚠️ <b>Срок истёк!</b>`
-  } else {
-    // Deadline passed but not enforced - show info only
-    deadlineStr = `ℹ️ Время: <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
+  let deadlineStr: string = ''
+  if (deadlineEnabled) {
+    if (timeLeft > 0) {
+      deadlineStr = `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
+    } else {
+      deadlineStr = `⚠️ <b>Срок истёк!</b>`
+    }
   }
   let formatHint = ''
   if (group) {
@@ -600,7 +648,7 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
   }
 
   let message = `📝 <b>Текущее задание</b>\n\n`
-  message += `📖 Страница ${task.page.pageNumber}, ${lineRange}\n`
+  message += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n`
   message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRuFull || task.stage}\n\n`
   message += `${progressBar}\n`
   message += `✅ Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
@@ -632,7 +680,11 @@ async function showCurrentTask(ctx: BotContext, user: any): Promise<void> {
     message += `<i>Ожидайте проверку устаза.</i>`
   } else if (remaining > 0) {
     // Need more submissions
-    message += `\n${deadlineStr}\n\n`
+    if (deadlineStr) {
+      message += `\n${deadlineStr}\n\n`
+    } else {
+      message += `\n`
+    }
     message += `📤 Принимается: ${formatHint}\n\n`
     if (task.failedCount > 0) {
       message += `<i>⚠️ У вас есть записи на пересдачу. Отправьте ${remaining} записей.</i>`
@@ -829,7 +881,7 @@ async function showTaskHistory(ctx: BotContext, user: any): Promise<void> {
         : `стр. ${task.startLine}-${task.endLine}`
       const date = task.createdAt.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })
 
-      message += `${status} ${task.page.pageNumber}-${lineRange} (${task.passedCount}/${task.requiredCount}) ${date}\n`
+      message += `${status} ${task.page?.pageNumber || 1}-${lineRange} (${task.passedCount}/${task.requiredCount}) ${date}\n`
     }
     message += '\n'
   }
@@ -1118,6 +1170,55 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
   const group = studentGroup.group
   const typeName = getLessonTypeName(group.lessonType)
 
+  // Check QRC pre-check for learning stages (1.1 and 2.1)
+  if (group?.qrcPreCheckEnabled) {
+    const isLearningStage = task.stage === 'STAGE_1_1' || task.stage === 'STAGE_2_1'
+
+    if (isLearningStage) {
+      // Check if pre-check is passed
+      const preCheck = await prisma.qRCPreCheck.findUnique({
+        where: {
+          studentId_groupId_pageNumber_startLine_endLine_stage: {
+            studentId: user.id,
+            groupId: group.id,
+            pageNumber: task.page?.pageNumber || 1,
+            startLine: task.startLine,
+            endLine: task.endLine,
+            stage: task.stage as StageNumber,
+          }
+        }
+      })
+
+      if (!preCheck?.passed) {
+        // Show AI pre-check interface
+        const lineRange = task.startLine === task.endLine
+          ? `строка ${task.startLine}`
+          : `строки ${task.startLine}-${task.endLine}`
+
+        let message = `📝 <b>${typeName}</b>\n\n`
+        message += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n`
+        message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRuFull || task.stage}\n\n`
+
+        message += `🤖 <b>Требуется AI предпроверка</b>\n\n`
+        message += `Перед отправкой работ на проверку устазу, пройдите AI проверку чтения.\n\n`
+        message += `<i>Порог прохождения: ${group.qrcPassThreshold || 70}%</i>`
+
+        const keyboard = new InlineKeyboard()
+        const messageId = ctx.callbackQuery?.message?.message_id || 0
+        const webAppUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'}/telegram/qrc-check?groupId=${group.id}&page=${task.page?.pageNumber || 1}&startLine=${task.startLine}&endLine=${task.endLine}&stage=${task.stage}&msgId=${messageId}`
+        keyboard.webApp('🎙 Пройти AI проверку', webAppUrl).row()
+        // Back to lines list for learning stages
+        keyboard.text('◀️ К строкам', `mem_stage:${group.id}:${task.page?.pageNumber || 1}:${task.stage}`)
+
+        await ctx.editMessageText(message, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        })
+        return
+      }
+    }
+  }
+
   const lineRange = task.startLine === task.endLine
     ? `строка ${task.startLine}`
     : `строки ${task.startLine}-${task.endLine}`
@@ -1153,16 +1254,15 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
     timeZone: 'Asia/Bishkek'
   })
 
-  // If deadlines are disabled, show time for info only (no warning)
+  // If deadlines are disabled, don't show deadline at all
   const deadlineEnabled = group.deadlineEnabled ?? true
-  let deadlineStr: string
-  if (timeLeft > 0) {
-    deadlineStr = `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
-  } else if (deadlineEnabled) {
-    deadlineStr = `⚠️ <b>Срок истёк!</b>`
-  } else {
-    // Deadline passed but not enforced - show info only
-    deadlineStr = `ℹ️ Время: <b>${deadlineDateStr} ${deadlineTimeStr}</b>`
+  let deadlineStr: string = ''
+  if (deadlineEnabled) {
+    if (timeLeft > 0) {
+      deadlineStr = `⏰ До <b>${deadlineDateStr} ${deadlineTimeStr}</b> (<b>${hoursLeft}ч ${minutesLeft}м</b>)`
+    } else {
+      deadlineStr = `⚠️ <b>Срок истёк!</b>`
+    }
   }
 
   // Build format hint
@@ -1180,7 +1280,7 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
   }
 
   let message = `📝 <b>${typeName}</b>\n\n`
-  message += `📖 Страница ${task.page.pageNumber}, ${lineRange}\n`
+  message += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n`
   message += `📚 ${STAGES[task.stage as keyof typeof STAGES]?.nameRuFull || task.stage}\n\n`
   message += `${progressBar}\n`
   message += `✅ Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
@@ -1212,7 +1312,11 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
     message += `<i>Ожидайте проверку устаза.</i>`
   } else if (remaining > 0) {
     // Need more submissions
-    message += `\n${deadlineStr}\n\n`
+    if (deadlineStr) {
+      message += `\n${deadlineStr}\n\n`
+    } else {
+      message += `\n`
+    }
     message += `📤 Принимается: ${formatHint}\n\n`
     if (task.failedCount > 0) {
       message += `<i>⚠️ У вас есть записи на пересдачу. Отправьте ${remaining} записей.</i>`
@@ -1309,10 +1413,12 @@ async function showStartTaskForGroup(ctx: BotContext, user: any, studentGroup: a
     const webAppUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'}/telegram/qrc-check?groupId=${group.id}&page=${studentGroup.currentPage}&startLine=${startLine}&endLine=${endLine}&stage=${studentGroup.currentStage}&msgId=${messageId}`
     keyboard.webApp('🎙 Пройти AI проверку', webAppUrl).row()
   } else {
-    keyboard.text('▶️ Начать изучать этап', `start_group_task:${group.id}`).row()
+    // Use mem_line callback to create/show task for the specific line
+    // This allows working on multiple lines concurrently
+    keyboard.text('▶️ Начать изучать этап', `mem_line:${group.id}:${studentGroup.currentPage}:${studentGroup.currentStage}:${startLine}`).row()
   }
 
-  keyboard.text('◀️ В меню', 'student:menu')
+  keyboard.text('◀️ К строкам', `mem_stage:${group.id}:${studentGroup.currentPage}:${studentGroup.currentStage}`)
 
   await ctx.editMessageText(message, {
     parse_mode: 'HTML',
@@ -1347,11 +1453,16 @@ async function startGroupTask(ctx: BotContext, user: any, groupId: string): Prom
       studentId: user.id,
       groupId,
       status: TaskStatus.IN_PROGRESS,
+    },
+    include: {
+      page: true,
+      group: true,
     }
   })
 
   if (existingTask) {
-    await ctx.answerCallbackQuery({ text: 'У вас уже есть активное задание!' })
+    // Navigate to the active task instead of showing an error
+    await showTaskForGroup(ctx, user, existingTask, studentGroup)
     return
   }
 
@@ -1828,7 +1939,7 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   let caption = `📝 <b>Работа 1/${submissions.length}</b>\n\n`
   if (groupName) caption += `📚 <b>${groupName}</b>\n`
   caption += `👤 ${studentName}\n`
-  caption += `📖 Стр. ${first.task.page.pageNumber}, ${lineRange}\n`
+  caption += `📖 Стр. ${first.task.page?.pageNumber || 1}, ${lineRange}\n`
   caption += `🎯 ${stageName}\n\n`
   caption += `${progressBar} ${progressPercent}%\n`
   caption += `📊 <b>${first.task.currentCount}/${first.task.requiredCount}</b>`
@@ -2462,7 +2573,7 @@ async function handleReviewCallback(
         } else if (status === SubmissionStatus.FAILED) {
           // Rejected - need resubmission
           message = `❌ <b>Запись отклонена</b>\n\n`
-          message += `📖 Стр. ${submission.task.page.pageNumber}, ${lineRange}\n`
+          message += `📖 Стр. ${submission.task.page?.pageNumber || 1}, ${lineRange}\n`
           message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
           message += `❌ На пересдачу: <b>${task.failedCount}</b>\n\n`
           message += `<i>Отправьте запись повторно.</i>`
@@ -2471,7 +2582,7 @@ async function handleReviewCallback(
         } else {
           // Passed but more needed
           message = `✅ <b>Запись принята</b>\n\n`
-          message += `📖 Стр. ${submission.task.page.pageNumber}, ${lineRange}\n`
+          message += `📖 Стр. ${submission.task.page?.pageNumber || 1}, ${lineRange}\n`
           message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>`
 
           if (remaining > 0) {
@@ -3784,7 +3895,7 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
   const progressBar = buildProgressBar(parseInt(progressPercent))
 
   let message = `↩️ <b>Запись отменена</b>\n\n`
-  message += `📖 Страница ${task.page.pageNumber}, ${lineRange}\n\n`
+  message += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n\n`
   message += `${progressBar}\n`
   message += `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n`
   message += `⏳ Осталось: <b>${remaining}</b>\n\n`
@@ -3890,7 +4001,7 @@ async function confirmAndSendToUstaz(ctx: BotContext, user: any, taskId: string)
       : `строки ${task.startLine}-${task.endLine}`
 
     const confirmMessage = `✅ <b>Работа отправлена!</b>\n\n` +
-      `📖 Страница ${task.page.pageNumber}, ${lineRange}\n` +
+      `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n` +
       `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n\n` +
       `<i>Ожидайте проверку устаза.</i>`
 
@@ -4186,6 +4297,12 @@ async function showMemorizationStages(ctx: BotContext, user: any, studentGroup: 
   const totalLines = await getPageTotalLines(pageNumber)
   const linesPerTask = getLinesForLevel(group.level as GroupLevel)
 
+  // Check if student has multiple groups (for back button)
+  const groupCount = await prisma.studentGroup.count({
+    where: { studentId: user.id, isActive: true }
+  })
+  const hasMultipleGroups = groupCount > 1
+
   // Build stages info
   const stages: StageProgressInfo[] = await buildStagesProgress(
     user.id,
@@ -4205,7 +4322,8 @@ async function showMemorizationStages(ctx: BotContext, user: any, studentGroup: 
     pageNumber,
     surahName,
     stages,
-    getStageShortName(currentStage)
+    getStageShortName(currentStage),
+    hasMultipleGroups
   )
 
   try {
@@ -4463,28 +4581,43 @@ async function showMemorizationLines(
 
   // Build lines info
   const lines: LineProgressInfo[] = []
-  let lastCompletedLine = startLine - 1
+  let lastUnlockedLine = startLine - 1  // Last line that unlocks the next
 
-  // Find last completed line
+  // Find last line that unlocks next (completed OR pending with all submissions sent)
   for (const lp of lineProgressRecords) {
-    if (lp.status === 'COMPLETED' && lp.lineNumber > lastCompletedLine) {
-      lastCompletedLine = lp.lineNumber
+    if (lp.status === 'COMPLETED' && lp.lineNumber > lastUnlockedLine) {
+      lastUnlockedLine = lp.lineNumber
     }
   }
+  // Also check for pending tasks (all submissions sent, waiting review)
+  for (const task of activeTasks) {
+    const requiredCount = group.repetitionCountLearning || group.repetitionCount || 80
+    const allSubmitted = task.currentCount >= requiredCount ||
+                         (task.passedCount + task.submissions.length) >= requiredCount
+    if (allSubmitted && task.startLine > lastUnlockedLine) {
+      lastUnlockedLine = task.startLine
+    }
+  }
+
+  const requiredCount = group.repetitionCountLearning || group.repetitionCount || 80
 
   for (let lineNum = startLine; lineNum <= endLine; lineNum += linesPerTask) {
     const lineEndNum = Math.min(lineNum + linesPerTask - 1, endLine)
     const progress = lineProgressRecords.find(lp => lp.lineNumber === lineNum)
     const activeTask = activeTasks.find(t => t.startLine === lineNum)
     const hasPendingSubmission = activeTask && activeTask.submissions.length > 0
+    const allSubmitted = activeTask && (activeTask.currentCount >= requiredCount ||
+                         (activeTask.passedCount + activeTask.submissions.length) >= requiredCount)
 
     let status: 'not_started' | 'in_progress' | 'pending' | 'completed' | 'failed'
     if (progress?.status === 'COMPLETED') {
       status = 'completed'
     } else if (progress?.status === 'FAILED') {
       status = 'failed'
+    } else if (allSubmitted) {
+      status = 'pending'  // All submitted, waiting review
     } else if (hasPendingSubmission) {
-      status = 'pending'
+      status = 'in_progress'  // Has some pending, but not all
     } else if (activeTask) {
       status = 'in_progress'
     } else if (progress?.status === 'IN_PROGRESS') {
@@ -4493,26 +4626,29 @@ async function showMemorizationLines(
       status = 'not_started'
     }
 
-    // Line is active if: completed a previous line OR it's the first line
+    // Line is active if:
+    // - Already started (completed, in_progress, pending, failed)
+    // - OR previous line is completed/pending (all submitted)
     const isActive = status === 'completed' ||
       status === 'in_progress' ||
       status === 'pending' ||
       status === 'failed' ||
-      lineNum <= lastCompletedLine + linesPerTask
+      lineNum <= lastUnlockedLine + linesPerTask
 
     lines.push({
       lineNumber: lineNum,
       status,
-      passedCount: progress?.passedCount || 0,
-      requiredCount: group.repetitionCountLearning || group.repetitionCount || 80,
+      passedCount: progress?.passedCount || activeTask?.passedCount || 0,
+      requiredCount,
       isActive
     })
   }
 
   const stageName = getStageShortName(stage)
-  const message = `📖 <b>Страница ${pageNumber}</b> - ${stageName}\n\n` +
+  const message = `📖 <b>Страница ${pageNumber}</b> - ${stageName}\n` +
+    `📊 Требуется повторений: <b>${requiredCount}</b>\n\n` +
     `📝 Выберите строку для сдачи:\n\n` +
-    `<i>Легенда: ✅ сдано, ⏳ на проверке, ❌ пересдача, ○ не начато</i>`
+    `<i>Легенда: ✅ сдано, ⏳ на проверке, 📝 в процессе, ○ не начато</i>`
 
   const keyboard = getMemorizationLinesKeyboard(group.id, pageNumber, stage, lines)
 
@@ -4670,17 +4806,21 @@ async function handleMemLineCallback(
 
   const group = studentGroup.group
 
-  // Check if already has an active task
+  // Check if already has an active task for THIS SPECIFIC LINE and STAGE
+  // This allows students to work on multiple lines concurrently
   const existingTask = await prisma.task.findFirst({
     where: {
       studentId: user.id,
       groupId,
       status: TaskStatus.IN_PROGRESS,
-    }
+      startLine: lineNumber,
+      stage,
+    },
+    include: { page: true, group: true }
   })
 
   if (existingTask) {
-    // Show existing task
+    // Show existing task for this line
     await showTaskForGroup(ctx, user, existingTask, studentGroup)
     return
   }
@@ -4799,12 +4939,14 @@ async function handleMemStartCallback(
 
   const group = studentGroup.group
 
-  // Check if already has an active task
+  // Check if already has an active task for THIS SPECIFIC STAGE
+  // This allows students to work on different stages concurrently
   const existingTask = await prisma.task.findFirst({
     where: {
       studentId: user.id,
       groupId,
       status: TaskStatus.IN_PROGRESS,
+      stage,
     },
     include: { page: true, group: true }
   })

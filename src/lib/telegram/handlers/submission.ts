@@ -40,8 +40,9 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Get active task
-  const task = await prisma.task.findFirst({
+  // Get all active tasks and find the one that needs more submissions
+  // With multiple lines support, student can have several IN_PROGRESS tasks
+  const allTasks = await prisma.task.findMany({
     where: {
       studentId: user.id,
       status: TaskStatus.IN_PROGRESS,
@@ -58,15 +59,41 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
       group: {
         include: { ustaz: true }
       },
-    }
+      _count: {
+        select: {
+          submissions: { where: { status: SubmissionStatus.PENDING } }
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' } // Prefer most recently created
   })
 
-  if (!task) {
+  if (allTasks.length === 0) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
       '❌ У вас нет активного задания.\n\nНажмите "▶️ Начать задание" в меню.',
       { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+      user.id,
+      'notification'
+    )
+    return
+  }
+
+  // Find task that still needs more submissions
+  // Formula: requiredCount - passedCount - pendingCount > 0
+  const task = allTasks.find(t => {
+    const pendingCount = t._count.submissions
+    return t.requiredCount - t.passedCount - pendingCount > 0
+  })
+
+  if (!task) {
+    // All tasks have their submissions sent (pending review)
+    await deleteUserMessage(ctx)
+    await sendAndTrack(
+      ctx,
+      '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
+      { reply_markup: getBackKeyboard('close_notification', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -145,7 +172,7 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     await sendAndTrack(
       ctx,
       '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
-      { reply_markup: getBackKeyboard('close', '✖️ Закрыть') },
+      { reply_markup: getBackKeyboard('close_notification', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -221,8 +248,9 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
   const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const isLastSubmission = remaining <= 0
 
+  const deadlineEnabled = task.group?.deadlineEnabled ?? task.lesson?.group?.deadlineEnabled ?? true
   const message = buildSubmissionConfirmation(
-    task.page.pageNumber,
+    task.page?.pageNumber || 1,
     task.startLine,
     task.endLine,
     task.passedCount + actualPendingCount,
@@ -230,7 +258,8 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     Math.max(0, remaining),
     progressPercent,
     task.deadline,
-    isLastSubmission
+    isLastSubmission,
+    deadlineEnabled
   )
 
   await sendAndTrack(
@@ -278,8 +307,9 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     return
   }
 
-  // Get active task
-  const task = await prisma.task.findFirst({
+  // Get all active tasks and find the one that needs more submissions
+  // With multiple lines support, student can have several IN_PROGRESS tasks
+  const allTasks = await prisma.task.findMany({
     where: {
       studentId: user.id,
       status: TaskStatus.IN_PROGRESS,
@@ -296,15 +326,41 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
       group: {
         include: { ustaz: true }
       },
-    }
+      _count: {
+        select: {
+          submissions: { where: { status: SubmissionStatus.PENDING } }
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' } // Prefer most recently created
   })
 
-  if (!task) {
+  if (allTasks.length === 0) {
     await deleteUserMessage(ctx)
     await sendAndTrack(
       ctx,
       '❌ У вас нет активного задания.\n\nНажмите "▶️ Начать задание" в меню.',
       { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+      user.id,
+      'notification'
+    )
+    return
+  }
+
+  // Find task that still needs more submissions
+  // Formula: requiredCount - passedCount - pendingCount > 0
+  const task = allTasks.find(t => {
+    const pendingCount = t._count.submissions
+    return t.requiredCount - t.passedCount - pendingCount > 0
+  })
+
+  if (!task) {
+    // All tasks have their submissions sent (pending review)
+    await deleteUserMessage(ctx)
+    await sendAndTrack(
+      ctx,
+      '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
+      { reply_markup: getBackKeyboard('close_notification', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -380,7 +436,7 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     await sendAndTrack(
       ctx,
       '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
-      { reply_markup: getBackKeyboard('close', '✖️ Закрыть') },
+      { reply_markup: getBackKeyboard('close_notification', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -456,8 +512,9 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
   const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const isLastSubmission = remaining <= 0
 
+  const deadlineEnabled = task.group?.deadlineEnabled ?? task.lesson?.group?.deadlineEnabled ?? true
   const message = buildSubmissionConfirmation(
-    task.page.pageNumber,
+    task.page?.pageNumber || 1,
     task.startLine,
     task.endLine,
     task.passedCount + actualPendingCount,
@@ -465,7 +522,8 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     Math.max(0, remaining),
     progressPercent,
     task.deadline,
-    isLastSubmission
+    isLastSubmission,
+    deadlineEnabled
   )
 
   await sendAndTrack(
@@ -504,8 +562,9 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Get active task
-  const task = await prisma.task.findFirst({
+  // Get all active tasks and find the one that needs more submissions
+  // With multiple lines support, student can have several IN_PROGRESS tasks
+  const allTasks = await prisma.task.findMany({
     where: {
       studentId: user.id,
       status: TaskStatus.IN_PROGRESS,
@@ -522,12 +581,38 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
       group: {
         include: { ustaz: true }
       },
-    }
+      _count: {
+        select: {
+          submissions: { where: { status: SubmissionStatus.PENDING } }
+        }
+      }
+    },
+    orderBy: { createdAt: 'desc' } // Prefer most recently created
+  })
+
+  if (allTasks.length === 0) {
+    // No task - just delete the message, don't spam
+    await deleteUserMessage(ctx)
+    return
+  }
+
+  // Find task that still needs more submissions
+  // Formula: requiredCount - passedCount - pendingCount > 0
+  const task = allTasks.find(t => {
+    const pendingCount = t._count.submissions
+    return t.requiredCount - t.passedCount - pendingCount > 0
   })
 
   if (!task) {
-    // No task - just delete the message, don't spam
+    // All tasks have their submissions sent (pending review)
     await deleteUserMessage(ctx)
+    await sendAndTrack(
+      ctx,
+      '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
+      { reply_markup: getBackKeyboard('close_notification', '✖️ Закрыть') },
+      user.id,
+      'notification'
+    )
     return
   }
 
@@ -575,7 +660,7 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     await sendAndTrack(
       ctx,
       '✅ Все записи отправлены!\n\nОжидайте проверку устаза.',
-      { reply_markup: getBackKeyboard('close', '✖️ Закрыть') },
+      { reply_markup: getBackKeyboard('close_notification', '✖️ Закрыть') },
       user.id,
       'notification'
     )
@@ -650,8 +735,9 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
   const progressPercent = ((task.passedCount / task.requiredCount) * 100).toFixed(0)
   const isLastSubmission = remaining <= 0
 
+  const deadlineEnabled = task.group?.deadlineEnabled ?? task.lesson?.group?.deadlineEnabled ?? true
   const message = buildSubmissionConfirmation(
-    task.page.pageNumber,
+    task.page?.pageNumber || 1,
     task.startLine,
     task.endLine,
     task.passedCount + actualPendingCount,
@@ -659,7 +745,8 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     Math.max(0, remaining),
     progressPercent,
     task.deadline,
-    isLastSubmission
+    isLastSubmission,
+    deadlineEnabled
   )
 
   await sendAndTrack(
@@ -750,7 +837,8 @@ function buildSubmissionConfirmation(
   remaining: number,
   progressPercent: string,
   deadline?: Date,
-  isLastSubmission: boolean = false
+  isLastSubmission: boolean = false,
+  deadlineEnabled: boolean = true
 ): string {
   const lineRange = startLine === endLine
     ? `строка ${startLine}`
@@ -776,8 +864,8 @@ function buildSubmissionConfirmation(
     return message
   }
 
-  // Add deadline info
-  if (deadline) {
+  // Add deadline info (only if deadlines are enabled)
+  if (deadline && deadlineEnabled) {
     const now = new Date()
     const timeLeft = deadline.getTime() - now.getTime()
     const hoursLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60)))

@@ -343,28 +343,61 @@ export async function PATCH(
       }
     })
 
-    // If repetitionCount changed, sync all active tasks for this group
-    if (validation.data.repetitionCount !== undefined &&
-        validation.data.repetitionCount !== existing.repetitionCount) {
+    // Sync stage-specific repetition counts to active tasks
+    // Learning stages (1.1, 2.1)
+    if (validation.data.repetitionCountLearning !== undefined) {
       await prisma.task.updateMany({
         where: {
           groupId: id,
           status: 'IN_PROGRESS',
-          // Only update if new count is different and task hasn't exceeded the new count
-          currentCount: { lt: validation.data.repetitionCount }
+          stage: { in: ['STAGE_1_1', 'STAGE_2_1'] }
         },
         data: {
-          requiredCount: validation.data.repetitionCount
+          requiredCount: validation.data.repetitionCountLearning
         }
       })
+    }
 
-      // For tasks where currentCount >= new requiredCount, mark them as ready
-      // (keep as IN_PROGRESS but with updated requiredCount so they complete on next check)
+    // Connection stages (1.2, 2.2)
+    if (validation.data.repetitionCountConnection !== undefined) {
       await prisma.task.updateMany({
         where: {
           groupId: id,
           status: 'IN_PROGRESS',
-          currentCount: { gte: validation.data.repetitionCount }
+          stage: { in: ['STAGE_1_2', 'STAGE_2_2'] }
+        },
+        data: {
+          requiredCount: validation.data.repetitionCountConnection
+        }
+      })
+    }
+
+    // Full page stage (3)
+    if (validation.data.repetitionCountFull !== undefined) {
+      await prisma.task.updateMany({
+        where: {
+          groupId: id,
+          status: 'IN_PROGRESS',
+          stage: 'STAGE_3'
+        },
+        data: {
+          requiredCount: validation.data.repetitionCountFull
+        }
+      })
+    }
+
+    // Legacy: If general repetitionCount changed (without stage-specific settings)
+    // This only applies when the user updates the old generic repetitionCount field
+    if (validation.data.repetitionCount !== undefined &&
+        validation.data.repetitionCount !== existing.repetitionCount &&
+        validation.data.repetitionCountLearning === undefined &&
+        validation.data.repetitionCountConnection === undefined &&
+        validation.data.repetitionCountFull === undefined) {
+      // Update all active tasks with the new generic count
+      await prisma.task.updateMany({
+        where: {
+          groupId: id,
+          status: 'IN_PROGRESS',
         },
         data: {
           requiredCount: validation.data.repetitionCount
