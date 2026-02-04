@@ -1643,7 +1643,13 @@ async function showSubmissionToUstaz(
   caption += `📚 <b>${groupName}</b>\n`
   caption += `👤 ${studentName}\n`
   caption += `📖 Стр. ${task.page?.pageNumber || 1}, ${lineRange}\n`
-  caption += `🎯 ${stageName}\n\n`
+  caption += `🎯 ${stageName}\n`
+  if (submission.createdAt) {
+    const sent = new Date(submission.createdAt)
+    const timeStr = sent.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bishkek' })
+    caption += `🕐 ${timeStr}\n`
+  }
+  caption += '\n'
   caption += `${progressBar} ${progressPercent}%\n`
   caption += `📊 <b>${totalSent}/${task.requiredCount}</b>`
 

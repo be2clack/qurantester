@@ -2064,7 +2064,13 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   if (groupName) caption += `📚 <b>${groupName}</b>\n`
   caption += `👤 ${studentName}\n`
   caption += `📖 Стр. ${first.task.page?.pageNumber || 1}, ${lineRange}\n`
-  caption += `🎯 ${stageName}\n\n`
+  caption += `🎯 ${stageName}\n`
+  if (first.createdAt) {
+    const sent = new Date(first.createdAt)
+    const timeStr = sent.toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bishkek' })
+    caption += `🕐 ${timeStr}\n`
+  }
+  caption += '\n'
   caption += `${progressBar} ${progressPercent}%\n`
   caption += `📊 <b>${totalSent}/${first.task.requiredCount}</b>`
 
