@@ -33,7 +33,7 @@ export default async function ParentLayout({
           phone: user.phone
         }}
       />
-      <SidebarInset>
+      <SidebarInset style={{ paddingTop: 'var(--tg-safe-top)' }}>
         <Header title="Успеваемость детей" />
         <main className="flex-1 overflow-auto p-4 md:p-6">
           {children}

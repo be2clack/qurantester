@@ -46,6 +46,12 @@
   --radius-4xl: calc(var(--radius) + 16px);
 }
 
+/* Telegram WebApp safe area insets (set by TelegramFullscreen component) */
+:root {
+  --tg-safe-top: 0px;
+  --tg-safe-bottom: 0px;
+}
+
 /* Nova style with gray base and emerald primary */
 :root {
   --radius: 0.75rem;

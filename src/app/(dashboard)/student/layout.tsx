@@ -38,7 +38,7 @@ export default async function StudentLayout({
           }}
         />
       </div>
-      <SidebarInset className="md:peer-data-[state=collapsed]:ml-0">
+      <SidebarInset className="md:peer-data-[state=collapsed]:ml-0" style={{ paddingTop: 'var(--tg-safe-top)' }}>
         <Header title="Мой прогресс" />
         <main className="flex-1 overflow-auto p-3 md:p-6 pb-20 md:pb-6">
           {children}
