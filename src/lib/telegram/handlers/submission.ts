@@ -1127,7 +1127,15 @@ export async function processSubmissionAndNotify(
       }
     }
 
-    if (!group) return
+    if (!group) {
+      // Even if group not found, mark submission as sent so it doesn't get stuck
+      console.error(`[processSubmissionAndNotify] Group not found for task ${task.id}, marking sentToUstazAt`)
+      await prisma.submission.update({
+        where: { id: submission.id },
+        data: { sentToUstazAt: new Date() }
+      }).catch(() => {})
+      return
+    }
 
     const verificationMode = group.verificationMode || 'MANUAL'
     const aiProvider = group.aiProvider || 'NONE'
@@ -1326,6 +1334,11 @@ export async function processSubmissionAndNotify(
     await notifyUstazAboutSubmission(task, updatedSubmission, student, group)
   } catch (error) {
     console.error('Failed to process submission:', error)
+    // Ensure sentToUstazAt is set even on failure so submission doesn't get stuck
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: { sentToUstazAt: new Date() }
+    }).catch(() => {})
   }
 }
 

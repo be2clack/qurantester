@@ -1935,11 +1935,11 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   })
 
   if (submissions.length === 0) {
-    // Debug: check what the count query returns
-    const debugCount = await prisma.submission.count({
+    // Check for stuck submissions (PENDING but sentToUstazAt is null)
+    const stuckCount = await prisma.submission.count({
       where: {
         status: SubmissionStatus.PENDING,
-        sentToUstazAt: { not: null },
+        sentToUstazAt: null,
         OR: [
           { task: { lesson: { groupId: { in: groupIds } } } },
           { task: { groupId: { in: groupIds } } }
@@ -1947,34 +1947,80 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
       }
     })
 
-    // Also check count without sentToUstazAt filter
-    const debugCountAll = await prisma.submission.count({
-      where: {
-        status: SubmissionStatus.PENDING,
-        OR: [
-          { task: { lesson: { groupId: { in: groupIds } } } },
-          { task: { groupId: { in: groupIds } } }
-        ]
+    if (stuckCount > 0) {
+      // Recover stuck submissions by setting sentToUstazAt
+      console.log(`[Recovery] Found ${stuckCount} stuck submissions, recovering...`)
+
+      // Get stuck submission IDs
+      const stuckSubmissions = await prisma.submission.findMany({
+        where: {
+          status: SubmissionStatus.PENDING,
+          sentToUstazAt: null,
+          OR: [
+            { task: { lesson: { groupId: { in: groupIds } } } },
+            { task: { groupId: { in: groupIds } } }
+          ]
+        },
+        select: { id: true },
+      })
+
+      // Batch update sentToUstazAt to recover them
+      await prisma.submission.updateMany({
+        where: {
+          id: { in: stuckSubmissions.map(s => s.id) }
+        },
+        data: { sentToUstazAt: new Date() }
+      })
+
+      console.log(`[Recovery] Recovered ${stuckSubmissions.length} submissions`)
+
+      // Re-query to show the recovered submissions
+      const recovered = await prisma.submission.findMany({
+        where: {
+          status: SubmissionStatus.PENDING,
+          sentToUstazAt: { not: null },
+          OR: [
+            { task: { lesson: { groupId: { in: groupIds } } } },
+            { task: { groupId: { in: groupIds } } }
+          ]
+        },
+        include: {
+          student: {
+            include: {
+              studentGroups: {
+                where: { isActive: true },
+                include: {
+                  group: { select: { name: true } }
+                },
+                take: 1
+              }
+            }
+          },
+          task: {
+            include: {
+              page: true,
+              group: true
+            }
+          }
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 10
+      })
+
+      if (recovered.length > 0) {
+        // Replace submissions with recovered ones and continue to show them
+        submissions.push(...recovered)
       }
-    })
+    }
+  }
 
-    console.log(`[Debug] showPendingSubmissions: groups=${groupIds.length}, withSentAt=${debugCount}, allPending=${debugCountAll}`)
-
+  if (submissions.length === 0) {
     const { InlineKeyboard } = await import('grammy')
     const closeKeyboard = new InlineKeyboard()
       .text('🔄 Обновить', 'ustaz:submissions')
       .text('✖️ Закрыть', 'close_notification')
 
-    // Show debug info temporarily
-    let message = '📝 <b>Работы на проверку</b>\n\n'
-    if (debugCount > 0 || debugCountAll > 0) {
-      message += `⚠️ Найдено ${debugCountAll} работ (отправлено устазу: ${debugCount})\n`
-      message += `<i>Попробуйте обновить или обратитесь к администратору.</i>`
-    } else {
-      message += '<i>✅ Все работы проверены!</i>'
-    }
-
-    await ctx.editMessageText(message, {
+    await ctx.editMessageText('📝 <b>Работы на проверку</b>\n\n<i>✅ Все работы проверены!</i>', {
       parse_mode: 'HTML',
       reply_markup: closeKeyboard
     })
