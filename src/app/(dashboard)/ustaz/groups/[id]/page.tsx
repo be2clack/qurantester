@@ -166,8 +166,8 @@ export default function UstazGroupDetailPage() {
         </div>
         <Link href={`/ustaz/groups/${groupId}/report`}>
           <Button variant="outline" size="sm">
-            <ClipboardList className="h-4 w-4 md:mr-2" />
-            <span className="hidden md:inline">Отчёт</span>
+            <ClipboardList className="h-4 w-4 mr-1 md:mr-2" />
+            Отчёт
           </Button>
         </Link>
       </div>
