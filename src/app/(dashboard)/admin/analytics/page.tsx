@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -56,6 +57,8 @@ interface Stats {
     page: number
     line: number
     tasksCompleted: number
+    gender: 'MALE' | 'FEMALE' | null
+    age: number | null
   }[]
 }
 
@@ -78,20 +81,24 @@ interface AIUsageStats {
   }[]
 }
 
+type GenderFilter = 'all' | 'MALE' | 'FEMALE'
+type AgeFilter = 'all' | 'children' | 'adults'
+
 export default function AnalyticsPage() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [aiStats, setAiStats] = useState<AIUsageStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [genderFilter, setGenderFilter] = useState<GenderFilter>('all')
+  const [ageFilter, setAgeFilter] = useState<AgeFilter>('all')
 
-  useEffect(() => {
-    fetchStats()
-    fetchAIStats()
-  }, [])
-
-  async function fetchStats() {
+  const fetchStats = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/stats/overview')
+      const params = new URLSearchParams()
+      if (genderFilter !== 'all') params.set('gender', genderFilter)
+      if (ageFilter !== 'all') params.set('age', ageFilter)
+
+      const res = await fetch(`/api/stats/overview?${params}`)
       if (res.ok) {
         const data = await res.json()
         setStats(data)
@@ -103,7 +110,15 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [genderFilter, ageFilter])
+
+  useEffect(() => {
+    fetchStats()
+  }, [fetchStats])
+
+  useEffect(() => {
+    fetchAIStats()
+  }, [])
 
   async function fetchAIStats() {
     try {
@@ -117,7 +132,7 @@ export default function AnalyticsPage() {
     }
   }
 
-  if (loading) {
+  if (loading && !stats) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -200,10 +215,67 @@ export default function AnalyticsPage() {
               <TrendingUp className="h-5 w-5 text-green-500" />
               Лучшие студенты
             </CardTitle>
-            <CardDescription>По количеству выполненных заданий</CardDescription>
+            <CardDescription>По прогрессу заучивания</CardDescription>
+
+            {/* Filters */}
+            <div className="flex flex-wrap gap-2 pt-3">
+              {/* Gender Filter */}
+              <div className="flex gap-1">
+                <Button
+                  variant={genderFilter === 'all' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setGenderFilter('all')}
+                >
+                  Все
+                </Button>
+                <Button
+                  variant={genderFilter === 'MALE' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setGenderFilter('MALE')}
+                >
+                  Мужской
+                </Button>
+                <Button
+                  variant={genderFilter === 'FEMALE' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setGenderFilter('FEMALE')}
+                >
+                  Женский
+                </Button>
+              </div>
+
+              {/* Age Filter */}
+              <div className="flex gap-1">
+                <Button
+                  variant={ageFilter === 'all' ? 'secondary' : 'outline'}
+                  size="sm"
+                  onClick={() => setAgeFilter('all')}
+                >
+                  Все возрасты
+                </Button>
+                <Button
+                  variant={ageFilter === 'children' ? 'secondary' : 'outline'}
+                  size="sm"
+                  onClick={() => setAgeFilter('children')}
+                >
+                  Дети (&lt;18)
+                </Button>
+                <Button
+                  variant={ageFilter === 'adults' ? 'secondary' : 'outline'}
+                  size="sm"
+                  onClick={() => setAgeFilter('adults')}
+                >
+                  Взрослые (18+)
+                </Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            {stats?.topStudents && stats.topStudents.length > 0 ? (
+            {loading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin" />
+              </div>
+            ) : stats?.topStudents && stats.topStudents.length > 0 ? (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -221,7 +293,13 @@ export default function AnalyticsPage() {
                           {student.rank}
                         </Badge>
                       </TableCell>
-                      <TableCell className="font-medium">{student.name}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{student.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {student.gender === 'MALE' ? 'М' : student.gender === 'FEMALE' ? 'Ж' : '—'}
+                          {student.age !== null && ` • ${student.age} лет`}
+                        </div>
+                      </TableCell>
                       <TableCell className="text-right">
                         <Badge variant="outline">{student.page}-{student.line}</Badge>
                       </TableCell>

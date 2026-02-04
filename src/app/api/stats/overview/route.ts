@@ -1,13 +1,41 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
-import { UserRole, TaskStatus, SubmissionStatus } from '@prisma/client'
+import { UserRole, TaskStatus, SubmissionStatus, Gender, Prisma } from '@prisma/client'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const currentUser = await getCurrentUser()
     if (!currentUser || currentUser.role !== UserRole.ADMIN) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
+    // Get filter params
+    const { searchParams } = new URL(request.url)
+    const genderFilter = searchParams.get('gender') as Gender | null
+    const ageFilter = searchParams.get('age') // 'children' (<18) or 'adults' (>=18)
+
+    // Build top students filter
+    const topStudentsWhere: Prisma.UserWhereInput = {
+      role: UserRole.STUDENT,
+      isActive: true,
+    }
+
+    if (genderFilter && (genderFilter === 'MALE' || genderFilter === 'FEMALE')) {
+      topStudentsWhere.gender = genderFilter
+    }
+
+    if (ageFilter) {
+      const today = new Date()
+      const cutoffDate = new Date(today.getFullYear() - 18, today.getMonth(), today.getDate())
+
+      if (ageFilter === 'children') {
+        // Born after cutoff = under 18
+        topStudentsWhere.birthDate = { gt: cutoffDate }
+      } else if (ageFilter === 'adults') {
+        // Born on or before cutoff = 18 or older
+        topStudentsWhere.birthDate = { lte: cutoffDate }
+      }
     }
 
     // Fetch all stats in parallel
@@ -50,9 +78,9 @@ export async function GET() {
       prisma.group.count(),
       prisma.group.count({ where: { isActive: true } }),
 
-      // Top students by page progress
+      // Top students by page progress (with filters)
       prisma.user.findMany({
-        where: { role: UserRole.STUDENT, isActive: true },
+        where: topStudentsWhere,
         orderBy: [
           { currentPage: 'desc' },
           { currentLine: 'desc' },
@@ -64,6 +92,8 @@ export async function GET() {
           lastName: true,
           currentPage: true,
           currentLine: true,
+          gender: true,
+          birthDate: true,
           statistics: {
             select: { totalTasksCompleted: true }
           },
@@ -94,14 +124,30 @@ export async function GET() {
         total: totalGroups,
         active: activeGroups,
       },
-      topStudents: topStudents.map((student, index) => ({
-        id: student.id,
-        rank: index + 1,
-        name: [student.firstName, student.lastName].filter(Boolean).join(' ') || 'Студент',
-        page: student.currentPage,
-        line: student.currentLine,
-        tasksCompleted: student.statistics?.totalTasksCompleted || 0,
-      })),
+      topStudents: topStudents.map((student, index) => {
+        // Calculate age
+        let age: number | null = null
+        if (student.birthDate) {
+          const today = new Date()
+          const birth = new Date(student.birthDate)
+          age = today.getFullYear() - birth.getFullYear()
+          const monthDiff = today.getMonth() - birth.getMonth()
+          if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+            age--
+          }
+        }
+
+        return {
+          id: student.id,
+          rank: index + 1,
+          name: [student.firstName, student.lastName].filter(Boolean).join(' ') || 'Студент',
+          page: student.currentPage,
+          line: student.currentLine,
+          tasksCompleted: student.statistics?.totalTasksCompleted || 0,
+          gender: student.gender,
+          age,
+        }
+      }),
     })
   } catch (error) {
     console.error('Get stats overview error:', error)

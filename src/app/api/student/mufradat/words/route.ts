@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { getCurrentUser } from '@/lib/auth'
 import { UserRole } from '@prisma/client'
+import { getPageVerses } from '@/lib/quran-api'
 
 // GET: Get words for the mufradat game
 // Query params:
-// - page: specific Quran page number
-// - surah: specific surah number
+// - page: specific Quran page number (uses Quran API to get words)
+// - surah: specific surah number (fallback to DB lookup)
 // - count: number of words to return (default 10)
 export async function GET(request: NextRequest) {
   const user = await getCurrentUser()
@@ -26,49 +27,107 @@ export async function GET(request: NextRequest) {
     const surah = searchParams.get('surah')
     const count = parseInt(searchParams.get('count') || '10')
 
-    // Build filter based on params
-    const where: {
-      translationRu: { not: null }
-      surahNumber?: number
-    } = {
-      translationRu: { not: null }, // Only words with Russian translation
-    }
+    let allWords: {
+      id: string
+      wordKey: string
+      surahNumber: number
+      ayahNumber: number
+      position: number
+      textArabic: string
+      translationEn: string | null
+      translationRu: string | null
+    }[] = []
 
-    // If page specified, get surah numbers for that page
+    // If page is specified, get words from Quran API then match with our translations
     if (page) {
-      // For now, we'll filter by surah if page is 1-2 (Al-Fatiha is surah 1)
-      // In future, we could map pages to surahs more precisely
       const pageNum = parseInt(page)
-      if (pageNum === 1) {
-        where.surahNumber = 1 // Al-Fatiha
-      } else if (pageNum === 2) {
-        where.surahNumber = 2 // Start of Al-Baqarah
+
+      // Get verses with words from Quran API
+      const pageData = await getPageVerses(pageNum, { wordTranslationLanguage: 'en' })
+
+      // Collect all wordKeys from this page
+      const wordKeys: string[] = []
+      const arabicWords: Map<string, { textArabic: string; translationEn?: string }> = new Map()
+
+      for (const verse of pageData.verses) {
+        const [surahNum, ayahNum] = verse.verse_key.split(':').map(Number)
+
+        for (const word of verse.words || []) {
+          if (word.char_type_name !== 'word') continue
+
+          const wordKey = `${surahNum}:${ayahNum}:${word.position}`
+          wordKeys.push(wordKey)
+          arabicWords.set(wordKey, {
+            textArabic: word.text_uthmani,
+            translationEn: word.translation?.text
+          })
+        }
       }
-    }
 
-    if (surah) {
-      where.surahNumber = parseInt(surah)
-    }
+      // Get Russian translations from our DB for these wordKeys
+      const translations = await prisma.wordTranslation.findMany({
+        where: {
+          wordKey: { in: wordKeys },
+          translationRu: { not: null }
+        },
+        select: {
+          id: true,
+          wordKey: true,
+          surahNumber: true,
+          ayahNumber: true,
+          position: true,
+          textArabic: true,
+          translationEn: true,
+          translationRu: true,
+        }
+      })
 
-    // Get all words matching criteria
-    const allWords = await prisma.wordTranslation.findMany({
-      where,
-      select: {
-        id: true,
-        wordKey: true,
-        surahNumber: true,
-        ayahNumber: true,
-        position: true,
-        textArabic: true,
-        translationEn: true,
-        translationRu: true,
-      },
-    })
+      // Merge: use Arabic from API, translation from DB
+      allWords = translations.map(t => {
+        const apiWord = arabicWords.get(t.wordKey)
+        return {
+          id: t.id,
+          wordKey: t.wordKey,
+          surahNumber: t.surahNumber,
+          ayahNumber: t.ayahNumber,
+          position: t.position,
+          textArabic: apiWord?.textArabic || t.textArabic,
+          translationEn: apiWord?.translationEn || t.translationEn,
+          translationRu: t.translationRu
+        }
+      })
+    } else {
+      // Fallback: filter by surah from DB
+      const where: {
+        translationRu: { not: null }
+        surahNumber?: number
+      } = {
+        translationRu: { not: null },
+      }
+
+      if (surah) {
+        where.surahNumber = parseInt(surah)
+      }
+
+      allWords = await prisma.wordTranslation.findMany({
+        where,
+        select: {
+          id: true,
+          wordKey: true,
+          surahNumber: true,
+          ayahNumber: true,
+          position: true,
+          textArabic: true,
+          translationEn: true,
+          translationRu: true,
+        },
+      })
+    }
 
     if (allWords.length === 0) {
       return NextResponse.json({
         words: [],
-        message: 'No words found with Russian translations. Import words first.',
+        message: 'No words found with Russian translations for this page.',
       })
     }
 

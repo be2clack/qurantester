@@ -1,7 +1,7 @@
 import type { BotContext } from '../bot'
 import { InlineKeyboard } from 'grammy'
 import { prisma } from '@/lib/prisma'
-import { TaskStatus, SubmissionStatus } from '@prisma/client'
+import { TaskStatus, SubmissionStatus, LineProgressStatus } from '@prisma/client'
 import { sendAndTrack, cleanupAllMessages, deleteMessagesByType } from '../utils/message-cleaner'
 import {
   getMainMenuKeyboard,
@@ -337,7 +337,8 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
       currentStage: sg.currentStage,
       hasActiveTask: !!activeTask,
       taskProgress: activeTask ? {
-        current: activeTask.currentCount,
+        // Use passed + pending for accurate progress (not currentCount which includes failed)
+        current: activeTask.passedCount + pendingCount,
         required: activeTask.requiredCount,
         passed: activeTask.passedCount,
         pending: pendingCount,
@@ -352,10 +353,23 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
       status: TaskStatus.IN_PROGRESS,
     },
     select: {
+      id: true,
       currentCount: true,
       requiredCount: true,
+      passedCount: true,
     }
   })
+
+  // Count pending submissions for accurate progress display
+  let activeTaskPendingCount = 0
+  if (activeTask) {
+    activeTaskPendingCount = await prisma.submission.count({
+      where: {
+        taskId: activeTask.id,
+        status: SubmissionStatus.PENDING,
+      }
+    })
+  }
 
   // Calculate rank in primary group
   let rankInGroup: number | undefined
@@ -390,7 +404,8 @@ async function showStudentMenuEdit(ctx: BotContext, user: any): Promise<void> {
 
   const menuInfo: StudentMenuInfo = {
     hasActiveTask: !!activeTask,
-    currentCount: activeTask?.currentCount,
+    // Use passedCount + pendingCount for accurate progress (not currentCount which includes failed)
+    currentCount: activeTask ? (activeTask.passedCount + activeTaskPendingCount) : undefined,
     requiredCount: activeTask?.requiredCount,
     groupName: primaryGroup?.name,
     ustazName: primaryGroup?.ustaz?.firstName || undefined,
@@ -1170,6 +1185,13 @@ async function showTaskForGroup(ctx: BotContext, user: any, task: any, studentGr
   const group = studentGroup.group
   const typeName = getLessonTypeName(group.lessonType)
 
+  // Store current task ID in session for submission handler
+  ctx.session.pendingTaskId = task.id
+  // Reset revision session state to prevent memorization submissions
+  // from being incorrectly routed to revision handler
+  ctx.session.step = 'browsing_menu'
+  ctx.session.revisionPageNumber = undefined
+
   // Check QRC pre-check for learning stages (1.1 and 2.1)
   if (group?.qrcPreCheckEnabled) {
     const isLearningStage = task.stage === 'STAGE_1_1' || task.stage === 'STAGE_2_1'
@@ -1900,15 +1922,49 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   })
 
   if (submissions.length === 0) {
-    const { InlineKeyboard } = await import('grammy')
-    const closeKeyboard = new InlineKeyboard().text('✖️ Закрыть', 'close_notification')
-    await ctx.editMessageText(
-      '📝 <b>Работы на проверку</b>\n\n<i>✅ Все работы проверены!</i>',
-      {
-        parse_mode: 'HTML',
-        reply_markup: closeKeyboard
+    // Debug: check what the count query returns
+    const debugCount = await prisma.submission.count({
+      where: {
+        status: SubmissionStatus.PENDING,
+        sentToUstazAt: { not: null },
+        OR: [
+          { task: { lesson: { groupId: { in: groupIds } } } },
+          { task: { groupId: { in: groupIds } } }
+        ]
       }
-    )
+    })
+
+    // Also check count without sentToUstazAt filter
+    const debugCountAll = await prisma.submission.count({
+      where: {
+        status: SubmissionStatus.PENDING,
+        OR: [
+          { task: { lesson: { groupId: { in: groupIds } } } },
+          { task: { groupId: { in: groupIds } } }
+        ]
+      }
+    })
+
+    console.log(`[Debug] showPendingSubmissions: groups=${groupIds.length}, withSentAt=${debugCount}, allPending=${debugCountAll}`)
+
+    const { InlineKeyboard } = await import('grammy')
+    const closeKeyboard = new InlineKeyboard()
+      .text('🔄 Обновить', 'ustaz:submissions')
+      .text('✖️ Закрыть', 'close_notification')
+
+    // Show debug info temporarily
+    let message = '📝 <b>Работы на проверку</b>\n\n'
+    if (debugCount > 0 || debugCountAll > 0) {
+      message += `⚠️ Найдено ${debugCountAll} работ (отправлено устазу: ${debugCount})\n`
+      message += `<i>Попробуйте обновить или обратитесь к администратору.</i>`
+    } else {
+      message += '<i>✅ Все работы проверены!</i>'
+    }
+
+    await ctx.editMessageText(message, {
+      parse_mode: 'HTML',
+      reply_markup: closeKeyboard
+    })
     return
   }
 
@@ -1931,8 +1987,17 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   }
   const stageName = stageNames[first.task.stage] || first.task.stage
 
+  // Count pending submissions for accurate progress
+  const pendingForTask = await prisma.submission.count({
+    where: {
+      taskId: first.task.id,
+      status: SubmissionStatus.PENDING
+    }
+  })
+  const totalSent = first.task.passedCount + pendingForTask
+
   // Calculate progress - clamp to 0-100 to avoid negative values
-  const progressPercent = Math.round((first.task.currentCount / first.task.requiredCount) * 100)
+  const progressPercent = Math.round((totalSent / first.task.requiredCount) * 100)
   const clampedPercent = Math.min(100, Math.max(0, progressPercent))
   const progressBar = `[${'▓'.repeat(Math.round(clampedPercent / 10))}${'░'.repeat(10 - Math.round(clampedPercent / 10))}]`
 
@@ -1942,7 +2007,7 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
   caption += `📖 Стр. ${first.task.page?.pageNumber || 1}, ${lineRange}\n`
   caption += `🎯 ${stageName}\n\n`
   caption += `${progressBar} ${progressPercent}%\n`
-  caption += `📊 <b>${first.task.currentCount}/${first.task.requiredCount}</b>`
+  caption += `📊 <b>${totalSent}/${first.task.requiredCount}</b>`
 
   // Add passed/failed counts if any
   if (first.task.passedCount > 0 || first.task.failedCount > 0) {
@@ -2475,6 +2540,25 @@ async function handleReviewCallback(
           completedAt: new Date()
         }
       })
+
+      // Update lineProgress to COMPLETED for learning stages
+      const isLearningStage = submission.task.stage === 'STAGE_1_1' || submission.task.stage === 'STAGE_2_1'
+      if (isLearningStage && submission.task.groupId && submission.task.page?.pageNumber) {
+        await prisma.lineProgress.updateMany({
+          where: {
+            studentId: submission.studentId,
+            groupId: submission.task.groupId,
+            pageNumber: submission.task.page.pageNumber,
+            lineNumber: submission.task.startLine,
+            stage: submission.task.stage,
+          },
+          data: {
+            status: LineProgressStatus.COMPLETED,
+            passedCount: task.passedCount,
+            completedAt: new Date()
+          }
+        })
+      }
 
       // Update user statistics
       await prisma.userStatistics.upsert({
@@ -3884,9 +3968,19 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
 
   await ctx.answerCallbackQuery({ text: '✅ Запись отменена' })
 
+  // Count remaining pending submissions
+  const pendingCount = await prisma.submission.count({
+    where: {
+      taskId,
+      status: SubmissionStatus.PENDING
+    }
+  })
+
   // Show updated task status
-  const remaining = task.requiredCount - task.currentCount
-  const progressPercent = ((task.currentCount / task.requiredCount) * 100).toFixed(0)
+  // Use passedCount + pendingCount for accurate progress, not currentCount
+  const totalSent = task.passedCount + pendingCount
+  const remaining = task.requiredCount - totalSent
+  const progressPercent = ((totalSent / task.requiredCount) * 100).toFixed(0)
 
   const lineRange = task.startLine === task.endLine
     ? `строка ${task.startLine}`
@@ -3897,7 +3991,7 @@ async function cancelLastSubmission(ctx: BotContext, user: any, taskId: string):
   let message = `↩️ <b>Запись отменена</b>\n\n`
   message += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n\n`
   message += `${progressBar}\n`
-  message += `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n`
+  message += `📊 Отправлено: <b>${totalSent}/${task.requiredCount}</b>\n`
   message += `⏳ Осталось: <b>${remaining}</b>\n\n`
   message += `<i>Отправьте запись чтения.</i>`
 
@@ -3989,11 +4083,17 @@ async function confirmAndSendToUstaz(ctx: BotContext, user: any, taskId: string)
   }
 
   try {
-    // Use processSubmissionAndNotify for AI verification and notification
-    // This handles AI processing, auto-pass/fail, and ustaz notification
-    await processSubmissionAndNotify(task, pendingSubmission, user)
-
+    // Answer callback immediately to prevent timeout
     await ctx.answerCallbackQuery({ text: '✅ Работа отправлена устазу!' })
+
+    // Count actual progress (passed + pending)
+    const pendingCount = await prisma.submission.count({
+      where: {
+        taskId,
+        status: SubmissionStatus.PENDING
+      }
+    })
+    const totalSent = task.passedCount + pendingCount
 
     // Update message to show confirmation
     const lineRange = task.startLine === task.endLine
@@ -4002,12 +4102,17 @@ async function confirmAndSendToUstaz(ctx: BotContext, user: any, taskId: string)
 
     const confirmMessage = `✅ <b>Работа отправлена!</b>\n\n` +
       `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n` +
-      `📊 Отправлено: <b>${task.currentCount}/${task.requiredCount}</b>\n\n` +
+      `📊 Отправлено: <b>${totalSent}/${task.requiredCount}</b>\n\n` +
       `<i>Ожидайте проверку устаза.</i>`
 
     await ctx.editMessageText(confirmMessage, {
       parse_mode: 'HTML',
       reply_markup: getBackKeyboard('student:menu', '◀️ В меню')
+    })
+
+    // Process AI and notify ustaz in background (don't await to prevent webhook timeout)
+    processSubmissionAndNotify(task, pendingSubmission, user).catch(err => {
+      console.error('[Menu] Background submission processing error:', err)
     })
   } catch (error) {
     console.error('Failed to send to ustaz:', error)
@@ -4590,10 +4695,11 @@ async function showMemorizationLines(
     }
   }
   // Also check for pending tasks (all submissions sent, waiting review)
+  // Note: only use passedCount + pending submissions, NOT currentCount
+  // (currentCount includes failed/rejected submissions which shouldn't count)
   for (const task of activeTasks) {
     const requiredCount = group.repetitionCountLearning || group.repetitionCount || 80
-    const allSubmitted = task.currentCount >= requiredCount ||
-                         (task.passedCount + task.submissions.length) >= requiredCount
+    const allSubmitted = (task.passedCount + task.submissions.length) >= requiredCount
     if (allSubmitted && task.startLine > lastUnlockedLine) {
       lastUnlockedLine = task.startLine
     }
@@ -4606,8 +4712,9 @@ async function showMemorizationLines(
     const progress = lineProgressRecords.find(lp => lp.lineNumber === lineNum)
     const activeTask = activeTasks.find(t => t.startLine === lineNum)
     const hasPendingSubmission = activeTask && activeTask.submissions.length > 0
-    const allSubmitted = activeTask && (activeTask.currentCount >= requiredCount ||
-                         (activeTask.passedCount + activeTask.submissions.length) >= requiredCount)
+    // Note: only use passedCount + pending submissions, NOT currentCount
+    const allSubmitted = activeTask &&
+                         (activeTask.passedCount + activeTask.submissions.length) >= requiredCount
 
     let status: 'not_started' | 'in_progress' | 'pending' | 'completed' | 'failed'
     if (progress?.status === 'COMPLETED') {
@@ -4806,12 +4913,22 @@ async function handleMemLineCallback(
 
   const group = studentGroup.group
 
-  // Check if already has an active task for THIS SPECIFIC LINE and STAGE
+  // First, get or create the QuranPage to use in the task query
+  let page = await prisma.quranPage.findUnique({
+    where: { pageNumber }
+  })
+
+  if (!page) {
+    page = await getOrCreateQuranPage(pageNumber)
+  }
+
+  // Check if already has an active task for THIS SPECIFIC PAGE, LINE and STAGE
   // This allows students to work on multiple lines concurrently
   const existingTask = await prisma.task.findFirst({
     where: {
       studentId: user.id,
       groupId,
+      pageId: page.id,  // Important: filter by specific page
       status: TaskStatus.IN_PROGRESS,
       startLine: lineNumber,
       stage,
@@ -4823,15 +4940,6 @@ async function handleMemLineCallback(
     // Show existing task for this line
     await showTaskForGroup(ctx, user, existingTask, studentGroup)
     return
-  }
-
-  // Create or get the QuranPage
-  let page = await prisma.quranPage.findUnique({
-    where: { pageNumber }
-  })
-
-  if (!page) {
-    page = await getOrCreateQuranPage(pageNumber)
   }
 
   // Calculate line range
@@ -4939,12 +5047,22 @@ async function handleMemStartCallback(
 
   const group = studentGroup.group
 
-  // Check if already has an active task for THIS SPECIFIC STAGE
+  // First, get or create the QuranPage to use in the task query
+  let page = await prisma.quranPage.findUnique({
+    where: { pageNumber }
+  })
+
+  if (!page) {
+    page = await getOrCreateQuranPage(pageNumber)
+  }
+
+  // Check if already has an active task for THIS SPECIFIC PAGE and STAGE
   // This allows students to work on different stages concurrently
   const existingTask = await prisma.task.findFirst({
     where: {
       studentId: user.id,
       groupId,
+      pageId: page.id,  // Important: filter by specific page
       status: TaskStatus.IN_PROGRESS,
       stage,
     },
@@ -4954,15 +5072,6 @@ async function handleMemStartCallback(
   if (existingTask) {
     await showTaskForGroup(ctx, user, existingTask, studentGroup)
     return
-  }
-
-  // Create or get the QuranPage
-  let page = await prisma.quranPage.findUnique({
-    where: { pageNumber }
-  })
-
-  if (!page) {
-    page = await getOrCreateQuranPage(pageNumber)
   }
 
   // Get line range for full stage

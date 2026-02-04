@@ -44,7 +44,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Fetch verses with words from Quran.com API
-    // Request word_fields to ensure we get all necessary fields
     const url = `${QURAN_API_BASE}/verses/by_chapter/${surah}?language=en&words=true&word_translation_language=en&word_fields=text_uthmani,text,text_simple&per_page=300`
 
     console.log('[Mufradat Import] Fetching from:', url)

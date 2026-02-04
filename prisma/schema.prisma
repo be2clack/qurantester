@@ -508,6 +508,7 @@ model WordTranslation {
   surahNumber   Int
   ayahNumber    Int
   position      Int
+  pageNumber    Int?      // Quran page number (Medina Mushaf)
   textArabic    String
   textSimple    String?
   translationEn String?
@@ -522,6 +523,7 @@ model WordTranslation {
 
   @@index([isVerified])
   @@index([surahNumber, ayahNumber])
+  @@index([pageNumber])
 }
 
 // Daily revision log for button-only revision mode

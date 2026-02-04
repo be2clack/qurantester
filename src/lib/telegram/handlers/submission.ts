@@ -40,52 +40,94 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Get all active tasks and find the one that needs more submissions
-  // With multiple lines support, student can have several IN_PROGRESS tasks
-  const allTasks = await prisma.task.findMany({
-    where: {
-      studentId: user.id,
-      status: TaskStatus.IN_PROGRESS,
-    },
-    include: {
-      page: true,
-      lesson: {
-        include: {
-          group: {
-            include: { ustaz: true }
+  // Try to use the task from session (set when student views a task screen)
+  let task: any = null
+  const sessionTaskId = ctx.session.pendingTaskId
+
+  if (sessionTaskId) {
+    // First try to find the specific task the student was viewing
+    const sessionTask = await prisma.task.findFirst({
+      where: {
+        id: sessionTaskId,
+        studentId: user.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      include: {
+        page: true,
+        lesson: {
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        },
+        group: {
+          include: { ustaz: true }
+        },
+        _count: {
+          select: {
+            submissions: { where: { status: SubmissionStatus.PENDING } }
+          }
+        }
+      }
+    })
+
+    // Check if this task still needs submissions
+    if (sessionTask) {
+      const pendingCount = sessionTask._count.submissions
+      const needsMore = sessionTask.requiredCount - sessionTask.passedCount - pendingCount > 0
+      if (needsMore) {
+        task = sessionTask
+      }
+    }
+  }
+
+  // If no task from session (or it's full), fall back to finding any task that needs submissions
+  if (!task) {
+    const allTasks = await prisma.task.findMany({
+      where: {
+        studentId: user.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      include: {
+        page: true,
+        lesson: {
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        },
+        group: {
+          include: { ustaz: true }
+        },
+        _count: {
+          select: {
+            submissions: { where: { status: SubmissionStatus.PENDING } }
           }
         }
       },
-      group: {
-        include: { ustaz: true }
-      },
-      _count: {
-        select: {
-          submissions: { where: { status: SubmissionStatus.PENDING } }
-        }
-      }
-    },
-    orderBy: { createdAt: 'desc' } // Prefer most recently created
-  })
+      orderBy: { createdAt: 'desc' } // Prefer most recently created
+    })
 
-  if (allTasks.length === 0) {
-    await deleteUserMessage(ctx)
-    await sendAndTrack(
-      ctx,
-      '❌ У вас нет активного задания.\n\nНажмите "▶️ Начать задание" в меню.',
-      { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
-      user.id,
-      'notification'
-    )
-    return
+    if (allTasks.length === 0) {
+      await deleteUserMessage(ctx)
+      await sendAndTrack(
+        ctx,
+        '❌ У вас нет активного задания.\n\nНажмите "▶️ Начать задание" в меню.',
+        { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+        user.id,
+        'notification'
+      )
+      return
+    }
+
+    // Find task that still needs more submissions
+    task = allTasks.find(t => {
+      const pendingCount = t._count.submissions
+      return t.requiredCount - t.passedCount - pendingCount > 0
+    })
   }
-
-  // Find task that still needs more submissions
-  // Formula: requiredCount - passedCount - pendingCount > 0
-  const task = allTasks.find(t => {
-    const pendingCount = t._count.submissions
-    return t.requiredCount - t.passedCount - pendingCount > 0
-  })
 
   if (!task) {
     // All tasks have their submissions sent (pending review)
@@ -200,7 +242,10 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
       }
     }
     // Notify ustaz about the previous submission (now confirmed by this new one)
-    await processSubmissionAndNotify(task, previousPending, user)
+    // Don't await - run in background to prevent webhook timeout
+    processSubmissionAndNotify(task, previousPending, user).catch(err => {
+      console.error('[Submission] Background processing error:', err)
+    })
   }
 
   // Check if this is a resubmission (student had failed submissions and is sending more)
@@ -212,6 +257,21 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
   await deleteMessagesByType(ctx, 'task_info')  // Delete "Задание создано" message
   await deleteMessagesByType(ctx, 'review_result')
   await deleteMessagesByType(ctx, 'notification')
+
+  // Check for duplicate submission (webhook retry protection)
+  const messageId = ctx.message?.message_id
+  if (messageId) {
+    const existingSubmission = await prisma.submission.findFirst({
+      where: {
+        studentMsgId: BigInt(messageId),
+        taskId: task.id,
+      }
+    })
+    if (existingSubmission) {
+      console.log(`[Submission] Duplicate detected for message ${messageId}, skipping`)
+      return
+    }
+  }
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -236,8 +296,11 @@ export async function handleVoiceSubmission(ctx: BotContext): Promise<void> {
   })
 
   // For resubmissions, immediately notify ustaz (no need to wait for confirmation)
+  // Don't await - run in background to prevent webhook timeout
   if (isResubmission) {
-    await processSubmissionAndNotify(task, submission, user)
+    processSubmissionAndNotify(task, submission, user).catch(err => {
+      console.error('[Submission] Background resubmission error:', err)
+    })
   }
 
   // Send confirmation (auto-delete after N minutes)
@@ -307,52 +370,94 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
     return
   }
 
-  // Get all active tasks and find the one that needs more submissions
-  // With multiple lines support, student can have several IN_PROGRESS tasks
-  const allTasks = await prisma.task.findMany({
-    where: {
-      studentId: user.id,
-      status: TaskStatus.IN_PROGRESS,
-    },
-    include: {
-      page: true,
-      lesson: {
-        include: {
-          group: {
-            include: { ustaz: true }
+  // Try to use the task from session (set when student views a task screen)
+  let task: any = null
+  const sessionTaskId = ctx.session.pendingTaskId
+
+  if (sessionTaskId) {
+    // First try to find the specific task the student was viewing
+    const sessionTask = await prisma.task.findFirst({
+      where: {
+        id: sessionTaskId,
+        studentId: user.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      include: {
+        page: true,
+        lesson: {
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        },
+        group: {
+          include: { ustaz: true }
+        },
+        _count: {
+          select: {
+            submissions: { where: { status: SubmissionStatus.PENDING } }
+          }
+        }
+      }
+    })
+
+    // Check if this task still needs submissions
+    if (sessionTask) {
+      const pendingCount = sessionTask._count.submissions
+      const needsMore = sessionTask.requiredCount - sessionTask.passedCount - pendingCount > 0
+      if (needsMore) {
+        task = sessionTask
+      }
+    }
+  }
+
+  // If no task from session (or it's full), fall back to finding any task that needs submissions
+  if (!task) {
+    const allTasks = await prisma.task.findMany({
+      where: {
+        studentId: user.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      include: {
+        page: true,
+        lesson: {
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        },
+        group: {
+          include: { ustaz: true }
+        },
+        _count: {
+          select: {
+            submissions: { where: { status: SubmissionStatus.PENDING } }
           }
         }
       },
-      group: {
-        include: { ustaz: true }
-      },
-      _count: {
-        select: {
-          submissions: { where: { status: SubmissionStatus.PENDING } }
-        }
-      }
-    },
-    orderBy: { createdAt: 'desc' } // Prefer most recently created
-  })
+      orderBy: { createdAt: 'desc' } // Prefer most recently created
+    })
 
-  if (allTasks.length === 0) {
-    await deleteUserMessage(ctx)
-    await sendAndTrack(
-      ctx,
-      '❌ У вас нет активного задания.\n\nНажмите "▶️ Начать задание" в меню.',
-      { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
-      user.id,
-      'notification'
-    )
-    return
+    if (allTasks.length === 0) {
+      await deleteUserMessage(ctx)
+      await sendAndTrack(
+        ctx,
+        '❌ У вас нет активного задания.\n\nНажмите "▶️ Начать задание" в меню.',
+        { reply_markup: getBackKeyboard('student:menu', '◀️ В меню') },
+        user.id,
+        'notification'
+      )
+      return
+    }
+
+    // Find task that still needs more submissions
+    task = allTasks.find(t => {
+      const pendingCount = t._count.submissions
+      return t.requiredCount - t.passedCount - pendingCount > 0
+    })
   }
-
-  // Find task that still needs more submissions
-  // Formula: requiredCount - passedCount - pendingCount > 0
-  const task = allTasks.find(t => {
-    const pendingCount = t._count.submissions
-    return t.requiredCount - t.passedCount - pendingCount > 0
-  })
 
   if (!task) {
     // All tasks have their submissions sent (pending review)
@@ -464,7 +569,10 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
       }
     }
     // Notify ustaz about the previous submission (now confirmed by this new one)
-    await processSubmissionAndNotify(task, previousPending, user)
+    // Don't await - run in background to prevent webhook timeout
+    processSubmissionAndNotify(task, previousPending, user).catch(err => {
+      console.error('[Submission] Background processing error:', err)
+    })
   }
 
   // Check if this is a resubmission (student had failed submissions and is sending more)
@@ -476,6 +584,21 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
   await deleteMessagesByType(ctx, 'task_info')  // Delete "Задание создано" message
   await deleteMessagesByType(ctx, 'review_result')
   await deleteMessagesByType(ctx, 'notification')
+
+  // Check for duplicate submission (webhook retry protection)
+  const messageId = ctx.message?.message_id
+  if (messageId) {
+    const existingSubmission = await prisma.submission.findFirst({
+      where: {
+        studentMsgId: BigInt(messageId),
+        taskId: task.id,
+      }
+    })
+    if (existingSubmission) {
+      console.log(`[Submission] Duplicate detected for message ${messageId}, skipping`)
+      return
+    }
+  }
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -500,8 +623,11 @@ export async function handleVideoNoteSubmission(ctx: BotContext): Promise<void> 
   })
 
   // For resubmissions, immediately notify ustaz (no need to wait for confirmation)
+  // Don't await - run in background to prevent webhook timeout
   if (isResubmission) {
-    await processSubmissionAndNotify(task, submission, user)
+    processSubmissionAndNotify(task, submission, user).catch(err => {
+      console.error('[Submission] Background resubmission error:', err)
+    })
   }
 
   // Send confirmation (auto-delete after N minutes)
@@ -562,46 +688,88 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Get all active tasks and find the one that needs more submissions
-  // With multiple lines support, student can have several IN_PROGRESS tasks
-  const allTasks = await prisma.task.findMany({
-    where: {
-      studentId: user.id,
-      status: TaskStatus.IN_PROGRESS,
-    },
-    include: {
-      page: true,
-      lesson: {
-        include: {
-          group: {
-            include: { ustaz: true }
+  // Try to use the task from session (set when student views a task screen)
+  let task: any = null
+  const sessionTaskId = ctx.session.pendingTaskId
+
+  if (sessionTaskId) {
+    // First try to find the specific task the student was viewing
+    const sessionTask = await prisma.task.findFirst({
+      where: {
+        id: sessionTaskId,
+        studentId: user.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      include: {
+        page: true,
+        lesson: {
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        },
+        group: {
+          include: { ustaz: true }
+        },
+        _count: {
+          select: {
+            submissions: { where: { status: SubmissionStatus.PENDING } }
+          }
+        }
+      }
+    })
+
+    // Check if this task still needs submissions
+    if (sessionTask) {
+      const pendingCount = sessionTask._count.submissions
+      const needsMore = sessionTask.requiredCount - sessionTask.passedCount - pendingCount > 0
+      if (needsMore) {
+        task = sessionTask
+      }
+    }
+  }
+
+  // If no task from session (or it's full), fall back to finding any task that needs submissions
+  if (!task) {
+    const allTasks = await prisma.task.findMany({
+      where: {
+        studentId: user.id,
+        status: TaskStatus.IN_PROGRESS,
+      },
+      include: {
+        page: true,
+        lesson: {
+          include: {
+            group: {
+              include: { ustaz: true }
+            }
+          }
+        },
+        group: {
+          include: { ustaz: true }
+        },
+        _count: {
+          select: {
+            submissions: { where: { status: SubmissionStatus.PENDING } }
           }
         }
       },
-      group: {
-        include: { ustaz: true }
-      },
-      _count: {
-        select: {
-          submissions: { where: { status: SubmissionStatus.PENDING } }
-        }
-      }
-    },
-    orderBy: { createdAt: 'desc' } // Prefer most recently created
-  })
+      orderBy: { createdAt: 'desc' } // Prefer most recently created
+    })
 
-  if (allTasks.length === 0) {
-    // No task - just delete the message, don't spam
-    await deleteUserMessage(ctx)
-    return
+    if (allTasks.length === 0) {
+      // No task - just delete the message, don't spam
+      await deleteUserMessage(ctx)
+      return
+    }
+
+    // Find task that still needs more submissions
+    task = allTasks.find(t => {
+      const pendingCount = t._count.submissions
+      return t.requiredCount - t.passedCount - pendingCount > 0
+    })
   }
-
-  // Find task that still needs more submissions
-  // Formula: requiredCount - passedCount - pendingCount > 0
-  const task = allTasks.find(t => {
-    const pendingCount = t._count.submissions
-    return t.requiredCount - t.passedCount - pendingCount > 0
-  })
 
   if (!task) {
     // All tasks have their submissions sent (pending review)
@@ -688,7 +856,10 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
       }
     }
     // Notify ustaz about the previous submission (now confirmed by this new one)
-    await processSubmissionAndNotify(task, previousPending, user)
+    // Don't await - run in background to prevent webhook timeout
+    processSubmissionAndNotify(task, previousPending, user).catch(err => {
+      console.error('[Submission] Background processing error:', err)
+    })
   }
 
   // Check if this is a resubmission (student had failed submissions and is sending more)
@@ -700,6 +871,21 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
   await deleteMessagesByType(ctx, 'task_info')  // Delete "Задание создано" message
   await deleteMessagesByType(ctx, 'review_result')
   await deleteMessagesByType(ctx, 'notification')
+
+  // Check for duplicate submission (webhook retry protection)
+  const messageId = ctx.message?.message_id
+  if (messageId) {
+    const existingSubmission = await prisma.submission.findFirst({
+      where: {
+        studentMsgId: BigInt(messageId),
+        taskId: task.id,
+      }
+    })
+    if (existingSubmission) {
+      console.log(`[Submission] Duplicate detected for message ${messageId}, skipping`)
+      return
+    }
+  }
 
   // Create new submission (will be confirmed by next submission or task completion)
   // Student's message is kept until confirmed by next submission
@@ -723,8 +909,11 @@ export async function handleTextSubmission(ctx: BotContext): Promise<void> {
   })
 
   // For resubmissions, immediately notify ustaz (no need to wait for confirmation)
+  // Don't await - run in background to prevent webhook timeout
   if (isResubmission) {
-    await processSubmissionAndNotify(task, submission, user)
+    processSubmissionAndNotify(task, submission, user).catch(err => {
+      console.error('[Submission] Background resubmission error:', err)
+    })
   }
 
   // Send confirmation (auto-delete after N minutes)
@@ -1359,13 +1548,19 @@ async function notifyUstazAboutSubmission(
 async function showSubmissionToUstaz(
   ustazChatId: number,
   submission: any,
-  task: any,
+  taskInput: any,
   student: any,
   group: any
 ): Promise<string | null> {
   const { bot } = await import('../bot')
   const { InlineKeyboard } = await import('grammy')
   const { trackMessageForChat } = await import('../utils/message-cleaner')
+
+  // Refetch task to get fresh data (currentCount, passedCount, etc.)
+  const task = await prisma.task.findUnique({
+    where: { id: taskInput.id },
+    include: { page: true, group: true }
+  }) || taskInput
 
   // Create or update delivery tracking record
   let deliveryRecord = await prisma.submissionDelivery.upsert({
@@ -1417,7 +1612,16 @@ async function showSubmissionToUstaz(
   }
   const stageName = stageNames[task.stage] || task.stage
 
-  const progressPercent = Math.round((task.currentCount / task.requiredCount) * 100)
+  // Count pending submissions for accurate progress
+  const pendingForTask = await prisma.submission.count({
+    where: {
+      taskId: task.id,
+      status: SubmissionStatus.PENDING
+    }
+  })
+  const totalSent = task.passedCount + pendingForTask
+
+  const progressPercent = Math.round((totalSent / task.requiredCount) * 100)
   const clampedPercent = Math.min(100, Math.max(0, progressPercent))
   const progressBar = `[${'▓'.repeat(Math.round(clampedPercent / 10))}${'░'.repeat(10 - Math.round(clampedPercent / 10))}]`
 
@@ -1428,7 +1632,7 @@ async function showSubmissionToUstaz(
   caption += `📖 Стр. ${task.page?.pageNumber || 1}, ${lineRange}\n`
   caption += `🎯 ${stageName}\n\n`
   caption += `${progressBar} ${progressPercent}%\n`
-  caption += `📊 <b>${task.currentCount}/${task.requiredCount}</b>`
+  caption += `📊 <b>${totalSent}/${task.requiredCount}</b>`
 
   if (task.passedCount > 0 || task.failedCount > 0) {
     caption += `\n✅ ${task.passedCount}`

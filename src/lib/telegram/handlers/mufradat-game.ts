@@ -242,19 +242,10 @@ async function getWordsForSpecificPage(
   pageNumber: number,
   count: number
 ): Promise<GameWord[]> {
-  // Get surahs for this specific page
-  const surahs = getSurahsByPage(pageNumber)
-
-  if (surahs.length === 0) {
-    return []
-  }
-
-  const surahNumbers = surahs.map(s => s.number)
-
-  // Get words from this page's surahs only
-  const words = await prisma.wordTranslation.findMany({
+  // First try to get words by exact page number (if pageNumber is set)
+  let words = await prisma.wordTranslation.findMany({
     where: {
-      surahNumber: { in: surahNumbers },
+      pageNumber: pageNumber,
       OR: [
         { translationRu: { not: null } },
         { translationEn: { not: null } }
@@ -267,6 +258,31 @@ async function getWordsForSpecificPage(
     ],
     take: count * 4
   })
+
+  // If no words found with pageNumber, fallback to surah-based (legacy support)
+  if (words.length < count) {
+    const surahs = getSurahsByPage(pageNumber)
+
+    if (surahs.length > 0) {
+      const surahNumbers = surahs.map(s => s.number)
+
+      words = await prisma.wordTranslation.findMany({
+        where: {
+          surahNumber: { in: surahNumbers },
+          OR: [
+            { translationRu: { not: null } },
+            { translationEn: { not: null } }
+          ]
+        },
+        orderBy: [
+          { surahNumber: 'asc' },
+          { ayahNumber: 'asc' },
+          { position: 'asc' }
+        ],
+        take: count * 4
+      })
+    }
+  }
 
   if (words.length < count) {
     // Not enough words for this page, try fallback

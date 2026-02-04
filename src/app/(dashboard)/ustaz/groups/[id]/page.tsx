@@ -23,6 +23,7 @@ import {
   CheckCircle,
   XCircle,
   TrendingUp,
+  ClipboardList,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -160,10 +161,16 @@ export default function UstazGroupDetailPage() {
         <Button variant="ghost" size="icon" onClick={() => router.back()}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <div>
+        <div className="flex-1">
           <h1 className="text-2xl font-bold">{group.name}</h1>
           <p className="text-muted-foreground">{group.description}</p>
         </div>
+        <Link href={`/ustaz/groups/${groupId}/report`}>
+          <Button variant="outline" size="sm">
+            <ClipboardList className="h-4 w-4 mr-2" />
+            Отчёт
+          </Button>
+        </Link>
       </div>
 
       {/* Group stats */}
