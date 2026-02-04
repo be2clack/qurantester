@@ -644,6 +644,19 @@ async function finishGame(
           data: { bestScore: score }
         })
       }
+
+      // Notify ustaz about translation result (fire-and-forget)
+      notifyUstazTranslation(
+        userId,
+        session.groupId,
+        session.pageNumber,
+        score,
+        passed,
+        currentProgress?.attempts || 1,
+        words.length,
+        session.correctCount,
+        user.firstName
+      ).catch((err) => console.error('[Translation] Ustaz notify error:', err))
     } else {
       // For legacy task-based flow
       if (session.taskId) {
@@ -1061,5 +1074,52 @@ async function notifyUstazAboutMufradatGame(
     })
   } catch (error) {
     console.error('Failed to notify ustaz about mufradat game:', error)
+  }
+}
+
+/**
+ * Notify ustaz about page-based translation test result
+ */
+async function notifyUstazTranslation(
+  studentId: string,
+  groupId: string,
+  pageNumber: number,
+  score: number,
+  passed: boolean,
+  attempts: number,
+  wordsTotal: number,
+  wordsCorrect: number,
+  studentFirstName?: string | null
+): Promise<void> {
+  try {
+    const group = await prisma.group.findUnique({
+      where: { id: groupId },
+      include: { ustaz: true }
+    })
+
+    if (!group?.ustaz?.telegramId) return
+
+    const { bot } = await import('../bot')
+
+    const ustazChatId = Number(group.ustaz.telegramId)
+    const studentName = studentFirstName?.trim() || 'Студент'
+    const passThreshold = group.wordsPassThreshold || 8
+
+    const emoji = passed ? '✅' : '❌'
+    const statusText = passed ? 'Сдал' : 'Не сдал'
+
+    let message = `📝 <b>Перевод ${statusText}</b>\n\n`
+    message += `📚 <b>${group.name}</b>\n`
+    message += `👤 ${studentName}\n`
+    message += `📖 Стр. ${pageNumber}\n\n`
+    message += `${emoji} Результат: <b>${wordsCorrect}/${wordsTotal}</b> (${score}%)\n`
+    message += `🎯 Порог: ${passThreshold}/${wordsTotal}\n`
+    message += `🔄 Попытка: ${attempts}`
+
+    await bot.api.sendMessage(ustazChatId, message, {
+      parse_mode: 'HTML',
+    })
+  } catch (error) {
+    console.error('[Translation] Failed to notify ustaz:', error)
   }
 }

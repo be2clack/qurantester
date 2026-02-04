@@ -84,6 +84,7 @@ const navItemsByRole: Record<UserRole, NavItem[]> = {
   PARENT: [
     { title: 'Главная', href: '/parent', icon: LayoutDashboard },
     { title: 'Дети', href: '/parent/children', icon: UserCheck },
+    { title: 'Отчёт', href: '/parent/report', icon: ClipboardList },
   ],
   PENDING: [],
 }

@@ -92,6 +92,16 @@ const QURAN_WEB_APP_URL = process.env.NEXT_PUBLIC_APP_URL
   ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/student/quran`
   : 'https://qurantester.vercel.app/telegram?redirect=/student/quran'
 
+// Ustaz reports URL - redirects to ustaz analytics
+const USTAZ_REPORTS_URL = process.env.NEXT_PUBLIC_APP_URL
+  ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/ustaz/analytics`
+  : 'https://qurantester.vercel.app/telegram?redirect=/ustaz/analytics'
+
+// Parent reports URL - redirects to parent dashboard
+const PARENT_REPORTS_URL = process.env.NEXT_PUBLIC_APP_URL
+  ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/parent`
+  : 'https://qurantester.vercel.app/telegram?redirect=/parent'
+
 /**
  * Main menu keyboard based on user role
  * For students, optionally pass menu info to show dynamic task button and ustaz chat
@@ -116,7 +126,8 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📝 Проверить работы', 'ustaz:submissions').row()
         .text('👥 Мои студенты', 'ustaz:students').row()
         .text('📊 Статистика', 'ustaz:stats').row()
-        .webApp('🌐 Веб-панель', WEB_APP_URL)
+        .webApp('📋 Отчёты', USTAZ_REPORTS_URL)
+        .webApp('🌐 Веб', WEB_APP_URL)
       break
 
     case UserRole.STUDENT:
@@ -191,7 +202,8 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
       keyboard
         .text('👨‍👩‍👧‍👦 Успеваемость детей', 'parent:children').row()
         .text('📊 Статистика', 'parent:stats').row()
-        .webApp('🌐 Веб-панель', WEB_APP_URL)
+        .webApp('📋 Отчёт', PARENT_REPORTS_URL)
+        .webApp('🌐 Веб', WEB_APP_URL)
       break
 
     case UserRole.PENDING:
