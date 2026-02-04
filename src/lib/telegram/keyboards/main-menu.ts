@@ -92,21 +92,23 @@ const QURAN_WEB_APP_URL = process.env.NEXT_PUBLIC_APP_URL
   ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/student/quran`
   : 'https://qurantester.vercel.app/telegram?redirect=/student/quran'
 
-// Ustaz reports URL - redirects to ustaz analytics
-const USTAZ_REPORTS_URL = process.env.NEXT_PUBLIC_APP_URL
-  ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/ustaz/analytics`
-  : 'https://qurantester.vercel.app/telegram?redirect=/ustaz/analytics'
+// Base URL for web app
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://qurantester.vercel.app'
 
-// Parent reports URL - redirects to parent dashboard
-const PARENT_REPORTS_URL = process.env.NEXT_PUBLIC_APP_URL
-  ? `${process.env.NEXT_PUBLIC_APP_URL}/telegram?redirect=/parent`
-  : 'https://qurantester.vercel.app/telegram?redirect=/parent'
+// Build ustaz report URL for a specific group
+function getUstazReportUrl(groupId: string): string {
+  return `${BASE_URL}/telegram?redirect=/ustaz/groups/${groupId}/report`
+}
+
+// Parent reports URL - redirects to parent daily report
+const PARENT_REPORTS_URL = `${BASE_URL}/telegram?redirect=/parent/report`
 
 /**
  * Main menu keyboard based on user role
  * For students, optionally pass menu info to show dynamic task button and ustaz chat
+ * For ustaz, optionally pass ustazMenuInfo for dynamic report links
  */
-export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo): InlineKeyboard {
+export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo, ustazMenuInfo?: UstazMenuInfo): InlineKeyboard {
   const keyboard = new InlineKeyboard()
 
   switch (role) {
@@ -126,8 +128,13 @@ export function getMainMenuKeyboard(role: UserRole, menuInfo?: StudentMenuInfo):
         .text('📝 Проверить работы', 'ustaz:submissions').row()
         .text('👥 Мои студенты', 'ustaz:students').row()
         .text('📊 Статистика', 'ustaz:stats').row()
-        .webApp('📋 Отчёты', USTAZ_REPORTS_URL)
-        .webApp('🌐 Веб', WEB_APP_URL)
+      // Add report buttons per group
+      if (ustazMenuInfo?.groups && ustazMenuInfo.groups.length > 0) {
+        for (const group of ustazMenuInfo.groups) {
+          keyboard.webApp(`📋 ${group.name}`, getUstazReportUrl(group.id)).row()
+        }
+      }
+      keyboard.webApp('🌐 Веб', WEB_APP_URL)
       break
 
     case UserRole.STUDENT:

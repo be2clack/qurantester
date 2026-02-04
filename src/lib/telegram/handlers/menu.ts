@@ -18,6 +18,7 @@ import {
   getMemorizationConnectionKeyboard,
   getStageShortName,
   StudentMenuInfo,
+  UstazMenuInfo,
   LessonTypeInfo,
   getLessonTypeName,
   getLinesForLevelName,
@@ -1842,10 +1843,22 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
   message += `• Повторение: <b>${pendingRevisionCount}</b>\n\n`
   message += `Выберите действие:`
 
+  const ustazInfo: UstazMenuInfo = {
+    groups: groups.map(g => ({
+      id: g.id,
+      name: g.name,
+      gender: g.gender || undefined,
+      studentCount: g._count.students
+    })),
+    totalStudents,
+    pendingMemorizationCount,
+    pendingRevisionCount
+  }
+
   try {
     await ctx.editMessageText(message, {
       parse_mode: 'HTML',
-      reply_markup: getMainMenuKeyboard(user.role)
+      reply_markup: getMainMenuKeyboard(user.role, undefined, ustazInfo)
     })
   } catch (error: any) {
     // If can't edit (e.g., voice message), delete and send new
@@ -1858,7 +1871,7 @@ async function showUstazMenuEdit(ctx: BotContext, user: any): Promise<void> {
       }
       await ctx.reply(message, {
         parse_mode: 'HTML',
-        reply_markup: getMainMenuKeyboard(user.role)
+        reply_markup: getMainMenuKeyboard(user.role, undefined, ustazInfo)
       })
     } else {
       throw error // Re-throw other errors

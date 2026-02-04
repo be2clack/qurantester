@@ -211,7 +211,7 @@ export async function handleStart(ctx: BotContext): Promise<void> {
       ctx,
       welcomeText,
       {
-        reply_markup: getMainMenuKeyboard(user.role, menuInfo),
+        reply_markup: getMainMenuKeyboard(user.role, menuInfo, ustazMenuInfo),
         parse_mode: 'HTML'
       },
       user.id,
