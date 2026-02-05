@@ -2088,17 +2088,23 @@ async function showPendingSubmissions(ctx: BotContext, user: any): Promise<void>
     caption += `\n\n${scoreEmoji} <b>AI: ${Math.round(first.aiScore)}%</b>`
   }
 
-  // Create review keyboard
+  // Create review keyboard - always show both Pass and Fail buttons, ustaz has final decision
   const reviewKeyboard = new InlineKeyboard()
 
+  // Pass button - always available
   if (first.aiScore !== null && first.aiScore >= 85) {
-    reviewKeyboard.text('✅ Принять (AI: ✓)', `review:pass:${first.id}`)
-  } else if (first.aiScore !== null && first.aiScore < 50) {
-    reviewKeyboard.text('❌ Отклонить (AI: ✗)', `review:fail:${first.id}`)
+    reviewKeyboard.text('✅ Сдал (AI: ✓)', `review:pass:${first.id}`)
   } else {
     reviewKeyboard.text('✅ Сдал', `review:pass:${first.id}`)
   }
-  reviewKeyboard.text('❌ Не сдал', `review:fail:${first.id}`).row()
+
+  // Fail button - always available
+  if (first.aiScore !== null && first.aiScore < 50) {
+    reviewKeyboard.text('❌ Не сдал (AI: ✗)', `review:fail:${first.id}`)
+  } else {
+    reviewKeyboard.text('❌ Не сдал', `review:fail:${first.id}`)
+  }
+  reviewKeyboard.row()
 
   if (submissions.length > 1) {
     reviewKeyboard.text(`➡️ След. (${submissions.length - 1})`, 'ustaz:next_submission')
