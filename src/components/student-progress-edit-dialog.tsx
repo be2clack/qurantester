@@ -19,8 +19,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Loader2 } from 'lucide-react'
+import { Loader2, AlertTriangle } from 'lucide-react'
 import { StageNumber } from '@prisma/client'
+
+interface ActiveTaskInfo {
+  id: string
+  stage: string
+  passedCount: number
+  requiredCount: number
+  pageNumber: number
+  startLine: number
+  endLine: number
+}
 
 interface StudentProgressEditDialogProps {
   open: boolean
@@ -74,6 +84,20 @@ export function StudentProgressEditDialog({
   const [autoStage, setAutoStage] = useState(true) // Auto-determine stage from line
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [activeTask, setActiveTask] = useState<ActiveTaskInfo | null>(null)
+  const [loadingTask, setLoadingTask] = useState(false)
+
+  // Fetch active task info when dialog opens
+  useEffect(() => {
+    if (open && student && groupId) {
+      setLoadingTask(true)
+      fetch(`/api/users/${student.id}/active-task?groupId=${groupId}`)
+        .then(res => res.ok ? res.json() : null)
+        .then(data => setActiveTask(data?.task || null))
+        .catch(() => setActiveTask(null))
+        .finally(() => setLoadingTask(false))
+    }
+  }, [open, student, groupId])
 
   // Update state when student changes
   useEffect(() => {
@@ -148,6 +172,26 @@ export function StudentProgressEditDialog({
         {error && (
           <div className="p-3 bg-destructive/10 text-destructive rounded-lg text-sm">
             {error}
+          </div>
+        )}
+
+        {activeTask && (
+          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-medium text-amber-700 dark:text-amber-400">
+                  У студента есть незавершённое задание!
+                </p>
+                <p className="text-muted-foreground mt-1">
+                  Стр. {activeTask.pageNumber}, {activeTask.stage.replace('STAGE_', 'Этап ').replace('_', '.')}
+                  {' '}— сдано {activeTask.passedCount}/{activeTask.requiredCount}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Изменение прогресса отменит это задание. Прогресс будет потерян.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
