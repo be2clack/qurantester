@@ -8,6 +8,7 @@ import { redirect } from 'next/navigation'
 import { STAGES, QURAN_TOTAL_PAGES } from '@/lib/constants/quran'
 import { LessonType } from '@prisma/client'
 import Link from 'next/link'
+import { LinkRequestBanner } from '@/components/link-request-banner'
 
 const LESSON_TYPE_LABELS: Record<LessonType, string> = {
   MEMORIZATION: 'Заучивание',
@@ -93,6 +94,9 @@ export default async function StudentDashboard() {
           Ваш текущий прогресс в изучении Корана
         </p>
       </div>
+
+      {/* Parent link request notifications */}
+      <LinkRequestBanner />
 
       {/* Ustaz Info Card */}
       {ustaz && (

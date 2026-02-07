@@ -3,8 +3,9 @@ import { getCurrentUser } from '@/lib/auth'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
-import { BookOpen, TrendingUp, TrendingDown, Minus, CheckCircle } from 'lucide-react'
+import { BookOpen, TrendingUp, TrendingDown, Minus, CheckCircle, UserPlus, Clock } from 'lucide-react'
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import { QURAN_TOTAL_PAGES } from '@/lib/constants/quran'
 
 export default async function ParentDashboard() {
@@ -13,6 +14,11 @@ export default async function ParentDashboard() {
   if (!user) {
     redirect('/login')
   }
+
+  // Get pending link requests count
+  const pendingRequestsCount = await prisma.parentLinkRequest.count({
+    where: { parentId: user.id, status: 'PENDING' }
+  })
 
   // Get children (where current user is in their parent list)
   const children = await prisma.user.findMany({
@@ -45,14 +51,33 @@ export default async function ParentDashboard() {
           </p>
         </div>
 
+        {pendingRequestsCount > 0 && (
+          <Card>
+            <CardContent className="py-4">
+              <div className="flex items-center gap-2 text-sm">
+                <Clock className="h-4 w-4 text-yellow-500" />
+                <span>Заявок на привязку ожидает подтверждения: <b>{pendingRequestsCount}</b></span>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardContent className="py-10 text-center">
+            <UserPlus className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
             <p className="text-muted-foreground">
               У вас пока не добавлено детей.
             </p>
-            <p className="text-sm text-muted-foreground mt-2">
-              Обратитесь к администратору для привязки детей к вашему аккаунту.
+            <p className="text-sm text-muted-foreground mt-2 mb-4">
+              Найдите ребёнка по имени и отправьте заявку на привязку.
             </p>
+            <Link
+              href="/parent/children"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium"
+            >
+              <UserPlus className="h-4 w-4" />
+              Добавить ребёнка
+            </Link>
           </CardContent>
         </Card>
       </div>

@@ -193,7 +193,7 @@ export default function GroupsPage() {
                     </>
                   )}
                 </DropdownMenuItem>
-                <DropdownMenuItem className="text-destructive" onClick={() => handleDelete(group.id)}>
+                <DropdownMenuItem className="text-destructive" onSelect={(e) => { e.preventDefault(); handleDelete(group.id) }}>
                   <Trash2 className="mr-2 h-4 w-4" />
                   Удалить
                 </DropdownMenuItem>

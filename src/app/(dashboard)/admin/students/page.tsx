@@ -383,17 +383,26 @@ export default function StudentsPage() {
     }
   }
 
-  const addToGroup = async (groupId: string) => {
+  const addToGroup = async (groupId: string, preserveProgress: boolean = true) => {
     if (!selectedStudent) return
 
     setAssigning(true)
     setAssignError('')
 
     try {
+      // If preserving progress, send current progress from existing group
+      const body: Record<string, unknown> = { studentId: selectedStudent.id }
+      if (preserveProgress && selectedStudent.studentGroups.length > 0) {
+        const currentGroup = selectedStudent.studentGroups[0]
+        body.currentPage = currentGroup.currentPage
+        body.currentLine = currentGroup.currentLine
+        body.currentStage = currentGroup.currentStage
+      }
+
       const res = await fetch(`/api/groups/${groupId}/students`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ studentId: selectedStudent.id }),
+        body: JSON.stringify(body),
       })
 
       if (!res.ok) {
@@ -840,20 +849,29 @@ export default function StudentsPage() {
                 <p className="text-sm font-medium text-muted-foreground">Текущая группа:</p>
                 <div className="space-y-1">
                   {selectedStudent.studentGroups.slice(0, 1).map((sg) => (
-                    <div key={sg.group.id} className="flex items-center justify-between p-3 rounded-lg bg-primary/5 border border-primary/20">
-                      <div className="flex items-center gap-2">
-                        <Users className="h-4 w-4 text-primary" />
-                        <span className="font-medium">{sg.group.name}</span>
+                    <div key={sg.group.id} className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Users className="h-4 w-4 text-primary" />
+                          <span className="font-medium">{sg.group.name}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={() => removeFromGroup(sg.group.id)}
+                          disabled={assigning}
+                        >
+                          Удалить
+                        </Button>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                        onClick={() => removeFromGroup(sg.group.id)}
-                        disabled={assigning}
-                      >
-                        Удалить
-                      </Button>
+                      <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <BookOpen className="h-3 w-3" />
+                          Стр. {sg.currentPage}:{sg.currentLine}
+                        </span>
+                        <span>Этап {getStageLabel(sg.currentStage)}</span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -863,7 +881,7 @@ export default function StudentsPage() {
             {/* Available groups */}
             <div className="space-y-2">
               <p className="text-sm font-medium text-muted-foreground">
-                {selectedStudent?.studentGroups?.length ? 'Переместить в группу:' : 'Выберите группу:'}
+                {selectedStudent?.studentGroups?.length ? 'Перенести в группу (с сохранением прогресса):' : 'Выберите группу:'}
               </p>
               <div className="space-y-2 max-h-[300px] overflow-y-auto">
                 {groupList
@@ -878,7 +896,7 @@ export default function StudentsPage() {
                         key={group.id}
                         type="button"
                         className="w-full p-3 text-left rounded-lg border hover:bg-accent transition-colors"
-                        onClick={() => addToGroup(group.id)}
+                        onClick={() => addToGroup(group.id, true)}
                         disabled={assigning}
                       >
                         <div className="flex items-center justify-between">

@@ -185,6 +185,11 @@ export async function handleCallbackQuery(ctx: BotContext): Promise<void> {
         // Advance to next stage
         await handleMemNextStageCallback(ctx, user, action, id)
         break
+      case 'link_request':
+        // Parent-child link request accept/reject
+        await handleLinkRequestCallback(ctx, user, action, id)
+        callbackAnswered = true
+        break
       case 'noop':
         // Do nothing, just answer callback
         break
@@ -3895,6 +3900,106 @@ async function showParentChildren(ctx: BotContext, user: any): Promise<void> {
 
 async function showParentStats(ctx: BotContext, user: any): Promise<void> {
   await showParentChildren(ctx, user)
+}
+
+// ============== LINK REQUEST HANDLERS ==============
+
+async function handleLinkRequestCallback(
+  ctx: BotContext,
+  user: any,
+  action: string,
+  requestId?: string
+): Promise<void> {
+  if (!requestId) {
+    await ctx.answerCallbackQuery({ text: 'Ошибка: нет ID запроса' })
+    return
+  }
+
+  const request = await prisma.parentLinkRequest.findUnique({
+    where: { id: requestId },
+    include: {
+      parent: { select: { id: true, firstName: true, lastName: true, telegramId: true } },
+      student: { select: { id: true, firstName: true, lastName: true } }
+    }
+  })
+
+  if (!request) {
+    await ctx.answerCallbackQuery({ text: 'Запрос не найден' })
+    return
+  }
+
+  if (request.status !== 'PENDING') {
+    await ctx.answerCallbackQuery({ text: 'Запрос уже обработан' })
+    try {
+      const statusText = request.status === 'ACCEPTED' ? 'принят' : 'отклонён'
+      await ctx.editMessageText(`Этот запрос уже ${statusText}.`, { parse_mode: 'HTML' })
+    } catch { /* ignore */ }
+    return
+  }
+
+  if (request.studentId !== user.id) {
+    await ctx.answerCallbackQuery({ text: 'Этот запрос не для вас' })
+    return
+  }
+
+  const parentName = [request.parent.firstName, request.parent.lastName].filter(Boolean).join(' ') || 'Родитель'
+  const childName = [request.student.firstName, request.student.lastName].filter(Boolean).join(' ') || 'Студент'
+
+  if (action === 'accept') {
+    await prisma.$transaction([
+      prisma.parentLinkRequest.update({
+        where: { id: requestId },
+        data: { status: 'ACCEPTED', respondedAt: new Date() }
+      }),
+      prisma.user.update({
+        where: { id: request.parentId },
+        data: { parentOf: { connect: { id: request.studentId } } }
+      })
+    ])
+
+    await ctx.editMessageText(
+      `<b>Привязка подтверждена</b>\n\nВы подтвердили привязку к родителю <b>${parentName}</b>.`,
+      { parse_mode: 'HTML' }
+    )
+
+    // Notify parent via Telegram
+    if (request.parent.telegramId) {
+      try {
+        await ctx.api.sendMessage(
+          Number(request.parent.telegramId),
+          `<b>Привязка подтверждена!</b>\n\n${childName} подтвердил(а) привязку. Теперь вы можете отслеживать успеваемость.`,
+          { parse_mode: 'HTML' }
+        )
+      } catch (e) {
+        console.error('Failed to notify parent:', e)
+      }
+    }
+  } else if (action === 'reject') {
+    await prisma.parentLinkRequest.update({
+      where: { id: requestId },
+      data: { status: 'REJECTED', respondedAt: new Date() }
+    })
+
+    await ctx.editMessageText(
+      `<b>Запрос отклонён</b>\n\nВы отклонили запрос от родителя <b>${parentName}</b>.`,
+      { parse_mode: 'HTML' }
+    )
+
+    // Notify parent via Telegram
+    if (request.parent.telegramId) {
+      try {
+        await ctx.api.sendMessage(
+          Number(request.parent.telegramId),
+          `<b>Запрос отклонён</b>\n\n${childName} отклонил(а) запрос на привязку.`,
+          { parse_mode: 'HTML' }
+        )
+      } catch (e) {
+        console.error('Failed to notify parent:', e)
+      }
+    }
+  }
+
+  await ctx.answerCallbackQuery()
 }
 
 // ============== AUTH HANDLERS ==============

@@ -461,6 +461,8 @@ model User {
   statistics           UserStatistics?
   parentOf             User[]                @relation("ParentChild")
   childOf              User[]                @relation("ParentChild")
+  parentLinkRequests   ParentLinkRequest[]   @relation("ParentLinkRequests")
+  studentLinkRequests  ParentLinkRequest[]   @relation("StudentLinkRequests")
   // New relations for improved memorization tracking
   pageRevisionStats    PageRevisionStats[]
   lineProgress         LineProgress[]
@@ -631,6 +633,30 @@ model SubmissionDelivery {
   @@index([studentId])
   @@index([ustazId])
   @@index([sentToUstaz])
+}
+
+model ParentLinkRequest {
+  id          String            @id @default(cuid())
+  parentId    String
+  studentId   String
+  status      LinkRequestStatus @default(PENDING)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  respondedAt DateTime?
+
+  parent      User              @relation("ParentLinkRequests", fields: [parentId], references: [id], onDelete: Cascade)
+  student     User              @relation("StudentLinkRequests", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, studentId])
+  @@index([parentId])
+  @@index([studentId])
+  @@index([status])
+}
+
+enum LinkRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
 }
 
 enum RevisionStatus {

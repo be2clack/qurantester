@@ -424,16 +424,24 @@ export async function DELETE(
 
     const { id } = await params
 
-    const existing = await prisma.group.findUnique({ where: { id } })
+    const existing = await prisma.group.findUnique({
+      where: { id },
+      include: { _count: { select: { students: true, tasks: true } } }
+    })
     if (!existing) {
       return NextResponse.json({ error: 'Group not found' }, { status: 404 })
     }
 
-    // Soft delete
-    await prisma.group.update({
-      where: { id },
-      data: { isActive: false }
-    })
+    if (existing._count.students === 0) {
+      // Hard delete empty groups (cascade will remove lessons, etc.)
+      await prisma.group.delete({ where: { id } })
+    } else {
+      // Soft delete groups with students
+      await prisma.group.update({
+        where: { id },
+        data: { isActive: false }
+      })
+    }
 
     return NextResponse.json({ success: true })
   } catch (error) {
