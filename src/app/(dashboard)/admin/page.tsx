@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
-import { Users, GraduationCap, BookOpen, ClipboardList, CheckCircle, XCircle } from 'lucide-react'
+import { Users, GraduationCap, BookOpen, ClipboardList, CheckCircle, XCircle, AlertTriangle, ShieldCheck } from 'lucide-react'
 
 export default async function AdminDashboard() {
   const [
@@ -9,7 +9,10 @@ export default async function AdminDashboard() {
     activeTasksCount,
     pendingSubmissions,
     completedTasks,
-    failedTasks
+    failedTasks,
+    orphanedTaskStudents,
+    studentsWithoutTasks,
+    cancelledOrphanedCount,
   ] = await Promise.all([
     prisma.user.groupBy({
       by: ['role'],
@@ -20,6 +23,39 @@ export default async function AdminDashboard() {
     prisma.submission.count({ where: { status: 'PENDING' } }),
     prisma.task.count({ where: { status: 'PASSED' } }),
     prisma.task.count({ where: { status: 'FAILED' } }),
+    // Students with orphaned tasks (task stage/line doesn't match student's current position)
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(DISTINCT t."studentId") as count
+      FROM "Task" t
+      JOIN "User" u ON t."studentId" = u.id
+      WHERE t.status IN ('IN_PROGRESS', 'FAILED')
+      AND (
+        t.stage != u."currentStage"::text::"StageNumber"
+        OR (
+          t.stage IN ('STAGE_1_1', 'STAGE_2_1')
+          AND t."startLine" != u."currentLine"
+        )
+      )
+    `.then(r => Number(r[0]?.count ?? 0)).catch(() => 0),
+    // Active students without any active task
+    prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(*) as count
+      FROM "User" u
+      WHERE u.role = 'STUDENT'
+      AND u."isActive" = true
+      AND EXISTS (SELECT 1 FROM "StudentGroup" sg WHERE sg."studentId" = u.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM "Task" t
+        WHERE t."studentId" = u.id AND t.status = 'IN_PROGRESS'
+      )
+    `.then(r => Number(r[0]?.count ?? 0)).catch(() => 0),
+    // Recently auto-cancelled orphaned tasks (last 24h)
+    prisma.task.count({
+      where: {
+        status: 'CANCELLED',
+        updatedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+      }
+    }),
   ])
 
   const getUserCount = (role: string) =>
@@ -119,6 +155,53 @@ export default async function AdminDashboard() {
           </Card>
         ))}
       </div>
+
+      {/* Health check */}
+      <Card className={orphanedTaskStudents > 0 ? 'border-amber-500/50' : 'border-green-500/50'}>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <div>
+            <CardTitle className="text-base">Состояние системы</CardTitle>
+            <CardDescription>Автоматическая проверка прогресса студентов</CardDescription>
+          </div>
+          {orphanedTaskStudents > 0
+            ? <AlertTriangle className="h-5 w-5 text-amber-500" />
+            : <ShieldCheck className="h-5 w-5 text-green-500" />
+          }
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            {orphanedTaskStudents > 0 ? (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-amber-600 dark:text-amber-400">
+                  Студенты с устаревшими заданиями
+                </span>
+                <span className="font-bold text-amber-600 dark:text-amber-400">{orphanedTaskStudents}</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-green-600 dark:text-green-400">
+                  Устаревших заданий нет
+                </span>
+                <CheckCircle className="h-4 w-4 text-green-500" />
+              </div>
+            )}
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Студенты без активного задания</span>
+              <span className="font-bold">{studentsWithoutTasks}</span>
+            </div>
+            {cancelledOrphanedCount > 0 && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Автоматически исправлено (24ч)</span>
+                <span className="font-bold text-blue-500">{cancelledOrphanedCount}</span>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground pt-1">
+              Устаревшие задания автоматически отменяются при следующем запуске крон-задачи.
+              Новые задания создаются для текущей позиции студента.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card>

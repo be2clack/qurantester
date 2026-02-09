@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     const results = {
       createdTasks: 0,
       expiredTasks: 0,
+      cancelledOrphanedTasks: 0,
       updatedStats: 0,
     }
 
@@ -74,38 +75,43 @@ export async function POST(req: NextRequest) {
     })
 
     for (const student of activeStudents) {
-      // Check if student has active task
+      // Auto-cancel orphaned tasks that don't match the student's current position.
+      // These can occur when progress was manually edited or from old bugs.
+      const isLearningStage = student.currentStage === StageNumber.STAGE_1_1 || student.currentStage === StageNumber.STAGE_2_1
+      const orphanedTasks = await prisma.task.findMany({
+        where: {
+          studentId: student.id,
+          status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.FAILED] },
+          OR: [
+            // Task is for a different stage
+            { stage: { not: student.currentStage } },
+            // For learning stages: task is for a different line
+            ...(isLearningStage ? [{
+              stage: student.currentStage,
+              startLine: { not: student.currentLine },
+            }] : []),
+          ],
+        },
+        select: { id: true },
+      })
+
+      if (orphanedTasks.length > 0) {
+        await prisma.task.updateMany({
+          where: { id: { in: orphanedTasks.map(t => t.id) } },
+          data: { status: TaskStatus.CANCELLED },
+        })
+        results.cancelledOrphanedTasks += orphanedTasks.length
+      }
+
+      // Check if student has a valid active task
       const activeTask = await prisma.task.findFirst({
         where: {
           studentId: student.id,
-          status: TaskStatus.IN_PROGRESS
+          status: TaskStatus.IN_PROGRESS,
         },
-        include: {
-          page: true
-        }
       })
 
-      // If student has any active task, skip creating a new one
       if (activeTask) continue
-
-      // Additional safety check: verify there are no pending submissions for previous lines
-      // This prevents edge cases where student progress got ahead of actual completion
-      if (student.currentStage === StageNumber.STAGE_1_1 || student.currentStage === StageNumber.STAGE_2_1) {
-        // In individual line learning stages, check if there are incomplete tasks for previous lines
-        const incompletePreviousTasks = await prisma.task.findFirst({
-          where: {
-            studentId: student.id,
-            page: { pageNumber: student.currentPage },
-            startLine: { lt: student.currentLine },
-            status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.FAILED] }
-          }
-        })
-
-        if (incompletePreviousTasks) {
-          console.log(`Skipping task creation for student ${student.id}: incomplete previous line task found`)
-          continue
-        }
-      }
 
       // Get lesson for student's group
       const lesson = student.studentGroups[0]?.group?.lessons[0]

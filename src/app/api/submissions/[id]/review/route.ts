@@ -110,92 +110,116 @@ export async function POST(
     if (newPassedCount >= requiredCount && failedCount === 0) {
       taskUpdate.status = TaskStatus.PASSED
 
-      // Update student progress
-      const student = submission.student
-      const page = task.page
-
-      let newPage = student.currentPage
-      let newLine = student.currentLine
-      let newStage = student.currentStage
-
-      // Progress logic based on new stage system
-      switch (task.stage) {
-        case StageNumber.STAGE_1_1:
-          // Learning lines 1-7 individually
-          if (newLine < 7 && newLine < page.totalLines) {
-            newLine++
-          } else {
-            // Finished learning 1-7, move to review stage 1.2
-            newStage = StageNumber.STAGE_1_2
-            newLine = 1
-          }
-          break
-        case StageNumber.STAGE_1_2:
-          // Reviewed lines 1-7 together, start learning 8-15
-          if (page.totalLines > 7) {
-            newStage = StageNumber.STAGE_2_1
-            newLine = 8
-          } else {
-            // Pages with <=7 lines go straight to full page
-            newStage = StageNumber.STAGE_3
-            newLine = 1
-          }
-          break
-        case StageNumber.STAGE_2_1:
-          // Learning lines 8-15 individually
-          if (newLine < page.totalLines) {
-            newLine++
-          } else {
-            // Finished learning 8-15, move to review stage 2.2
-            newStage = StageNumber.STAGE_2_2
-            newLine = 8
-          }
-          break
-        case StageNumber.STAGE_2_2:
-          // Reviewed lines 8-15 together, move to full page
-          newStage = StageNumber.STAGE_3
-          newLine = 1
-          break
-        case StageNumber.STAGE_3:
-          // Page completed! Move to next page
-          if (newPage < 602) {
-            newPage++
-            newLine = 1
-            newStage = StageNumber.STAGE_1_1
-          }
-          // If page 602, student completed Quran!
-          break
-      }
-
-      // Update student
-      await prisma.user.update({
-        where: { id: student.id },
-        data: {
-          currentPage: newPage,
-          currentLine: newLine,
-          currentStage: newStage,
-        }
+      // Re-fetch student fresh to avoid stale data from concurrent reviews
+      const freshStudent = await prisma.user.findUnique({
+        where: { id: submission.student.id },
+        include: { statistics: true }
       })
 
-      // Update statistics
-      if (student.statistics) {
-        const statsUpdate: any = {
-          totalSubmissions: { increment: 1 },
-          passedSubmissions: status === 'PASSED' ? { increment: 1 } : undefined,
-          currentStreak: status === 'PASSED'
-            ? { increment: 1 }
-            : 0,
+      if (!freshStudent) {
+        return NextResponse.json({ error: 'Student not found' }, { status: 404 })
+      }
+
+      const page = task.page
+
+      // Only advance progress if this task matches the student's current position.
+      // This prevents old/orphaned tasks from incorrectly advancing progress.
+      const isLearningStage = task.stage === StageNumber.STAGE_1_1 || task.stage === StageNumber.STAGE_2_1
+      const taskMatchesCurrentPosition =
+        task.stage === freshStudent.currentStage &&
+        (!isLearningStage || task.startLine === freshStudent.currentLine)
+
+      if (taskMatchesCurrentPosition) {
+        let newPage = freshStudent.currentPage
+        let newLine = freshStudent.currentLine
+        let newStage = freshStudent.currentStage
+
+        // Progress logic based on stage system
+        switch (task.stage) {
+          case StageNumber.STAGE_1_1:
+            // Learning lines 1-7 individually
+            if (newLine < 7 && newLine < page.totalLines) {
+              newLine++
+            } else {
+              // Finished learning 1-7, move to review stage 1.2
+              newStage = StageNumber.STAGE_1_2
+              newLine = 1
+            }
+            break
+          case StageNumber.STAGE_1_2:
+            // Reviewed lines 1-7 together, start learning 8-15
+            if (page.totalLines > 7) {
+              newStage = StageNumber.STAGE_2_1
+              newLine = 8
+            } else {
+              // Pages with <=7 lines go straight to full page
+              newStage = StageNumber.STAGE_3
+              newLine = 1
+            }
+            break
+          case StageNumber.STAGE_2_1:
+            // Learning lines 8-15 individually
+            if (newLine < page.totalLines) {
+              newLine++
+            } else {
+              // Finished learning 8-15, move to review stage 2.2
+              newStage = StageNumber.STAGE_2_2
+              newLine = 8
+            }
+            break
+          case StageNumber.STAGE_2_2:
+            // Reviewed lines 8-15 together, move to full page
+            newStage = StageNumber.STAGE_3
+            newLine = 1
+            break
+          case StageNumber.STAGE_3:
+            // Page completed! Move to next page
+            if (newPage < 602) {
+              newPage++
+              newLine = 1
+              newStage = StageNumber.STAGE_1_1
+            }
+            // If page 602, student completed Quran!
+            break
         }
 
-        // If completed a page in stage 3
-        if (task.stage === StageNumber.STAGE_3 && newPage > student.currentPage) {
-          statsUpdate.totalPagesCompleted = { increment: 1 }
-        }
-
-        await prisma.userStatistics.update({
-          where: { userId: student.id },
-          data: statsUpdate,
+        // Update student
+        await prisma.user.update({
+          where: { id: freshStudent.id },
+          data: {
+            currentPage: newPage,
+            currentLine: newLine,
+            currentStage: newStage,
+          }
         })
+
+        // Update statistics
+        if (freshStudent.statistics) {
+          const statsUpdate: any = {
+            totalSubmissions: { increment: 1 },
+            passedSubmissions: status === 'PASSED' ? { increment: 1 } : undefined,
+            currentStreak: status === 'PASSED'
+              ? { increment: 1 }
+              : 0,
+          }
+
+          // If completed a page in stage 3
+          if (task.stage === StageNumber.STAGE_3 && newPage > freshStudent.currentPage) {
+            statsUpdate.totalPagesCompleted = { increment: 1 }
+          }
+
+          await prisma.userStatistics.update({
+            where: { userId: freshStudent.id },
+            data: statsUpdate,
+          })
+        }
+      } else {
+        console.log(
+          `Task ${task.id} completed but doesn't match student position. ` +
+          `Task: stage=${task.stage} line=${task.startLine}, ` +
+          `Student: stage=${freshStudent.currentStage} line=${freshStudent.currentLine}. ` +
+          `Skipping progress advancement.`
+        )
       }
     }
 
