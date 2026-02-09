@@ -79,10 +79,33 @@ export async function POST(req: NextRequest) {
         where: {
           studentId: student.id,
           status: TaskStatus.IN_PROGRESS
+        },
+        include: {
+          page: true
         }
       })
 
-      if (activeTask) continue // Already has active task
+      // If student has any active task, skip creating a new one
+      if (activeTask) continue
+
+      // Additional safety check: verify there are no pending submissions for previous lines
+      // This prevents edge cases where student progress got ahead of actual completion
+      if (student.currentStage === StageNumber.STAGE_1_1 || student.currentStage === StageNumber.STAGE_2_1) {
+        // In individual line learning stages, check if there are incomplete tasks for previous lines
+        const incompletePreviousTasks = await prisma.task.findFirst({
+          where: {
+            studentId: student.id,
+            page: { pageNumber: student.currentPage },
+            startLine: { lt: student.currentLine },
+            status: { in: [TaskStatus.IN_PROGRESS, TaskStatus.FAILED] }
+          }
+        })
+
+        if (incompletePreviousTasks) {
+          console.log(`Skipping task creation for student ${student.id}: incomplete previous line task found`)
+          continue
+        }
+      }
 
       // Get lesson for student's group
       const lesson = student.studentGroups[0]?.group?.lessons[0]
