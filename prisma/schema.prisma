@@ -466,6 +466,7 @@ model User {
   // New relations for improved memorization tracking
   pageRevisionStats    PageRevisionStats[]
   lineProgress         LineProgress[]
+  wordMastery          WordMastery[]
   studentDeliveries    SubmissionDelivery[] @relation("StudentDeliveries")
   ustazDeliveries      SubmissionDelivery[] @relation("UstazDeliveries")
 
@@ -526,6 +527,21 @@ model WordTranslation {
   @@index([isVerified])
   @@index([surahNumber, ayahNumber])
   @@index([pageNumber])
+}
+
+// Per-student, per-word mastery tracking for smart word selection
+model WordMastery {
+  id             String    @id @default(cuid())
+  studentId      String
+  wordKey        String
+  correctCount   Int       @default(0) // Total times answered correctly
+  incorrectCount Int       @default(0) // Total times answered incorrectly
+  lastAnsweredAt DateTime?
+  student        User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, wordKey])
+  @@index([studentId, correctCount])
+  @@index([studentId])
 }
 
 // Daily revision log for button-only revision mode

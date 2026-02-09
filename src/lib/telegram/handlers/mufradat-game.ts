@@ -94,87 +94,163 @@ async function deactivateSession(sessionId: string) {
 }
 
 /**
- * Get words from database based on student's current page and line
- * Only returns words from pages that the student has already completed
- * (pages before current page, since current page is still being learned)
+ * Shuffle array in-place (Fisher-Yates)
+ */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+/**
+ * Get all surah numbers for pages 1..maxPage
+ */
+function getAllSurahNumbersForPages(maxPage: number): number[] {
+  const nums: number[] = []
+  for (let page = 1; page <= maxPage; page++) {
+    for (const s of getSurahsByPage(page)) {
+      if (!nums.includes(s.number)) nums.push(s.number)
+    }
+  }
+  if (nums.length === 0) nums.push(1) // fallback to Fatiha
+  return nums
+}
+
+/**
+ * Fetch candidate words from DB with a page/surah filter.
+ * Returns more words than needed so the caller can prioritize.
+ */
+async function fetchCandidateWords(
+  filter: { maxPage: number } | { exactPage: number },
+  limit: number
+): Promise<any[]> {
+  const translationFilter = {
+    OR: [
+      { translationRu: { not: null } },
+      { translationEn: { not: null } }
+    ]
+  }
+
+  if ('exactPage' in filter) {
+    // Try exact pageNumber first
+    let words = await prisma.wordTranslation.findMany({
+      where: { pageNumber: filter.exactPage, ...translationFilter },
+      take: limit
+    })
+
+    if (words.length < 10) {
+      // Fallback to surah-based
+      const surahs = getSurahsByPage(filter.exactPage)
+      if (surahs.length > 0) {
+        words = await prisma.wordTranslation.findMany({
+          where: { surahNumber: { in: surahs.map(s => s.number) }, ...translationFilter },
+          take: limit
+        })
+      }
+    }
+    return words
+  }
+
+  // maxPage mode: get words from all surahs in pages 1..maxPage
+  const surahNumbers = getAllSurahNumbersForPages(filter.maxPage)
+  return prisma.wordTranslation.findMany({
+    where: { surahNumber: { in: surahNumbers }, ...translationFilter },
+    take: limit
+  })
+}
+
+/**
+ * Smart word selection: prioritizes words the student doesn't know.
+ * - Words answered correctly 2+ times are "mastered" and excluded
+ * - Words answered incorrectly are prioritized
+ * - Unseen words come next
+ * - If not enough unmastered words, mastered ones are added back
+ */
+async function getSmartWords(
+  studentId: string,
+  filter: { maxPage: number } | { exactPage: number },
+  count: number
+): Promise<GameWord[]> {
+  // 1. Get student's word mastery data (lightweight query)
+  const mastery = await prisma.wordMastery.findMany({
+    where: { studentId },
+    select: { wordKey: true, correctCount: true, incorrectCount: true }
+  })
+  const masteryMap = new Map(mastery.map(m => [m.wordKey, m]))
+  const masteredKeys = mastery.filter(m => m.correctCount >= 2).map(m => m.wordKey)
+
+  // 2. Fetch candidate words excluding mastered (at DB level for efficiency)
+  const candidateWords = await fetchCandidateWords(filter, count * 8)
+  const unmastered = candidateWords.filter(w => !masteredKeys.includes(w.wordKey))
+
+  // 3. Categorize and prioritize
+  const weak: any[] = []    // answered incorrectly, not yet mastered
+  const unseen: any[] = []  // never seen
+  const learning: any[] = [] // seen but correctCount < 2
+
+  for (const word of unmastered) {
+    const m = masteryMap.get(word.wordKey)
+    if (!m) unseen.push(word)
+    else if (m.incorrectCount > 0) weak.push(word)
+    else learning.push(word)
+  }
+
+  shuffle(weak)
+  shuffle(unseen)
+  shuffle(learning)
+
+  let selected = [...weak, ...unseen, ...learning]
+
+  // 4. If not enough unmastered words, add some mastered ones back
+  if (selected.length < count * 4) {
+    const mastered = candidateWords.filter(w => masteredKeys.includes(w.wordKey))
+    shuffle(mastered)
+    selected = [...selected, ...mastered]
+  }
+
+  // 5. If still not enough, use global fallback
+  if (selected.length < count) {
+    const fallbackWords = await prisma.wordTranslation.findMany({
+      where: { OR: [{ translationRu: { not: null } }, { translationEn: { not: null } }] },
+      take: count * 4
+    })
+    if (fallbackWords.length >= count) {
+      return createGameFromExistingWords(fallbackWords, count)
+    }
+    return []
+  }
+
+  return createGameFromExistingWords(selected.slice(0, count * 4), count)
+}
+
+/**
+ * Get words based on student's current page and line (smart selection)
  */
 async function getWordsForStudentProgress(
+  studentId: string,
   pageNumber: number,
   lineNumber: number,
   count: number
 ): Promise<GameWord[]> {
-  // Use pages before current page (already completed)
-  // If on page 1, use at least page 1
-  // If line >= 8 (second half of page), we can include current page too
   const maxPage = lineNumber >= 8 ? pageNumber : Math.max(1, pageNumber - 1)
-
-  const surahs = getSurahsByPage(maxPage)
-
-  if (surahs.length === 0) {
-    surahs.push({
-      number: 1,
-      nameArabic: 'الفاتحة',
-      nameEnglish: 'Al-Fatihah',
-      nameRussian: 'Аль-Фатиха',
-      meaningEnglish: 'The Opening',
-      meaningRussian: 'Открывающая',
-      versesCount: 7,
-      startPage: 1,
-      endPage: 1,
-      revelationType: 'meccan' as const
-    })
-  }
-
-  // Get surah numbers for all pages up to maxPage
-  const allSurahNumbers: number[] = []
-  for (let page = 1; page <= maxPage; page++) {
-    const pageSurahs = getSurahsByPage(page)
-    for (const surah of pageSurahs) {
-      if (!allSurahNumbers.includes(surah.number)) {
-        allSurahNumbers.push(surah.number)
-      }
-    }
-  }
-
-  const words = await prisma.wordTranslation.findMany({
-    where: {
-      surahNumber: { in: allSurahNumbers },
-      OR: [
-        { translationRu: { not: null } },
-        { translationEn: { not: null } }
-      ]
-    },
-    orderBy: [
-      { surahNumber: 'desc' },
-      { ayahNumber: 'desc' }
-    ],
-    take: count * 4
-  })
-
-  if (words.length < count) {
-    const fallbackWords = await prisma.wordTranslation.findMany({
-      where: {
-        OR: [
-          { translationRu: { not: null } },
-          { translationEn: { not: null } }
-        ]
-      },
-      orderBy: { id: 'desc' },
-      take: count * 4
-    })
-
-    if (fallbackWords.length >= count) {
-      return createGameFromExistingWords(fallbackWords, count)
-    }
-
-    return []
-  }
-
-  return createGameFromExistingWords(words, count)
+  return getSmartWords(studentId, { maxPage }, count)
 }
 
 /**
- * Create game from existing DB words
+ * Get words for a specific page (smart selection)
+ */
+async function getWordsForSpecificPage(
+  studentId: string,
+  pageNumber: number,
+  count: number
+): Promise<GameWord[]> {
+  return getSmartWords(studentId, { exactPage: pageNumber }, count)
+}
+
+/**
+ * Create game from existing DB words (builds answer options)
  */
 function createGameFromExistingWords(words: any[], count: number): GameWord[] {
   const validWords = words.filter(w => w.translationRu || w.translationEn)
@@ -183,7 +259,7 @@ function createGameFromExistingWords(words: any[], count: number): GameWord[] {
     return []
   }
 
-  const shuffled = validWords.sort(() => Math.random() - 0.5)
+  const shuffled = shuffle([...validWords])
   const gameWords: GameWord[] = []
 
   for (let i = 0; i < Math.min(count, shuffled.length); i++) {
@@ -233,78 +309,6 @@ function createGameFromExistingWords(words: any[], count: number): GameWord[] {
   }
 
   return gameWords
-}
-
-/**
- * Get words for a specific page only (for page-based translation practice)
- */
-async function getWordsForSpecificPage(
-  pageNumber: number,
-  count: number
-): Promise<GameWord[]> {
-  // First try to get words by exact page number (if pageNumber is set)
-  let words = await prisma.wordTranslation.findMany({
-    where: {
-      pageNumber: pageNumber,
-      OR: [
-        { translationRu: { not: null } },
-        { translationEn: { not: null } }
-      ]
-    },
-    orderBy: [
-      { surahNumber: 'asc' },
-      { ayahNumber: 'asc' },
-      { position: 'asc' }
-    ],
-    take: count * 4
-  })
-
-  // If no words found with pageNumber, fallback to surah-based (legacy support)
-  if (words.length < count) {
-    const surahs = getSurahsByPage(pageNumber)
-
-    if (surahs.length > 0) {
-      const surahNumbers = surahs.map(s => s.number)
-
-      words = await prisma.wordTranslation.findMany({
-        where: {
-          surahNumber: { in: surahNumbers },
-          OR: [
-            { translationRu: { not: null } },
-            { translationEn: { not: null } }
-          ]
-        },
-        orderBy: [
-          { surahNumber: 'asc' },
-          { ayahNumber: 'asc' },
-          { position: 'asc' }
-        ],
-        take: count * 4
-      })
-    }
-  }
-
-  if (words.length < count) {
-    // Not enough words for this page, try fallback
-    const fallbackWords = await prisma.wordTranslation.findMany({
-      where: {
-        OR: [
-          { translationRu: { not: null } },
-          { translationEn: { not: null } }
-        ]
-      },
-      orderBy: { id: 'desc' },
-      take: count * 4
-    })
-
-    if (fallbackWords.length >= count) {
-      return createGameFromExistingWords(fallbackWords, count)
-    }
-
-    return []
-  }
-
-  return createGameFromExistingWords(words, count)
 }
 
 /**
@@ -384,10 +388,11 @@ export async function startMufradatGame(
     const wordsCount = studentGroup.group.wordsPerDay || WORDS_PER_GAME
     const timeLimit = studentGroup.group.mufradatTimeLimit || DEFAULT_TIME_LIMIT
 
-    // Get words - either from specific page or from progress-based
+    // Get words - either from specific page or from progress-based (smart selection)
     const words = pageNumber
-      ? await getWordsForSpecificPage(pageNumber, wordsCount)
+      ? await getWordsForSpecificPage(userId, pageNumber, wordsCount)
       : await getWordsForStudentProgress(
+          userId,
           studentGroup.currentPage,
           studentGroup.currentLine,
           wordsCount
@@ -587,6 +592,28 @@ async function finishGame(
 
   // Deactivate session
   await deactivateSession(session.id)
+
+  // Update per-word mastery tracking (for smart word selection)
+  const now = new Date()
+  for (const result of results) {
+    if (!result.wordKey) continue
+    await prisma.wordMastery.upsert({
+      where: { studentId_wordKey: { studentId: userId, wordKey: result.wordKey } },
+      create: {
+        studentId: userId,
+        wordKey: result.wordKey,
+        correctCount: result.correct ? 1 : 0,
+        incorrectCount: result.correct ? 0 : 1,
+        lastAnsweredAt: now,
+      },
+      update: {
+        ...(result.correct
+          ? { correctCount: { increment: 1 } }
+          : { incorrectCount: { increment: 1 } }),
+        lastAnsweredAt: now,
+      },
+    })
+  }
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
