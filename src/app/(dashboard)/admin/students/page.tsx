@@ -119,11 +119,14 @@ interface PendingUser {
 }
 
 interface ActivationFormData {
+  userType: 'STUDENT' | 'PARENT' | 'USTAZ' | ''
   firstName: string
   lastName: string
   gender: 'MALE' | 'FEMALE' | ''
   groupId: string
   parentId: string
+  childId: string
+  selectChildLater: boolean
   currentPage: number
   currentLine: number
   currentStage: StageNumber
@@ -157,11 +160,14 @@ export default function StudentsPage() {
   const [activationDialogOpen, setActivationDialogOpen] = useState(false)
   const [activatingUser, setActivatingUser] = useState<PendingUser | null>(null)
   const [activationForm, setActivationForm] = useState<ActivationFormData>({
+    userType: '',
     firstName: '',
     lastName: '',
     gender: '',
     groupId: '',
     parentId: '',
+    childId: '',
+    selectChildLater: false,
     currentPage: 1,
     currentLine: 1,
     currentStage: 'STAGE_1_1',
@@ -169,12 +175,15 @@ export default function StudentsPage() {
   const [activationLoading, setActivationLoading] = useState(false)
   const [activationError, setActivationError] = useState('')
   const [parentList, setParentList] = useState<Parent[]>([])
+  const [studentList, setStudentList] = useState<Student[]>([])
 
   // Searchable combobox state for activation dialog
   const [groupSearchOpen, setGroupSearchOpen] = useState(false)
   const [groupSearch, setGroupSearch] = useState('')
   const [parentSearchOpen, setParentSearchOpen] = useState(false)
   const [parentSearch, setParentSearch] = useState('')
+  const [childSearchOpen, setChildSearchOpen] = useState(false)
+  const [childSearch, setChildSearch] = useState('')
 
   const fetchPendingUsers = useCallback(async () => {
     setPendingLoading(true)
@@ -262,13 +271,24 @@ export default function StudentsPage() {
     }
   }, [])
 
+  const fetchStudentList = useCallback(async () => {
+    try {
+      const res = await fetch('/api/users?role=STUDENT&limit=100&isActive=true')
+      const data = await res.json()
+      setStudentList(data.items || [])
+    } catch (err) {
+      console.error('Failed to fetch student list:', err)
+    }
+  }, [])
+
   useEffect(() => {
     fetchPendingUsers()
     fetchStudents()
     fetchUstazList()
     fetchGroupList()
     fetchParentList()
-  }, [fetchPendingUsers, fetchStudents, fetchUstazList, fetchGroupList, fetchParentList])
+    fetchStudentList()
+  }, [fetchPendingUsers, fetchStudents, fetchUstazList, fetchGroupList, fetchParentList, fetchStudentList])
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
@@ -300,11 +320,14 @@ export default function StudentsPage() {
     }
 
     setActivationForm({
+      userType: '',
       firstName: user.firstName || '',
       lastName: user.lastName || '',
       gender: user.gender || '',
       groupId: autoGroupId,
       parentId: '',
+      childId: '',
+      selectChildLater: false,
       currentPage: 1,
       currentLine: 1,
       currentStage: 'STAGE_1_1',
@@ -312,13 +335,26 @@ export default function StudentsPage() {
     setActivationError('')
     setGroupSearch('')
     setParentSearch('')
+    setChildSearch('')
     setActivationDialogOpen(true)
   }
 
   const submitActivation = async () => {
     if (!activatingUser) return
-    if (!activationForm.groupId) {
-      setActivationError('Выберите группу')
+
+    // Validate based on user type
+    if (!activationForm.userType) {
+      setActivationError('Выберите тип пользователя')
+      return
+    }
+
+    if (activationForm.userType === 'STUDENT' && !activationForm.groupId) {
+      setActivationError('Выберите группу для студента')
+      return
+    }
+
+    if (activationForm.userType === 'PARENT' && !activationForm.selectChildLater && !activationForm.childId) {
+      setActivationError('Выберите ребенка или отметьте "Выбрать позже"')
       return
     }
 
@@ -326,23 +362,32 @@ export default function StudentsPage() {
     setActivationError('')
 
     try {
-      // First, update user data and activate
+      // Build user data based on type
       const userData: Record<string, unknown> = {
         firstName: activationForm.firstName || null,
         lastName: activationForm.lastName || null,
         gender: activationForm.gender || null,
-        role: 'STUDENT',
+        role: activationForm.userType,
         isActive: true,
-        currentPage: activationForm.currentPage,
-        currentLine: activationForm.currentLine,
-        currentStage: activationForm.currentStage,
       }
 
-      // Add parent if selected
-      if (activationForm.parentId) {
-        userData.childOf = { connect: [{ id: activationForm.parentId }] }
+      // For students: add progress and parent
+      if (activationForm.userType === 'STUDENT') {
+        userData.currentPage = activationForm.currentPage
+        userData.currentLine = activationForm.currentLine
+        userData.currentStage = activationForm.currentStage
+
+        if (activationForm.parentId) {
+          userData.childOf = { connect: [{ id: activationForm.parentId }] }
+        }
       }
 
+      // For parents: link to child if selected
+      if (activationForm.userType === 'PARENT' && activationForm.childId && !activationForm.selectChildLater) {
+        userData.parentOf = { connect: [{ id: activationForm.childId }] }
+      }
+
+      // Update user
       const userRes = await fetch(`/api/users/${activatingUser.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -354,21 +399,23 @@ export default function StudentsPage() {
         throw new Error(data.error || 'Не удалось активировать пользователя')
       }
 
-      // Add to selected group
-      const groupRes = await fetch(`/api/groups/${activationForm.groupId}/students`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentId: activatingUser.id,
-          currentPage: activationForm.currentPage,
-          currentLine: activationForm.currentLine,
-          currentStage: activationForm.currentStage,
-        }),
-      })
+      // For students: add to group
+      if (activationForm.userType === 'STUDENT' && activationForm.groupId) {
+        const groupRes = await fetch(`/api/groups/${activationForm.groupId}/students`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            studentId: activatingUser.id,
+            currentPage: activationForm.currentPage,
+            currentLine: activationForm.currentLine,
+            currentStage: activationForm.currentStage,
+          }),
+        })
 
-      if (!groupRes.ok) {
-        const data = await groupRes.json()
-        throw new Error(data.error || 'Не удалось добавить в группу')
+        if (!groupRes.ok) {
+          const data = await groupRes.json()
+          throw new Error(data.error || 'Не удалось добавить в группу')
+        }
       }
 
       // Success - close dialog and refresh
@@ -949,7 +996,7 @@ export default function StudentsPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <UserCheck className="h-5 w-5" />
-              Активация студента
+              Активация пользователя
             </DialogTitle>
             <DialogDescription>
               {activatingUser && (
@@ -964,274 +1011,421 @@ export default function StudentsPage() {
               </div>
             )}
 
-            {/* Name fields */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="firstName">Имя</Label>
-                <Input
-                  id="firstName"
-                  value={activationForm.firstName}
-                  onChange={(e) => setActivationForm(prev => ({ ...prev, firstName: e.target.value }))}
-                  placeholder="Имя"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="lastName">Фамилия</Label>
-                <Input
-                  id="lastName"
-                  value={activationForm.lastName}
-                  onChange={(e) => setActivationForm(prev => ({ ...prev, lastName: e.target.value }))}
-                  placeholder="Фамилия"
-                />
-              </div>
-            </div>
-
-            {/* Gender */}
+            {/* User Type Selection */}
             <div className="space-y-1.5">
-              <Label>Пол</Label>
+              <Label>Тип пользователя *</Label>
               <RadioGroup
-                value={activationForm.gender}
-                onValueChange={(v) => setActivationForm(prev => ({ ...prev, gender: v as 'MALE' | 'FEMALE' }))}
-                className="flex gap-4"
+                value={activationForm.userType}
+                onValueChange={(v) => setActivationForm(prev => ({ ...prev, userType: v as 'STUDENT' | 'PARENT' | 'USTAZ' }))}
+                className="flex flex-col gap-2"
               >
-                <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="MALE" id="gender-male" />
-                  <Label htmlFor="gender-male" className="cursor-pointer">👨 Мужской</Label>
+                <div className="flex items-center space-x-2 p-3 rounded-lg border hover:bg-accent transition-colors">
+                  <RadioGroupItem value="STUDENT" id="type-student" />
+                  <Label htmlFor="type-student" className="cursor-pointer flex-1">
+                    <div className="font-medium">👨‍🎓 Студент</div>
+                    <div className="text-xs text-muted-foreground">Будет назначен в группу для обучения</div>
+                  </Label>
                 </div>
-                <div className="flex items-center space-x-2">
-                  <RadioGroupItem value="FEMALE" id="gender-female" />
-                  <Label htmlFor="gender-female" className="cursor-pointer">🧕 Женский</Label>
+                <div className="flex items-center space-x-2 p-3 rounded-lg border hover:bg-accent transition-colors">
+                  <RadioGroupItem value="PARENT" id="type-parent" />
+                  <Label htmlFor="type-parent" className="cursor-pointer flex-1">
+                    <div className="font-medium">👪 Родитель</div>
+                    <div className="text-xs text-muted-foreground">Сможет следить за успеваемостью детей</div>
+                  </Label>
+                </div>
+                <div className="flex items-center space-x-2 p-3 rounded-lg border hover:bg-accent transition-colors">
+                  <RadioGroupItem value="USTAZ" id="type-ustaz" />
+                  <Label htmlFor="type-ustaz" className="cursor-pointer flex-1">
+                    <div className="font-medium">🎓 Устаз</div>
+                    <div className="text-xs text-muted-foreground">Будет проверять задания студентов</div>
+                  </Label>
                 </div>
               </RadioGroup>
             </div>
 
-            {/* Group selection with search */}
-            <div className="space-y-1.5">
-              <Label>Группа *</Label>
-              <Popover open={groupSearchOpen} onOpenChange={setGroupSearchOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={groupSearchOpen}
-                    className="w-full justify-between"
-                  >
-                    {activationForm.groupId ? (
-                      (() => {
-                        const selectedGroup = groupList.find(g => g.id === activationForm.groupId)
-                        return selectedGroup ? (
-                          <span>
-                            {selectedGroup.gender === 'MALE' ? '👨' : '🧕'} {selectedGroup.name}
-                            {selectedGroup.ustaz && ` - ${selectedGroup.ustaz.firstName || ''} ${selectedGroup.ustaz.lastName || ''}`.trim()}
-                          </span>
-                        ) : 'Выберите группу'
-                      })()
-                    ) : (
-                      <span className="text-muted-foreground">Выберите группу...</span>
-                    )}
-                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[400px] p-0" align="start">
-                  <Command shouldFilter={false}>
-                    <CommandInput
-                      placeholder="Поиск группы..."
-                      value={groupSearch}
-                      onValueChange={setGroupSearch}
+            {/* Show fields only after user type is selected */}
+            {activationForm.userType && (
+              <>
+                {/* Name fields */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="firstName">Имя</Label>
+                    <Input
+                      id="firstName"
+                      value={activationForm.firstName}
+                      onChange={(e) => setActivationForm(prev => ({ ...prev, firstName: e.target.value }))}
+                      placeholder="Имя"
                     />
-                    <CommandList>
-                      {groupList.length === 0 ? (
-                        <CommandEmpty>Группы не найдены</CommandEmpty>
-                      ) : (
-                        <CommandGroup>
-                          {groupList
-                            .filter(g => {
-                              if (!groupSearch) return true
-                              const search = groupSearch.toLowerCase()
-                              const name = g.name.toLowerCase()
-                              const ustazName = g.ustaz
-                                ? `${g.ustaz.firstName || ''} ${g.ustaz.lastName || ''}`.toLowerCase()
-                                : ''
-                              return name.includes(search) || ustazName.includes(search)
-                            })
-                            .map((group) => (
-                              <CommandItem
-                                key={group.id}
-                                value={group.id}
-                                onSelect={() => {
-                                  setActivationForm(prev => ({ ...prev, groupId: group.id }))
-                                  setGroupSearchOpen(false)
-                                  setGroupSearch('')
-                                }}
-                              >
-                                <Users className="mr-2 h-4 w-4" />
-                                <div className="flex-1">
-                                  <div className="font-medium">
-                                    {group.gender === 'MALE' ? '👨' : '🧕'} {group.name}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {group.ustaz
-                                      ? `${group.ustaz.firstName || ''} ${group.ustaz.lastName || ''}`.trim()
-                                      : 'Без устаза'} • {group._count.students} студ.
-                                  </div>
-                                </div>
-                              </CommandItem>
-                            ))}
-                        </CommandGroup>
-                      )}
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-            </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="lastName">Фамилия</Label>
+                    <Input
+                      id="lastName"
+                      value={activationForm.lastName}
+                      onChange={(e) => setActivationForm(prev => ({ ...prev, lastName: e.target.value }))}
+                      placeholder="Фамилия"
+                    />
+                  </div>
+                </div>
 
-            {/* Parent selection with search */}
-            <div className="space-y-1.5">
-              <Label>Родитель (опционально)</Label>
-              <Popover open={parentSearchOpen} onOpenChange={setParentSearchOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={parentSearchOpen}
-                    className="w-full justify-between"
+                {/* Gender */}
+                <div className="space-y-1.5">
+                  <Label>Пол</Label>
+                  <RadioGroup
+                    value={activationForm.gender}
+                    onValueChange={(v) => setActivationForm(prev => ({ ...prev, gender: v as 'MALE' | 'FEMALE' }))}
+                    className="flex gap-4"
                   >
-                    {activationForm.parentId ? (
-                      (() => {
-                        const selectedParent = parentList.find(p => p.id === activationForm.parentId)
-                        return selectedParent ? (
-                          <span>
-                            <User className="h-3 w-3 inline mr-1" />
-                            {selectedParent.firstName || selectedParent.lastName
-                              ? `${selectedParent.firstName || ''} ${selectedParent.lastName || ''}`.trim()
-                              : selectedParent.phone}
-                          </span>
-                        ) : 'Без родителя'
-                      })()
-                    ) : (
-                      <span className="text-muted-foreground">Выберите родителя...</span>
-                    )}
-                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[350px] p-0" align="start">
-                  <Command shouldFilter={false}>
-                    <CommandInput
-                      placeholder="Поиск по имени или телефону..."
-                      value={parentSearch}
-                      onValueChange={setParentSearch}
-                    />
-                    <CommandList>
-                      <CommandGroup>
-                        <CommandItem
-                          value="none"
-                          onSelect={() => {
-                            setActivationForm(prev => ({ ...prev, parentId: '' }))
-                            setParentSearchOpen(false)
-                            setParentSearch('')
-                          }}
-                        >
-                          Без родителя
-                        </CommandItem>
-                        {parentList
-                          .filter(p => {
-                            if (!parentSearch) return true
-                            const search = parentSearch.toLowerCase()
-                            const name = `${p.firstName || ''} ${p.lastName || ''}`.toLowerCase()
-                            const phone = p.phone.toLowerCase()
-                            return name.includes(search) || phone.includes(search)
-                          })
-                          .map((parent) => (
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="MALE" id="gender-male" />
+                      <Label htmlFor="gender-male" className="cursor-pointer">👨 Мужской</Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="FEMALE" id="gender-female" />
+                      <Label htmlFor="gender-female" className="cursor-pointer">🧕 Женский</Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+              </>
+            )}
+
+            {/* STUDENT-specific fields */}
+            {activationForm.userType === 'STUDENT' && (
+              <>
+                {/* Group selection with search */}
+                <div className="space-y-1.5">
+                  <Label>Группа *</Label>
+                  <Popover open={groupSearchOpen} onOpenChange={setGroupSearchOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={groupSearchOpen}
+                        className="w-full justify-between"
+                      >
+                        {activationForm.groupId ? (
+                          (() => {
+                            const selectedGroup = groupList.find(g => g.id === activationForm.groupId)
+                            return selectedGroup ? (
+                              <span>
+                                {selectedGroup.gender === 'MALE' ? '👨' : '🧕'} {selectedGroup.name}
+                                {selectedGroup.ustaz && ` - ${selectedGroup.ustaz.firstName || ''} ${selectedGroup.ustaz.lastName || ''}`.trim()}
+                              </span>
+                            ) : 'Выберите группу'
+                          })()
+                        ) : (
+                          <span className="text-muted-foreground">Выберите группу...</span>
+                        )}
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[400px] p-0" align="start">
+                      <Command shouldFilter={false}>
+                        <CommandInput
+                          placeholder="Поиск группы..."
+                          value={groupSearch}
+                          onValueChange={setGroupSearch}
+                        />
+                        <CommandList>
+                          {groupList.length === 0 ? (
+                            <CommandEmpty>Группы не найдены</CommandEmpty>
+                          ) : (
+                            <CommandGroup>
+                              {groupList
+                                .filter(g => {
+                                  if (!groupSearch) return true
+                                  const search = groupSearch.toLowerCase()
+                                  const name = g.name.toLowerCase()
+                                  const ustazName = g.ustaz
+                                    ? `${g.ustaz.firstName || ''} ${g.ustaz.lastName || ''}`.toLowerCase()
+                                    : ''
+                                  return name.includes(search) || ustazName.includes(search)
+                                })
+                                .map((group) => (
+                                  <CommandItem
+                                    key={group.id}
+                                    value={group.id}
+                                    onSelect={() => {
+                                      setActivationForm(prev => ({ ...prev, groupId: group.id }))
+                                      setGroupSearchOpen(false)
+                                      setGroupSearch('')
+                                    }}
+                                  >
+                                    <Users className="mr-2 h-4 w-4" />
+                                    <div className="flex-1">
+                                      <div className="font-medium">
+                                        {group.gender === 'MALE' ? '👨' : '🧕'} {group.name}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground">
+                                        {group.ustaz
+                                          ? `${group.ustaz.firstName || ''} ${group.ustaz.lastName || ''}`.trim()
+                                          : 'Без устаза'} • {group._count.students} студ.
+                                      </div>
+                                    </div>
+                                  </CommandItem>
+                                ))}
+                            </CommandGroup>
+                          )}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                {/* Parent selection with search */}
+                <div className="space-y-1.5">
+                  <Label>Родитель (опционально)</Label>
+                  <Popover open={parentSearchOpen} onOpenChange={setParentSearchOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        role="combobox"
+                        aria-expanded={parentSearchOpen}
+                        className="w-full justify-between"
+                      >
+                        {activationForm.parentId ? (
+                          (() => {
+                            const selectedParent = parentList.find(p => p.id === activationForm.parentId)
+                            return selectedParent ? (
+                              <span>
+                                <User className="h-3 w-3 inline mr-1" />
+                                {selectedParent.firstName || selectedParent.lastName
+                                  ? `${selectedParent.firstName || ''} ${selectedParent.lastName || ''}`.trim()
+                                  : selectedParent.phone}
+                              </span>
+                            ) : 'Без родителя'
+                          })()
+                        ) : (
+                          <span className="text-muted-foreground">Выберите родителя...</span>
+                        )}
+                        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-[350px] p-0" align="start">
+                      <Command shouldFilter={false}>
+                        <CommandInput
+                          placeholder="Поиск по имени или телефону..."
+                          value={parentSearch}
+                          onValueChange={setParentSearch}
+                        />
+                        <CommandList>
+                          <CommandGroup>
                             <CommandItem
-                              key={parent.id}
-                              value={parent.id}
+                              value="none"
                               onSelect={() => {
-                                setActivationForm(prev => ({ ...prev, parentId: parent.id }))
+                                setActivationForm(prev => ({ ...prev, parentId: '' }))
                                 setParentSearchOpen(false)
                                 setParentSearch('')
                               }}
                             >
-                              <User className="mr-2 h-4 w-4" />
-                              <div className="flex-1">
-                                <div className="font-medium">
-                                  {parent.firstName || parent.lastName
-                                    ? `${parent.firstName || ''} ${parent.lastName || ''}`.trim()
-                                    : 'Без имени'}
-                                </div>
-                                <div className="text-xs text-muted-foreground">{parent.phone}</div>
-                              </div>
+                              Без родителя
                             </CommandItem>
-                          ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-            </div>
+                            {parentList
+                              .filter(p => {
+                                if (!parentSearch) return true
+                                const search = parentSearch.toLowerCase()
+                                const name = `${p.firstName || ''} ${p.lastName || ''}`.toLowerCase()
+                                const phone = p.phone.toLowerCase()
+                                return name.includes(search) || phone.includes(search)
+                              })
+                              .map((parent) => (
+                                <CommandItem
+                                  key={parent.id}
+                                  value={parent.id}
+                                  onSelect={() => {
+                                    setActivationForm(prev => ({ ...prev, parentId: parent.id }))
+                                    setParentSearchOpen(false)
+                                    setParentSearch('')
+                                  }}
+                                >
+                                  <User className="mr-2 h-4 w-4" />
+                                  <div className="flex-1">
+                                    <div className="font-medium">
+                                      {parent.firstName || parent.lastName
+                                        ? `${parent.firstName || ''} ${parent.lastName || ''}`.trim()
+                                        : 'Без имени'}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">{parent.phone}</div>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
 
-            {/* Progress settings */}
-            <div className="space-y-2">
-              <Label className="flex items-center gap-1">
-                <BookOpen className="h-4 w-4" />
-                Начальный прогресс
-              </Label>
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="currentPage" className="text-xs text-muted-foreground">Страница</Label>
-                  <Input
-                    id="currentPage"
-                    type="number"
-                    min={1}
-                    max={604}
-                    value={activationForm.currentPage}
-                    onChange={(e) => setActivationForm(prev => ({ ...prev, currentPage: parseInt(e.target.value) || 1 }))}
-                  />
+                {/* Progress settings */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1">
+                    <BookOpen className="h-4 w-4" />
+                    Начальный прогресс
+                  </Label>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="currentPage" className="text-xs text-muted-foreground">Страница</Label>
+                      <Input
+                        id="currentPage"
+                        type="number"
+                        min={1}
+                        max={604}
+                        value={activationForm.currentPage}
+                        onChange={(e) => setActivationForm(prev => ({ ...prev, currentPage: parseInt(e.target.value) || 1 }))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="currentLine" className="text-xs text-muted-foreground">Строка</Label>
+                      <Input
+                        id="currentLine"
+                        type="number"
+                        min={1}
+                        max={15}
+                        value={activationForm.currentLine}
+                        onChange={(e) => setActivationForm(prev => ({ ...prev, currentLine: parseInt(e.target.value) || 1 }))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="currentStage" className="text-xs text-muted-foreground">Этап</Label>
+                      <Select
+                        value={activationForm.currentStage}
+                        onValueChange={(v) => setActivationForm(prev => ({ ...prev, currentStage: v as StageNumber }))}
+                      >
+                        <SelectTrigger id="currentStage">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="STAGE_1_1">1.1</SelectItem>
+                          <SelectItem value="STAGE_1_2">1.2</SelectItem>
+                          <SelectItem value="STAGE_2_1">2.1</SelectItem>
+                          <SelectItem value="STAGE_2_2">2.2</SelectItem>
+                          <SelectItem value="STAGE_3">3</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="currentLine" className="text-xs text-muted-foreground">Строка</Label>
-                  <Input
-                    id="currentLine"
-                    type="number"
-                    min={1}
-                    max={15}
-                    value={activationForm.currentLine}
-                    onChange={(e) => setActivationForm(prev => ({ ...prev, currentLine: parseInt(e.target.value) || 1 }))}
-                  />
+              </>
+            )}
+
+            {/* PARENT-specific fields */}
+            {activationForm.userType === 'PARENT' && (
+              <>
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="selectChildLater"
+                      checked={activationForm.selectChildLater}
+                      onChange={(e) => setActivationForm(prev => ({
+                        ...prev,
+                        selectChildLater: e.target.checked,
+                        childId: e.target.checked ? '' : prev.childId
+                      }))}
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <Label htmlFor="selectChildLater" className="cursor-pointer text-sm">
+                      Выбрать ребенка позже (родитель сможет найти и отправить запрос после активации)
+                    </Label>
+                  </div>
+
+                  {!activationForm.selectChildLater && (
+                    <div className="space-y-1.5">
+                      <Label>Выберите ребенка *</Label>
+                      <Popover open={childSearchOpen} onOpenChange={setChildSearchOpen}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            role="combobox"
+                            aria-expanded={childSearchOpen}
+                            className="w-full justify-between"
+                          >
+                            {activationForm.childId ? (
+                              (() => {
+                                const selectedChild = studentList.find(s => s.id === activationForm.childId)
+                                return selectedChild ? (
+                                  <span>
+                                    {selectedChild.firstName || selectedChild.lastName
+                                      ? `${selectedChild.firstName || ''} ${selectedChild.lastName || ''}`.trim()
+                                      : selectedChild.phone}
+                                  </span>
+                                ) : 'Выберите ребенка'
+                              })()
+                            ) : (
+                              <span className="text-muted-foreground">Выберите ребенка...</span>
+                            )}
+                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[350px] p-0" align="start">
+                          <Command shouldFilter={false}>
+                            <CommandInput
+                              placeholder="Поиск по имени или телефону..."
+                              value={childSearch}
+                              onValueChange={setChildSearch}
+                            />
+                            <CommandList>
+                              <CommandGroup>
+                                {studentList
+                                  .filter(s => {
+                                    if (!childSearch) return true
+                                    const search = childSearch.toLowerCase()
+                                    const name = `${s.firstName || ''} ${s.lastName || ''}`.toLowerCase()
+                                    const phone = s.phone.toLowerCase()
+                                    return name.includes(search) || phone.includes(search)
+                                  })
+                                  .map((student) => (
+                                    <CommandItem
+                                      key={student.id}
+                                      value={student.id}
+                                      onSelect={() => {
+                                        setActivationForm(prev => ({ ...prev, childId: student.id }))
+                                        setChildSearchOpen(false)
+                                        setChildSearch('')
+                                      }}
+                                    >
+                                      <User className="mr-2 h-4 w-4" />
+                                      <div className="flex-1">
+                                        <div className="font-medium">
+                                          {student.firstName || student.lastName
+                                            ? `${student.firstName || ''} ${student.lastName || ''}`.trim()
+                                            : 'Без имени'}
+                                        </div>
+                                        <div className="text-xs text-muted-foreground">{student.phone}</div>
+                                      </div>
+                                    </CommandItem>
+                                  ))}
+                                {studentList.length === 0 && (
+                                  <CommandEmpty>Студенты не найдены</CommandEmpty>
+                                )}
+                              </CommandGroup>
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  )}
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="currentStage" className="text-xs text-muted-foreground">Этап</Label>
-                  <Select
-                    value={activationForm.currentStage}
-                    onValueChange={(v) => setActivationForm(prev => ({ ...prev, currentStage: v as StageNumber }))}
-                  >
-                    <SelectTrigger id="currentStage">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="STAGE_1_1">1.1</SelectItem>
-                      <SelectItem value="STAGE_1_2">1.2</SelectItem>
-                      <SelectItem value="STAGE_2_1">2.1</SelectItem>
-                      <SelectItem value="STAGE_2_2">2.2</SelectItem>
-                      <SelectItem value="STAGE_3">3</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </div>
+              </>
+            )}
 
             {/* Submit button */}
-            <Button
-              className="w-full"
-              onClick={submitActivation}
-              disabled={activationLoading || !activationForm.groupId}
-            >
-              {activationLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : (
-                <UserCheck className="h-4 w-4 mr-2" />
-              )}
-              Сохранить и активировать
-            </Button>
+            {activationForm.userType && (
+              <Button
+                className="w-full"
+                onClick={submitActivation}
+                disabled={activationLoading}
+              >
+                {activationLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <UserCheck className="h-4 w-4 mr-2" />
+                )}
+                {activationForm.userType === 'STUDENT' && 'Активировать студента'}
+                {activationForm.userType === 'PARENT' && 'Активировать родителя'}
+                {activationForm.userType === 'USTAZ' && 'Активировать устаза'}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
