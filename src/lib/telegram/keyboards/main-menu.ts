@@ -336,6 +336,7 @@ export function getActiveTaskKeyboard(
     keyboard.text(backLabel, backCallback)
   } else if (allSentWaitingReview) {
     // All submissions sent, waiting for ustaz review
+    keyboard.text('🔄 Статус доставки', 'student:sync').row()
     keyboard.text(backLabel, backCallback)
   } else if (hasPendingSubmission) {
     keyboard.text('↩️ Отменить последнюю запись', `task:cancel_last:${taskId}`).row()

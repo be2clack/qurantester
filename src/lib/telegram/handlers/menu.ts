@@ -2696,78 +2696,35 @@ async function handleReviewCallback(
       // Ignore if can't delete
     }
 
-    // Notify student about result
-    try {
-      const student = submission.task.student
-      if (student.telegramId) {
-        const { bot } = await import('../bot')
-        const { deleteMessagesByTypeForChat } = await import('../utils/message-cleaner')
-        const botToken = process.env.TELEGRAM_BOT_TOKEN
-        const studentChatId = Number(student.telegramId)
-
-        // If rejected, delete old submission confirmation messages to avoid confusion
-        if (status === SubmissionStatus.FAILED && botToken) {
-          await deleteMessagesByTypeForChat(studentChatId, 'submission_confirm', botToken)
-        }
-
-        const lineRange = submission.task.startLine === submission.task.endLine
-          ? `строка ${submission.task.startLine}`
-          : `строки ${submission.task.startLine}-${submission.task.endLine}`
-
-        // Check if task is now complete
-        const taskComplete = task.passedCount >= task.requiredCount
-        const remaining = task.requiredCount - task.passedCount
-
-        let message: string
-        const { InlineKeyboard } = await import('grammy')
-        const notificationKeyboard = new InlineKeyboard()
-
-        if (taskComplete && status === SubmissionStatus.PASSED) {
-          // Task completed! advanceStudentProgress already sent a notification
-          // Just clean up old submission confirms, but NOT menus (the new notification is tracked as menu)
-          if (botToken) {
-            await deleteMessagesByTypeForChat(studentChatId, 'submission_confirm', botToken)
+    // Notify student about result using shared utility
+    const student = submission.task.student
+    if (student.telegramId) {
+      const taskComplete = task.passedCount >= task.requiredCount
+      const { notifyStudentAboutReview } = await import('../utils/review-notifications')
+      await notifyStudentAboutReview(
+        student.telegramId,
+        {
+          id: submission.id,
+          taskId: submission.taskId,
+          studentId: submission.studentId,
+          task: {
+            page: submission.task.page,
+            startLine: submission.task.startLine,
+            endLine: submission.task.endLine,
+            passedCount: task.passedCount,
+            requiredCount: task.requiredCount,
+            failedCount: task.failedCount,
           }
-          // Don't send additional notification - advanceStudentProgress already handled it
-          return
-        } else if (status === SubmissionStatus.FAILED) {
-          // Rejected - need resubmission
-          message = `❌ <b>Запись отклонена</b>\n\n`
-          message += `📖 Стр. ${submission.task.page?.pageNumber || 1}, ${lineRange}\n`
-          message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>\n`
-          message += `❌ На пересдачу: <b>${task.failedCount}</b>\n\n`
-          message += `<i>Отправьте запись повторно.</i>`
+        },
+        status === SubmissionStatus.PASSED ? 'PASSED' : 'FAILED',
+        taskComplete
+      )
 
-          notificationKeyboard.text('✖️ Закрыть', 'close_notification')
-        } else {
-          // Passed but more needed
-          message = `✅ <b>Запись принята</b>\n\n`
-          message += `📖 Стр. ${submission.task.page?.pageNumber || 1}, ${lineRange}\n`
-          message += `📊 Принято: <b>${task.passedCount}/${task.requiredCount}</b>`
-
-          if (remaining > 0) {
-            message += `\n⏳ Осталось: <b>${remaining}</b>`
-          }
-
-          notificationKeyboard.text('✖️ Закрыть', 'close_notification')
-        }
-
-        const sentMsg = await bot.api.sendMessage(studentChatId, message, {
-          parse_mode: 'HTML',
-          reply_markup: notificationKeyboard
-        })
-
-        // Track message for cleanup (no auto-delete since we have close button)
-        const { trackMessageForChat } = await import('../utils/message-cleaner')
-        await trackMessageForChat(
-          Number(student.telegramId),
-          sentMsg.message_id,
-          student.id,
-          'review_result'
-        )
+      // If task completed via advanceStudentProgress, that already sent its own notification
+      // so we return early to avoid showing the queue to ustaz prematurely
+      if (taskComplete && status === SubmissionStatus.PASSED) {
+        // Still show next submission from queue below
       }
-    } catch (e) {
-      console.error('Failed to notify student:', e)
     }
 
     // Show next submission from queue or "all done" message
@@ -4276,10 +4233,18 @@ async function confirmAndSendToUstaz(ctx: BotContext, user: any, taskId: string)
       ? `строка ${task.startLine}`
       : `строки ${task.startLine}-${task.endLine}`
 
-    const confirmMessage = `✅ <b>Работа отправлена!</b>\n\n` +
-      `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n` +
-      `📊 Отправлено: <b>${totalSent}/${task.requiredCount}</b>\n\n` +
-      `<i>Ожидайте проверку устаза.</i>`
+    const remaining = task.requiredCount - totalSent
+    let confirmMessage = `✅ <b>Работа отправлена!</b>\n\n`
+    confirmMessage += `📖 Страница ${task.page?.pageNumber || 1}, ${lineRange}\n`
+    confirmMessage += `📊 Отправлено: <b>${totalSent}/${task.requiredCount}</b>\n`
+    if (task.passedCount > 0) {
+      confirmMessage += `✅ Принято: <b>${task.passedCount}</b>\n`
+    }
+    confirmMessage += `⏳ На проверке: <b>${pendingCount}</b>\n`
+    if (remaining > 0) {
+      confirmMessage += `📤 Осталось: <b>${remaining}</b>\n`
+    }
+    confirmMessage += `\n<i>Ожидайте проверку устаза.</i>`
 
     await ctx.editMessageText(confirmMessage, {
       parse_mode: 'HTML',
